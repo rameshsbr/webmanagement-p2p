@@ -200,7 +200,7 @@ function normalizeField(r: any): UIField | null {
   const digits = Number.isFinite(+r.digits) ? Math.max(0, +r.digits) : 0;
   let options: string[] = [];
   if (Array.isArray(r.options)) options = r.options.map((x: any) => String(x));
-  else if (typeof r.data === "string") options = r.data.split(",").map((s) => s.trim()).filter(Boolean);
+  else if (typeof r.data === "string") options = r.data.split(",").map((s: string) => s.trim()).filter(Boolean);
   return { name, display, field, placeholder, required, digits, options };
 }
 

@@ -1,6 +1,6 @@
 <% layout('admin/layout') -%>
 
-<% const q2 = Object.assign({}, query, { status:'PENDING' }); %>
+<% const q2 = Object.assign({}, query, { status:'PENDING,SUBMITTED' }); %>
 <%- include('partials/filters-bar', { query: q2, type: 'DEPOSIT', exportBase: 'deposits' }) %>
 <%- include('partials/column-settings', { key: 'admin.columns.deposits' }) %>
 
@@ -30,7 +30,13 @@
           <td data-col="userId"><%= r.userId %></td>
           <td data-col="currency"><%= r.currency %></td>
           <td data-col="amount"><%= r.amountCents %></td>
-          <td data-col="status"><span class="badge warn">Pending</span></td>
+          <td data-col="status">
+            <% if (r.status === 'SUBMITTED') { %>
+              <span class="badge">Submitted</span>
+            <% } else { %>
+              <span class="badge warn">Pending</span>
+            <% } %>
+          </td>
           <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
           <td data-col="created"><%= r.createdAt.toISOString() %></td>
           <td data-col="updated"><%= r.updatedAt.toISOString() %></td>

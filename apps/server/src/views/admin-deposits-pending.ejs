@@ -1,6 +1,6 @@
 <% layout('admin/layout') -%>
 
-<% const q2 = Object.assign({}, query, { status:'PENDING' }); %>
+<% const q2 = Object.assign({}, query, { status:'PENDING,SUBMITTED' }); %>
 <%- include('partials/filters-bar', { query: q2, type: 'DEPOSIT', exportBase: 'deposits' }) %>
 <%- include('partials/column-settings', { key: 'admin.columns.deposits' }) %>
 
@@ -30,7 +30,13 @@
           <td data-col="userId"><%= r.userId %></td>
           <td data-col="currency"><%= r.currency %></td>
           <td data-col="amount"><%= r.amountCents %></td>
-          <td data-col="status"><span class="badge warn">Pending</span></td>
+          <td data-col="status">
+            <% if (r.status === 'SUBMITTED') { %>
+              <span class="badge">Submitted</span>
+            <% } else { %>
+              <span class="badge warn">Pending</span>
+            <% } %>
+          </td>
           <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
           <td data-col="created"><%= r.createdAt.toISOString() %></td>
           <td data-col="updated"><%= r.updatedAt.toISOString() %></td>
@@ -40,16 +46,56 @@
             <% if (r.receiptFile) { %><div><a href="<%= r.receiptFile.path %>" class="btn small" target="_blank">Receipt</a></div><% } %>
           </td>
           <td data-col="actions" class="actions">
-            <form method="post" action="/admin/deposits/<%= r.id %>/approve" style="display:inline">
-              <button class="btn small primary" type="submit">Approve</button>
-            </form>
-            <form method="post" action="/admin/deposits/<%= r.id %>/reject" style="display:inline" onsubmit="return confirm('Reject this deposit?')">
-              <input type="hidden" name="reason" value="Manual reject"/>
-              <button class="btn small danger" type="submit">Reject</button>
-            </form>
+            <button
+              class="btn small primary"
+              type="button"
+              data-admin-action="approve"
+              data-id="<%= r.id %>"
+              data-reference="<%= r.referenceCode %>"
+              data-amount="<%= r.amountCents %>"
+              data-currency="<%= r.currency %>"
+            >Approve</button>
+            <button
+              class="btn small danger"
+              type="button"
+              data-admin-action="reject"
+              data-id="<%= r.id %>"
+              data-reference="<%= r.referenceCode %>"
+              data-amount="<%= r.amountCents %>"
+              data-currency="<%= r.currency %>"
+            >Reject</button>
           </td>
         </tr>
       <% }) %>
     </tbody>
   </table>
+</div>
+
+<div class="modal-backdrop" data-modal-root hidden>
+  <div class="modal-dialog" role="dialog" aria-modal="true">
+    <form method="post" data-modal-form>
+      <h2 class="modal-title" data-modal-title>Confirm action</h2>
+      <p class="modal-ref" data-modal-reference></p>
+      <p class="modal-note" data-modal-note></p>
+
+      <div class="form-field" data-modal-amount-wrap>
+        <label for="modal-amount">Amount (in cents)</label>
+        <input type="number" inputmode="numeric" min="1" step="1" id="modal-amount" name="amountCents" data-modal-amount />
+      </div>
+
+      <div class="form-field">
+        <label for="modal-comment" data-modal-comment-label>Comment</label>
+        <textarea id="modal-comment" rows="3" data-modal-comment></textarea>
+      </div>
+
+      <input type="hidden" name="returnTo" value="<%= returnTo %>" data-modal-return />
+
+      <div class="modal-error" data-modal-error role="alert"></div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" data-modal-cancel>Cancel</button>
+        <button type="submit" class="btn primary" data-modal-submit>Confirm</button>
+      </div>
+    </form>
+  </div>
 </div>

@@ -9,5 +9,10 @@ declare global {
       forbidden: (msg?: string) => void;
       notFound: (msg?: string) => void;
     }
+    interface Request {
+      rawBody?: string;
+      merchantId?: string;
+      apiKeyScopes?: string[];
+    }
   }
 }

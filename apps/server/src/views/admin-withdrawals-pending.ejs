@@ -1,6 +1,6 @@
 <% layout('admin/layout') -%>
 
-<% const q3 = Object.assign({}, query, { status:'PENDING' }); %>
+<% const q3 = Object.assign({}, query, { status:'PENDING,SUBMITTED' }); %>
 <%- include('partials/filters-bar', { query: q3, type: 'WITHDRAWAL', exportBase: 'withdrawals' }) %>
 <%- include('partials/column-settings', { key: 'admin.columns.withdrawals' }) %>
 
@@ -24,13 +24,19 @@
       <% if (!table.items.length) { %>
         <tr><td colspan="10" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
-      <% table.items.filter(r=>r.status==='PENDING').forEach(r=>{ %>
+      <% table.items.forEach(r=>{ %>
         <tr>
           <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
           <td data-col="userId"><%= r.userId %></td>
           <td data-col="currency"><%= r.currency %></td>
           <td data-col="amount"><%= r.amountCents %></td>
-          <td data-col="status"><span class="badge warn">Pending</span></td>
+          <td data-col="status">
+            <% if (r.status === 'SUBMITTED') { %>
+              <span class="badge">Submitted</span>
+            <% } else { %>
+              <span class="badge warn">Pending</span>
+            <% } %>
+          </td>
           <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
           <td data-col="created"><%= r.createdAt.toISOString() %></td>
           <td data-col="updated"><%= r.updatedAt.toISOString() %></td>

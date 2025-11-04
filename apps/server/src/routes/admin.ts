@@ -28,6 +28,11 @@ function statusesCSV(s?: string) {
   return arr.length ? arr : undefined;
 }
 
+function formatAmount(cents: number, currency?: string | null) {
+  const value = (cents / 100).toFixed(2);
+  return currency ? `${value} ${currency}` : value;
+}
+
 function sortSpec(s?: string) {
   const wl = new Set(['createdAt','updatedAt','amountCents','status','currency','referenceCode']);
   let col: string = 'createdAt', dir: 'asc'|'desc' = 'desc';
@@ -41,12 +46,17 @@ function sortSpec(s?: string) {
 
 const listQuery = z.object({
   q: z.string().optional(),
+  reference: z.string().optional(),
   id: z.string().optional(),
   userId: z.string().optional(),
   merchantId: z.string().optional(),
+  merchantName: z.string().optional(),
+  processedBy: z.string().optional(),
+  processedByName: z.string().optional(),
   currency: z.string().optional(),
   status: z.string().optional(),
   bankId: z.string().optional(),
+  method: z.string().optional(),
   amountMin: z.string().optional(),
   amountMax: z.string().optional(),
   from: z.string().optional(),
@@ -59,17 +69,39 @@ const listQuery = z.object({
 
 function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL') {
   const where: any = { type };
+  const and: any[] = [];
   if (q.id) where.id = q.id;
+  if (q.reference) where.referenceCode = q.reference;
   if (q.userId) where.userId = q.userId;
   if (q.merchantId) where.merchantId = q.merchantId;
+  if (q.merchantName) {
+    and.push({ merchant: { name: { contains: q.merchantName, mode: 'insensitive' } } });
+  }
   if (q.currency) where.currency = q.currency;
   if (q.bankId) where.bankAccountId = q.bankId;
+  if (q.processedBy) where.processedByAdminId = q.processedBy;
+  if (q.processedByName) {
+    and.push({
+      processedByAdmin: {
+        OR: [
+          { displayName: { contains: q.processedByName, mode: 'insensitive' } },
+          { email: { contains: q.processedByName, mode: 'insensitive' } }
+        ]
+      }
+    });
+  }
   const sts = statusesCSV(q.status);
   if (sts) where.status = { in: sts };
   if (q.amountMin || q.amountMax) {
     where.amountCents = {};
-    if (q.amountMin) where.amountCents.gte = Number(q.amountMin);
-    if (q.amountMax) where.amountCents.lte = Number(q.amountMax);
+    if (q.amountMin) {
+      const v = Number(q.amountMin);
+      if (Number.isFinite(v)) where.amountCents.gte = Math.round(v * 100);
+    }
+    if (q.amountMax) {
+      const v = Number(q.amountMax);
+      if (Number.isFinite(v)) where.amountCents.lte = Math.round(v * 100);
+    }
   }
   const df = q.dateField || 'createdAt';
   if (q.from || q.to) {
@@ -77,7 +109,18 @@ function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL')
     if (q.from) where[df].gte = new Date(q.from);
     if (q.to) where[df].lte = new Date(q.to);
   }
-  if (q.q) where.OR = [{ referenceCode: { contains: q.q, mode: 'insensitive' } }];
+  if (q.method) {
+    and.push({ detailsJson: { path: ['method'], equals: q.method } });
+  }
+  if (q.q) {
+    where.OR = [
+      { referenceCode: { contains: q.q, mode: 'insensitive' } },
+      { userId: { contains: q.q, mode: 'insensitive' } }
+    ];
+  }
+  if (and.length) {
+    where.AND = (where.AND || []).concat(and);
+  }
   return where;
 }
 
@@ -99,8 +142,9 @@ async function fetchPayments(
       include: {
         merchant: { select: { id: true, name: true } },
         user: { select: { id: true, email: true, phone: true, diditSubject: true } },
-        bankAccount: { select: { id: true, bankName: true, holderName: true, accountNo: true, currency: true } },
-        receiptFile: { select: { id: true, path: true, mimeType: true, original: true } }
+        bankAccount: { select: { id: true, bankName: true, holderName: true, accountNo: true, currency: true, method: true } },
+        receiptFile: { select: { id: true, path: true, mimeType: true, original: true } },
+        processedByAdmin: { select: { id: true, email: true, displayName: true } }
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -153,6 +197,19 @@ router.get('/report/deposits/pending', async (req, res) => {
   });
 });
 
+const approveBodySchema = z.object({
+  amount: z.union([z.string(), z.number()]).optional(),
+  amountCents: z.union([z.string(), z.number()]).optional(),
+  comment: z.string().optional(),
+  returnTo: z.string().optional()
+});
+
+const rejectBodySchema = z.object({
+  comment: z.string().optional(),
+  reason: z.string().optional(),
+  returnTo: z.string().optional()
+});
+
 router.post('/deposits/:id/approve', async (req, res) => {
   const id = req.params.id;
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
@@ -160,6 +217,34 @@ router.post('/deposits/:id/approve', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
+  const parsed = approveBodySchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Invalid payload' });
+  }
+
+  const body = parsed.data;
+  const rawAmount = body.amount ?? body.amountCents;
+  let nextAmount = pr.amountCents;
+  if (rawAmount !== undefined && rawAmount !== null && String(rawAmount).trim() !== '') {
+    const num = Number(String(rawAmount).replace(/,/g, ''));
+    if (!Number.isFinite(num) || num <= 0) {
+      return res.status(400).json({ ok: false, error: 'Invalid amount' });
+    }
+    const cents = body.amount !== undefined ? Math.round(num * 100) : Math.round(num);
+    if (!Number.isFinite(cents) || cents <= 0) {
+      return res.status(400).json({ ok: false, error: 'Invalid amount' });
+    }
+    nextAmount = cents;
+  }
+
+  const comment = (body.comment || '').trim();
+  const amountChanged = nextAmount !== pr.amountCents;
+  if (amountChanged && !comment) {
+    return res.status(400).json({ ok: false, error: 'Comment required when adjusting the amount' });
+  }
+
+  const returnToRaw = body.returnTo || '';
+  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
   const returnToRaw = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
   const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
   const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim() : '';
@@ -183,6 +268,9 @@ router.post('/deposits/:id/approve', async (req, res) => {
       where: { id },
       data: {
         status: 'APPROVED',
+        updatedAt: new Date(),
+        processedByAdminId: req.admin?.sub ?? null,
+        ...(amountChanged ? { amountCents: nextAmount } : {}),
         amountCents: nextAmount,
         updatedAt: new Date(),
         ...(comment ? { notes: comment } : {})
@@ -194,6 +282,9 @@ router.post('/deposits/:id/approve', async (req, res) => {
     await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { increment: nextAmount } } });
   });
 
+  const suffix = comment ? ` — ${comment}` : '';
+  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${formatAmount(nextAmount, pr.currency)} (merchant ${pr.merchant.name})${suffix}`).catch(() => {});
+  res.json({ ok: true, redirect: redirectTarget });
   const approveNote = comment ? ` — ${comment}` : '';
   safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${nextAmount} ${pr.currency} (merchant ${pr.merchant.name})${approveNote}`).catch(()=>{});
   res.redirect(redirectTarget);
@@ -201,6 +292,16 @@ router.post('/deposits/:id/approve', async (req, res) => {
 
 router.post('/deposits/:id/reject', async (req, res) => {
   const id = req.params.id;
+  const parsed = rejectBodySchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Invalid payload' });
+  }
+
+  const comment = (parsed.data.comment || parsed.data.reason || '').trim();
+  if (!comment) {
+    return res.status(400).json({ ok: false, error: 'Comment is required' });
+  }
+
   const returnToRaw = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
   const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
   const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
@@ -208,6 +309,22 @@ router.post('/deposits/:id/reject', async (req, res) => {
   if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
+
+  const returnToRaw = parsed.data.returnTo || '';
+  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
+
+  await prisma.paymentRequest.update({
+    where: { id },
+    data: {
+      status: 'REJECTED',
+      rejectedReason: comment,
+      notes: comment,
+      updatedAt: new Date(),
+      processedByAdminId: req.admin?.sub ?? null
+    }
+  });
+  safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} — ${comment}`).catch(() => {});
+  res.json({ ok: true, redirect: redirectTarget });
 
   if (!reason) {
     return res.status(400).json({ ok: false, error: 'Comment is required to reject' });
@@ -222,12 +339,12 @@ router.get('/export/deposits.csv', async (req: Request, res: Response) => {
   const { items } = await fetchPayments(req, 'DEPOSIT');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="deposits.csv"');
-  const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amountCents','status','bank','createdAt','updatedAt','receipt'] });
+  const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','updatedAt','receipt'] });
   csv.pipe(res);
   for (const x of items) {
     csv.write({
       id: x.id, referenceCode: x.referenceCode, userId: x.userId,
-      merchant: x.merchant?.name ?? '', currency: x.currency, amountCents: x.amountCents, status: x.status,
+      merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
       bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(), updatedAt: x.updatedAt.toISOString(),
       receipt: x.receiptFile?.original ?? ''
     });
@@ -241,14 +358,14 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
   ws.columns = [
     { header: 'ID', key: 'id', width: 28 },{ header: 'Reference', key: 'referenceCode', width: 16 },
     { header: 'User', key: 'userId', width: 16 },{ header: 'Merchant', key: 'merchant', width: 24 },
-    { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount (cents)', key: 'amountCents', width: 14 },
+    { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount', key: 'amount', width: 14 },
     { header: 'Status', key: 'status', width: 12 },{ header: 'Bank', key: 'bank', width: 18 },
     { header: 'Created', key: 'createdAt', width: 22 },{ header: 'Updated', key: 'updatedAt', width: 22 },
     { header: 'Receipt', key: 'receipt', width: 28 },
   ];
   items.forEach(x => ws.addRow({
     id: x.id, referenceCode: x.referenceCode, userId: x.userId, merchant: x.merchant?.name ?? '',
-    currency: x.currency, amountCents: x.amountCents, status: x.status, bank: x.bankAccount?.bankName ?? '',
+    currency: x.currency, amount: x.amountCents / 100, status: x.status, bank: x.bankAccount?.bankName ?? '',
     createdAt: x.createdAt, updatedAt: x.updatedAt, receipt: x.receiptFile?.original ?? ''
   }));
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -284,14 +401,17 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
   if (!m || m.balanceCents < pr.amountCents) return res.status(400).json({ ok: false, error: 'Insufficient merchant balance' });
 
   await prisma.$transaction(async (tx) => {
-    await tx.paymentRequest.update({ where: { id }, data: { status: 'APPROVED', updatedAt: new Date() } });
+    await tx.paymentRequest.update({
+      where: { id },
+      data: { status: 'APPROVED', updatedAt: new Date(), processedByAdminId: req.admin?.sub ?? null }
+    });
     await tx.ledgerEntry.create({
       data: { merchantId: pr.merchantId, amountCents: -pr.amountCents, reason: `Withdrawal ${pr.referenceCode}`, paymentId: pr.id }
     });
     await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { decrement: pr.amountCents } } });
   });
 
-  safeNotify(`✅ Withdrawal approved: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} (merchant ${m?.name})`).catch(()=>{});
+  safeNotify(`✅ Withdrawal approved: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} (merchant ${m?.name})`).catch(()=>{});
   res.redirect('back');
 });
 
@@ -303,8 +423,11 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
-  await prisma.paymentRequest.update({ where: { id }, data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date() } });
-  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} — ${reason}`).catch(()=>{});
+  await prisma.paymentRequest.update({
+    where: { id },
+    data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date(), processedByAdminId: req.admin?.sub ?? null }
+  });
+  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} — ${reason}`).catch(()=>{});
   res.redirect('back');
 });
 
@@ -312,12 +435,12 @@ router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
   const { items } = await fetchPayments(req, 'WITHDRAWAL');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="withdrawals.csv"');
-  const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amountCents','status','bank','createdAt','updatedAt'] });
+  const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','updatedAt'] });
   csv.pipe(res);
   for (const x of items) {
     csv.write({
       id: x.id, referenceCode: x.referenceCode, userId: x.userId,
-      merchant: x.merchant?.name ?? '', currency: x.currency, amountCents: x.amountCents, status: x.status,
+      merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
       bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(), updatedAt: x.updatedAt.toISOString()
     });
   }
@@ -330,13 +453,13 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
   ws.columns = [
     { header: 'ID', key: 'id', width: 28 },{ header: 'Reference', key: 'referenceCode', width: 16 },
     { header: 'User', key: 'userId', width: 16 },{ header: 'Merchant', key: 'merchant', width: 24 },
-    { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount (cents)', key: 'amountCents', width: 14 },
+    { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount', key: 'amount', width: 14 },
     { header: 'Status', key: 'status', width: 12 },{ header: 'Bank', key: 'bank', width: 18 },
     { header: 'Created', key: 'createdAt', width: 22 },{ header: 'Updated', key: 'updatedAt', width: 22 },
   ];
   items.forEach(x => ws.addRow({
     id: x.id, referenceCode: x.referenceCode, userId: x.userId, merchant: x.merchant?.name ?? '',
-    currency: x.currency, amountCents: x.amountCents, status: x.status, bank: x.bankAccount?.bankName ?? '',
+    currency: x.currency, amount: x.amountCents / 100, status: x.status, bank: x.bankAccount?.bankName ?? '',
     createdAt: x.createdAt, updatedAt: x.updatedAt
   }));
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');

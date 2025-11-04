@@ -49,10 +49,10 @@
           <td><%= r.type %></td>
           <td><%= r.status %></td>
           <td><%= r.currency %></td>
-          <td><%= r.amountCents %></td>
+          <td><%= formatAmount(r.amountCents, r.currency) %></td>
           <td><%= r.bankAccount?.bankName || '-' %></td>
-          <td><%= r.createdAt.toISOString() %></td>
-          <td><%= r.updatedAt.toISOString() %></td>
+          <td><%= formatDateTime(r.createdAt) %></td>
+          <td><%= formatDateTime(r.updatedAt) %></td>
           <td>
             <% if (r.receiptFile) { %>
               <a class="btn small" target="_blank" href="<%= r.receiptFile.path.startsWith('/') ? r.receiptFile.path : ('/uploads/'+r.receiptFile.path) %>">View</a>

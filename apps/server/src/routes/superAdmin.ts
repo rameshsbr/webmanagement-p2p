@@ -1440,13 +1440,18 @@ superAdminRouter.post("/payments/:id/status", async (req, res) => {
 
 // Edit amount/currency (with reason)
 superAdminRouter.post("/payments/:id/edit-amount", async (req, res) => {
-  const amountCentsRaw = req.body?.amountCents;
+  const amountRaw = typeof req.body?.amount !== "undefined" ? req.body.amount : req.body?.amountCents;
   const currencyRaw = req.body?.currency;
   const reason = String(req.body?.reason || "").trim();
 
-  const amountCents = Number(amountCentsRaw);
-  if (!Number.isFinite(amountCents) || amountCents < 0)
+  const parsedAmount = Number(String(amountRaw ?? "").replace(/,/g, ""));
+  if (!Number.isFinite(parsedAmount) || parsedAmount < 0)
     return res.status(400).send("Invalid amount");
+  const amountCents =
+    typeof req.body?.amount !== "undefined"
+      ? Math.round(parsedAmount * 100)
+      : Math.round(parsedAmount);
+  if (!Number.isFinite(amountCents)) return res.status(400).send("Invalid amount");
   const currency = String(currencyRaw || "").trim().toUpperCase();
   if (!currency || currency.length > 8)
     return res.status(400).send("Invalid currency");

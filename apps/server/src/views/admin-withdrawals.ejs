@@ -1,7 +1,16 @@
 <% layout('admin/layout') -%>
 
 <%- include('partials/filters-bar', { query, type: 'WITHDRAWAL', exportBase: 'withdrawals' }) %>
-<%- include('partials/column-settings', { key: 'admin.columns.withdrawals' }) %>
+<%- include('partials/column-settings', {
+  key: 'admin.columns.withdrawals',
+  labelMap: {
+    processedAt: 'Date of withdrawal',
+    processingTime: 'Time to process',
+    merchant: 'Merchant',
+    comment: 'Comment',
+    admin: 'Admin'
+  }
+}) %>
 
 <div class="table-wrap">
   <table class="table">
@@ -9,32 +18,53 @@
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>
         <th data-col="userId">USER ID</th>
+        <th data-col="merchant">MERCHANT</th>
         <th data-col="currency">CURRENCY</th>
         <th data-col="amount">AMOUNT</th>
         <th data-col="status">STATUS</th>
         <th data-col="bank">BANK NAME</th>
         <th data-col="created">DATE OF CREATION</th>
-        <th data-col="updated">TIME OF PROCESSING</th>
+        <th data-col="processedAt">DATE OF WITHDRAWAL</th>
+        <th data-col="processingTime">TIME TO PROCESS</th>
         <th data-col="userInfo">USER INFO</th>
+        <th data-col="comment">COMMENT</th>
+        <th data-col="admin">ADMIN</th>
         <th data-col="actions">ACTIONS</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="10" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+        <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
       <% table.items.forEach(r=>{ %>
         <tr>
           <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
           <td data-col="userId"><%= r.userId %></td>
+          <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
-          <td data-col="amount"><%= r.amountCents %></td>
+          <td data-col="amount"><%= formatAmount(r.amountCents, r.currency) %></td>
           <td data-col="status">
             <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
             <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
             <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
             <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
           </td>
+          <td data-col="bank"><%= r.bankAccount?.bankName || r.detailsJson?.destination?.bankName || '-' %></td>
+          <td data-col="created"><%= formatDateTime(r.createdAt) %></td>
+          <td data-col="processedAt"><%= (r.status==='PENDING' || r.status==='SUBMITTED') ? '-' : formatDateTime(r.updatedAt) %></td>
+          <td data-col="processingTime"><%= (r.status==='PENDING' || r.status==='SUBMITTED') ? '-' : formatDuration(r.createdAt, r.updatedAt) %></td>
+          <td data-col="userInfo" style="max-width:320px">
+            <% const method = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || '-'; %>
+            <% const dest = r.detailsJson?.destination || {}; %>
+            <div><b>Method:</b> <%= method || '-' %></div>
+            <div><b>Bank name:</b> <%= r.bankAccount?.bankName || dest.bankName || '-' %></div>
+            <div><b>Account holder name:</b> <%= dest.holderName || '-' %></div>
+            <% if ((method || '').toUpperCase() === 'OSKO') { %>
+              <div><b>Account number:</b> <%= dest.accountNo || '-' %></div>
+              <div><b>BSB:</b> <%= dest.bsb || '-' %></div>
+            <% } else if ((method || '').toUpperCase() === 'PAYID') { %>
+              <div><b>PayID:</b> <%= dest.payIdValue || '-' %></div>
+            <% } %>
           <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
           <td data-col="created"><%= r.createdAt.toISOString() %></td>
           <td data-col="updated"><%= r.updatedAt.toISOString() %></td>
@@ -53,6 +83,9 @@
               </form>
             <% } else { %>&mdash;<% } %>
           </td>
+          <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
+          <td data-col="actions" class="actions">&mdash;</td>
         </tr>
       <% }) %>
     </tbody>

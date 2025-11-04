@@ -11,8 +11,8 @@
 
 <div class="kpis">
   <div class="kpi">
-    <div class="label">Balance (cents)</div>
-    <div class="value"><%= (merchant?.balanceCents ?? 0) %></div>
+    <div class="label">Balance</div>
+    <div class="value"><%= formatAmount(merchant?.balanceCents ?? 0, merchant?.defaultCurrency || 'AUD') %></div>
   </div>
   <div class="kpi">
     <div class="label">Pending deposits</div>
@@ -23,8 +23,8 @@
     <div class="value"><%= m.pendingWithdrawals %></div>
   </div>
   <div class="kpi">
-    <div class="label">Today approved (cents)</div>
-    <div class="value"><%= (m.todayDeposits + m.todayWithdrawals) %></div>
+    <div class="label">Today approved</div>
+    <div class="value"><%= formatAmount(m.todayDeposits + m.todayWithdrawals, merchant?.defaultCurrency || 'AUD') %></div>
   </div>
 </div>
 
@@ -51,9 +51,9 @@
               <td><%= x.referenceCode %></td>
               <td><%= x.type %></td>
               <td><%= x.status %></td>
-              <td><%= x.amountCents %></td>
+              <td><%= formatAmount(x.amountCents, x.currency) %></td>
               <td><%= x.currency %></td>
-              <td><%= x.createdAt.toISOString() %></td>
+              <td><%= formatDateTime(x.createdAt) %></td>
             </tr>
           <% }) %>
         <% } %>

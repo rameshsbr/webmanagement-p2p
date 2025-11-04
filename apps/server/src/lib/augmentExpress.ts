@@ -13,6 +13,7 @@ declare global {
       rawBody?: string;
       merchantId?: string;
       apiKeyScopes?: string[];
+      admin?: { sub?: string; role?: string; [key: string]: unknown } | null;
     }
   }
 }

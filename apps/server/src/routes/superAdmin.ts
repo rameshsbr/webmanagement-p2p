@@ -378,10 +378,11 @@ function slug(s: string): string {
 // Dashboard
 // ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/", async (_req, res) => {
+  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ["PENDING", "SUBMITTED"];
   const [admins, merchants, pending, logs] = await Promise.all([
     prisma.adminUser.count(),
     prisma.merchant.count(),
-    prisma.paymentRequest.count({ where: { status: "PENDING" } }),
+    prisma.paymentRequest.count({ where: { status: { in: awaitingStatuses } } }),
     prisma.adminAuditLog.count(),
   ]);
   res.render("superadmin/dashboard", {

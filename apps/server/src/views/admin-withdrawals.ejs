@@ -43,7 +43,7 @@
             <div><b>Phone:</b> <%= r.user?.phone || '-' %></div>
           </td>
           <td data-col="actions" class="actions">
-            <% if (r.status==='PENDING') { %>
+            <% if (r.status==='PENDING' || r.status==='SUBMITTED') { %>
               <form method="post" action="/admin/withdrawals/<%= r.id %>/approve" style="display:inline" onsubmit="return confirm('Approve this withdrawal? It will deduct merchant balance.')">
                 <button class="btn small primary" type="submit">Approve</button>
               </form>

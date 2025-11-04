@@ -46,7 +46,7 @@
             <% } %>
           </td>
           <td data-col="actions" class="actions">
-            <% if (r.status==='PENDING') { %>
+            <% if (r.status==='PENDING' || r.status==='SUBMITTED') { %>
               <form method="post" action="/admin/deposits/<%= r.id %>/approve" style="display:inline">
                 <button class="btn small primary" type="submit">Approve</button>
               </form>

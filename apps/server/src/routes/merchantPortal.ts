@@ -152,13 +152,14 @@ router.get("/", async (req: any, res) => {
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
 
+  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
   const [merchant, pendingDeposits, pendingWithdrawals, totalsToday, latest] = await Promise.all([
     prisma.merchant.findUnique({
       where: { id: merchantId },
       select: { name: true, balanceCents: true }
     }),
-    prisma.paymentRequest.count({ where: { merchantId, type: "DEPOSIT", status: "PENDING" } }),
-    prisma.paymentRequest.count({ where: { merchantId, type: "WITHDRAWAL", status: "PENDING" } }),
+    prisma.paymentRequest.count({ where: { merchantId, type: "DEPOSIT", status: { in: awaitingStatuses } } }),
+    prisma.paymentRequest.count({ where: { merchantId, type: "WITHDRAWAL", status: { in: awaitingStatuses } } }),
     prisma.paymentRequest.groupBy({
       by: ["type"],
       where: { merchantId, createdAt: { gte: today }, status: "APPROVED" },

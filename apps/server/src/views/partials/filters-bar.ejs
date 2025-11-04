@@ -1,4 +1,5 @@
 <% /* Filters Bar aligned with admin/merchant queries */ %>
+<% /* Filters Bar (no duplicate page titles) */ %>
 <% const statusSelected = new Set(String(query.status||'').split(',').map(s=>s.trim()).filter(Boolean)); %>
 <form class="card filters" method="GET" action="">
   <div class="filters-grid grid-4">
@@ -38,7 +39,7 @@
       <label>Date field</label>
       <select name="dateField">
         <option value="createdAt" <%= (query.dateField||'createdAt')==='createdAt' ? 'selected' : '' %>>Date of creation</option>
-        <option value="processedAt" <%= (query.dateField||'')==='processedAt' ? 'selected' : '' %>>Date processed</option>
+        <option value="updatedAt" <%= (query.dateField||'')==='updatedAt' ? 'selected' : '' %>>Date processed</option>
       </select>
     </div>
 
@@ -76,6 +77,14 @@
     <div class="f-item">
       <label>Admin name</label>
       <input type="text" name="processedByName" value="<%= query.processedByName||'' %>" placeholder="Admin name">
+      <label>All statuses</label>
+      <select name="status">
+        <option value=""           <%= statusSelected.size===0 ? 'selected' : '' %>>All statuses</option>
+        <option value="PENDING"    <%= statusSelected.has('PENDING') && statusSelected.size===1 ? 'selected' : '' %>>Pending</option>
+        <option value="SUBMITTED"  <%= statusSelected.has('SUBMITTED') && statusSelected.size===1 ? 'selected' : '' %>>Submitted</option>
+        <option value="APPROVED"   <%= statusSelected.has('APPROVED') && statusSelected.size===1 ? 'selected' : '' %>>Approved</option>
+        <option value="REJECTED"   <%= statusSelected.has('REJECTED') && statusSelected.size===1 ? 'selected' : '' %>>Rejected</option>
+      </select>
     </div>
 
     <!-- Method -->

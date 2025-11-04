@@ -218,7 +218,7 @@
           <!-- /RECEIPTS -->
 
           <td data-col="created" class="mini"><%= formatDateTime(p.createdAt) %></td>
-          <td data-col="updated" class="mini"><%= formatDateTime(p.processedAt || p.updatedAt) %></td>
+          <td data-col="updated" class="mini"><%= formatDateTime(p.updatedAt) %></td>
           <td data-col="actions">
             <div class="row" style="gap:6px; flex-wrap:wrap">
               <form method="post" action="/superadmin/payments/<%= p.id %>/status" class="row" style="gap:6px">

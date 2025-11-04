@@ -110,6 +110,48 @@ app.use((req: any, res: any, next: any) => {
   if (typeof res.locals.admin === "undefined") res.locals.admin = null;
   if (typeof res.locals.title === "undefined") res.locals.title = "Admin";
   if (typeof res.locals.isAuthView === "undefined") res.locals.isAuthView = false;
+  if (typeof res.locals.formatDateTime === "undefined") {
+    const dtFormatter = new Intl.DateTimeFormat("en-AU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    res.locals.formatDateTime = (value: Date | string | null | undefined) => {
+      if (!value) return "-";
+      const date = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(date.getTime())) return "-";
+      return dtFormatter.format(date);
+    };
+  }
+  if (typeof res.locals.formatAmount === "undefined") {
+    res.locals.formatAmount = (cents: number, currency?: string | null) => {
+      if (typeof cents !== "number" || !Number.isFinite(cents)) return "-";
+      const value = (cents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return currency ? `${value} ${currency}` : value;
+    };
+  }
+  if (typeof res.locals.formatDuration === "undefined") {
+    res.locals.formatDuration = (start?: Date | string | null, end?: Date | string | null) => {
+      if (!start || !end) return "-";
+      const s = start instanceof Date ? start : new Date(start);
+      const e = end instanceof Date ? end : new Date(end);
+      if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return "-";
+      const diff = Math.max(0, e.getTime() - s.getTime());
+      const totalSeconds = Math.floor(diff / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const parts = [] as string[];
+      if (hours) parts.push(`${hours}h`);
+      if (minutes) parts.push(`${minutes}m`);
+      if (!parts.length || seconds) parts.push(`${seconds}s`);
+      return parts.join(" ") || "0s";
+    };
+  }
   next();
 });
 

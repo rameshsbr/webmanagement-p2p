@@ -1,3 +1,5 @@
+import { generateUserId } from "./reference.js";
+
 // apps/server/src/services/didit.ts
 // Placeholder integration for Didit + real Low-Code API helpers.
 // Uses env:
@@ -59,7 +61,7 @@ export async function handleDiditWebhook(
   let user = await p.user.findUnique({ where: { diditSubject } });
   if (!user) {
     user = await p.user.create({
-      data: { diditSubject, verifiedAt: status === "approved" ? new Date() : null },
+      data: { id: generateUserId(), diditSubject, verifiedAt: status === "approved" ? new Date() : null },
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });

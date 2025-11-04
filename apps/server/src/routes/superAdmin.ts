@@ -378,10 +378,11 @@ function slug(s: string): string {
 // Dashboard
 // ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/", async (_req, res) => {
+  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ["PENDING", "SUBMITTED"];
   const [admins, merchants, pending, logs] = await Promise.all([
     prisma.adminUser.count(),
     prisma.merchant.count(),
-    prisma.paymentRequest.count({ where: { status: "PENDING" } }),
+    prisma.paymentRequest.count({ where: { status: { in: awaitingStatuses } } }),
     prisma.adminAuditLog.count(),
   ]);
   res.render("superadmin/dashboard", {
@@ -1439,13 +1440,18 @@ superAdminRouter.post("/payments/:id/status", async (req, res) => {
 
 // Edit amount/currency (with reason)
 superAdminRouter.post("/payments/:id/edit-amount", async (req, res) => {
-  const amountCentsRaw = req.body?.amountCents;
+  const amountRaw = typeof req.body?.amount !== "undefined" ? req.body.amount : req.body?.amountCents;
   const currencyRaw = req.body?.currency;
   const reason = String(req.body?.reason || "").trim();
 
-  const amountCents = Number(amountCentsRaw);
-  if (!Number.isFinite(amountCents) || amountCents < 0)
+  const parsedAmount = Number(String(amountRaw ?? "").replace(/,/g, ""));
+  if (!Number.isFinite(parsedAmount) || parsedAmount < 0)
     return res.status(400).send("Invalid amount");
+  const amountCents =
+    typeof req.body?.amount !== "undefined"
+      ? Math.round(parsedAmount * 100)
+      : Math.round(parsedAmount);
+  if (!Number.isFinite(amountCents)) return res.status(400).send("Invalid amount");
   const currency = String(currencyRaw || "").trim().toUpperCase();
   if (!currency || currency.length > 8)
     return res.status(400).send("Invalid currency");
@@ -2125,11 +2131,28 @@ superAdminRouter.post("/forms/:merchantId", async (req, res) => {
     if (!bankOk) return res.status(400).send("Bank does not belong to merchant");
   }
 
-  await prisma.merchantFormConfig.upsert({
-    where: { merchantId_bankAccountId: { merchantId, bankAccountId } },
-    update: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-    create: { merchantId, bankAccountId, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-  });
+  if (bankAccountId) {
+    await prisma.merchantFormConfig.upsert({
+      where: { merchantId_bankAccountId: { merchantId, bankAccountId } },
+      update: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+      create: { merchantId, bankAccountId, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+    });
+  } else {
+    const existing = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId, bankAccountId: null },
+      select: { id: true },
+    });
+    if (existing) {
+      await prisma.merchantFormConfig.update({
+        where: { id: existing.id },
+        data: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+      });
+    } else {
+      await prisma.merchantFormConfig.create({
+        data: { merchantId, bankAccountId: null, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+      });
+    }
+  }
 
   await auditAdmin(req, "merchant.forms.upsert", "MERCHANT", merchantId, {
     bankAccountId: bankAccountId || null,
@@ -2193,11 +2216,28 @@ superAdminRouter.post("/forms/:merchantId/copy-from", async (req: any, res: any)
   const dep = Array.isArray((source as any).deposit) ? (source as any).deposit : [];
   const wdr = Array.isArray((source as any).withdrawal) ? (source as any).withdrawal : [];
 
-  await prisma.merchantFormConfig.upsert({
-    where: { merchantId_bankAccountId: { merchantId: toMerchantId, bankAccountId: toBankAccountId } },
-    update: { deposit: dep as any, withdrawal: wdr as any },
-    create: { merchantId: toMerchantId, bankAccountId: toBankAccountId, deposit: dep as any, withdrawal: wdr as any },
-  });
+  if (toBankAccountId) {
+    await prisma.merchantFormConfig.upsert({
+      where: { merchantId_bankAccountId: { merchantId: toMerchantId, bankAccountId: toBankAccountId } },
+      update: { deposit: dep as any, withdrawal: wdr as any },
+      create: { merchantId: toMerchantId, bankAccountId: toBankAccountId, deposit: dep as any, withdrawal: wdr as any },
+    });
+  } else {
+    const existing = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId: toMerchantId, bankAccountId: null },
+      select: { id: true },
+    });
+    if (existing) {
+      await prisma.merchantFormConfig.update({
+        where: { id: existing.id },
+        data: { deposit: dep as any, withdrawal: wdr as any },
+      });
+    } else {
+      await prisma.merchantFormConfig.create({
+        data: { merchantId: toMerchantId, bankAccountId: null, deposit: dep as any, withdrawal: wdr as any },
+      });
+    }
+  }
 
   // Build a nice label for the success banner
   const [fromMerch, fromBank, toBank] = await Promise.all([

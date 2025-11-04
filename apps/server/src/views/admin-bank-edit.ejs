@@ -1,0 +1,15 @@
+<% layout('admin/layout') -%>
+
+<form method="post" class="card filters" style="grid-template-columns:repeat(2,minmax(0,1fr))">
+  <label>Holder name<input name="holderName" value="<%= bank.holderName %>"/></label>
+  <label>Bank name<input name="bankName" value="<%= bank.bankName %>"/></label>
+  <label>Account No<input name="accountNo" value="<%= bank.accountNo %>"/></label>
+  <label>IBAN<input name="iban" value="<%= bank.iban||'' %>"/></label>
+  <label>Currency<input name="currency" value="<%= bank.currency %>"/></label>
+  <label>Instructions<input name="instructions" value="<%= bank.instructions||'' %>"/></label>
+  <label>Active <input type="checkbox" name="active" <%= bank.active?'checked':'' %>/></label>
+  <div class="row">
+    <button class="btn primary" type="submit">Save</button>
+    <a class="btn" href="/admin/bank-transfer/banks">Cancel</a>
+  </div>
+</form>

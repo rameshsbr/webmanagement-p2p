@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Reset Merchant Password</title>
+  <link rel="stylesheet" href="/static/auth/styles.css" />
+  <style>
+    .password-wrap { position: relative; }
+    .password-wrap .toggle-pass {
+      position:absolute; right:6px; top:50%; transform:translateY(-50%);
+    }
+    .password-wrap input { padding-right: 72px; }
+  </style>
+</head>
+<body class="login-body">
+  <div class="bg" aria-hidden="true"></div>
+
+  <main class="login-card">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">🛡️</div>
+      <h1>Merchant Portal</h1>
+      <p class="muted">Set a new password to continue.</p>
+    </div>
+
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="alert error" role="alert"><%= error %></div>
+    <% } %>
+
+    <form class="form" method="POST" action="/auth/merchant/reset">
+      <input type="hidden" name="token" value="<%= token %>"/>
+
+      <div class="field">
+        <label for="pw1">New password</label>
+        <div class="password-wrap">
+          <input id="pw1" name="password" type="password" required minlength="8" autocomplete="new-password"/>
+          <button type="button" class="btn small toggle-pass" data-for="pw1">Show</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="pw2">Confirm password</label>
+        <div class="password-wrap">
+          <input id="pw2" name="confirm" type="password" required minlength="8" autocomplete="new-password"/>
+          <button type="button" class="btn small toggle-pass" data-for="pw2">Show</button>
+        </div>
+      </div>
+
+      <button class="btn primary w-100" type="submit">Update password</button>
+    </form>
+  </main>
+
+  <script>
+    (function(){
+      document.querySelectorAll('.toggle-pass').forEach(function(btn){
+        btn.addEventListener('click', function(){
+          var id = btn.getAttribute('data-for');
+          var input = document.getElementById(id);
+          if (!input) return;
+          var hidden = input.type === 'password';
+          input.type = hidden ? 'text' : 'password';
+          btn.textContent = hidden ? 'Hide' : 'Show';
+        });
+      });
+    })();
+  </script>
+</body>
+</html>

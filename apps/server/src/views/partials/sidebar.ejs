@@ -1,0 +1,69 @@
+<div class="sb-top-buttons">
+  <button type="button" class="icon-btn" data-show="reports" title="Processing queue">📦</button>
+  <button type="button" class="icon-btn" data-show="prefs"   title="Settings">⚙️</button>
+  <a class="icon-btn danger" href="/auth/logout" title="Logout">⏏</a>
+</div>
+
+<div class="sidebar-section" data-section="reports">
+  <div class="sb-title">REPORTS</div>
+  <nav class="nav">
+    <a class="nav-link" href="/admin">Home page</a>
+
+    <div class="nav-group">BANK TRANSFER</div>
+    <a class="nav-link" href="/admin/bank-transfer/banks">List of banks</a>
+    <a class="nav-link" href="/admin/report/deposits">Deposit requests</a>
+    <a class="nav-link" href="/admin/report/deposits/pending">Pending deposit requests</a>
+    <a class="nav-link" href="/admin/report/withdrawals">Withdrawal requests</a>
+    <a class="nav-link" href="/admin/report/withdrawals/pending">Pending withdrawal requests</a>
+  </nav>
+</div>
+
+<div class="sidebar-section" data-section="prefs">
+  <div class="sb-title">PERSONAL PROFILE</div>
+  <label class="sb-field">
+    <span>E-mail</span>
+    <input id="pref-email" type="email"
+           value="<%= ADM && ADM.email ? ADM.email : 'admin@example.com' %>"
+           readonly/>
+  </label>
+
+  <div class="sb-title">DISPLAY SETTINGS</div>
+  <label class="sb-field">
+    <span>Currency</span>
+    <select id="pref-currency">
+      <option>Malaysian ringgit</option>
+      <option>Indonesian rupiah</option>
+      <option>US dollar</option>
+      <option>Euro</option>
+      <option>Thai baht</option>
+      <option>Vietnamese dong</option>
+    </select>
+  </label>
+
+  <label class="sb-field">
+    <span>Time zone</span>
+    <select id="pref-tz"></select>
+  </label>
+
+  <!-- iOS-style theme toggle (icons INSIDE the switch) -->
+  <div class="sb-field align-right">
+    <input id="pref-dark" class="ios-input" type="checkbox"/>
+    <label class="ios-switch" for="pref-dark" title="Toggle theme">
+      <span class="sun">☀️</span>
+      <span class="moon">🌙</span>
+      <span class="knob"></span>
+    </label>
+  </div>
+
+  <!-- SECURITY section ABOVE Save/Cancel -->
+  <div class="sb-title">SECURITY</div>
+  <nav class="nav">
+    <a class="nav-link" href="/admin/settings/security">2FA</a>
+  </nav>
+
+  <!-- Save/Cancel AT THE BOTTOM -->
+  <div class="row">
+    <button type="button" class="btn small" id="prefs-save">SAVE</button>
+    <button type="button" class="btn small" id="prefs-cancel">CANCEL</button>
+  </div>
+</div>

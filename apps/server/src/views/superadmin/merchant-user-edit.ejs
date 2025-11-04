@@ -1,0 +1,64 @@
+<% layout('superadmin/layout') -%>
+
+  <div class="card">
+    <div class="title">
+      <%= user ? "Edit Merchant User" : "New Merchant User" %>
+    </div>
+
+    <form method="post" action="<%= user
+    ? ('/superadmin/merchants/'+merchant.id+'/users/'+user.id+'/edit')
+    : ('/superadmin/merchants/'+merchant.id+'/users/new')
+  %>">
+
+      <div class="f-item">
+        <label>Email</label>
+        <input name="email" type="email" value="<%= (user && user.email) || '' %>" required />
+      </div>
+
+      <div class="f-item">
+        <label>Password</label>
+        <div style="position:relative">
+          <input id="mu-pass" name="password" type="password" placeholder="leave blank to auto-generate"
+            style="padding-right:72px">
+          <button type="button" id="mu-toggle" class="btn small" aria-label="Show password"
+            style="position:absolute; right:6px; top:50%; transform:translateY(-50%);">Show</button>
+        </div>
+        <label class="chk" style="margin-top:6px">
+          <input type="checkbox" name="generate" checked /> Auto-generate if blank
+        </label>
+      </div>
+
+      <script>
+        (function () {
+          var btn = document.getElementById('mu-toggle');
+          var input = document.getElementById('mu-pass');
+          if (btn && input) {
+            btn.addEventListener('click', function () {
+              var isHidden = input.type === 'password';
+              input.type = isHidden ? 'text' : 'password';
+              btn.textContent = isHidden ? 'Hide' : 'Show';
+            });
+          }
+        })();
+      </script>
+
+      <div class="f-item">
+        <label>Role</label>
+        <select name="role">
+          <option value="OWNER" <%=user?.role==='OWNER' ? 'selected' : '' %>>OWNER</option>
+          <option value="MANAGER" <%=(!user || user.role==='MANAGER' ) ? 'selected' : '' %>>MANAGER</option>
+          <option value="ANALYST" <%=user?.role==='ANALYST' ? 'selected' : '' %>>ANALYST</option>
+        </select>
+      </div>
+
+      <label class="chk" style="margin-top:6px">
+        <input type="checkbox" name="active" <%=(user ? user.active : true) ? 'checked' : '' %> />
+        Active
+      </label>
+
+      <div class="row" style="gap:8px; margin-top:12px">
+        <a class="btn" href="/superadmin/merchants/<%= merchant.id %>/users">Cancel</a>
+        <button class="btn primary">Save</button>
+      </div>
+    </form>
+  </div>

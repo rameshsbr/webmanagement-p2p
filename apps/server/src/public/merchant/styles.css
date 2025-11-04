@@ -1,0 +1,10 @@
+/* Reuse admin styling and add tiny tweaks */
+@import url("/static/admin/styles.css");
+
+/* Different brand accent so merchants see their space */
+.brand-accent { color: var(--brand); }
+
+/* Keep keys & spacing consistent across screens */
+.page { max-width: 1200px; }
+
+/* Namespace merchant preferences if desired — not required for CSS */

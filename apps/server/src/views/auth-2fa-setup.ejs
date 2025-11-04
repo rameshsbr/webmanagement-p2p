@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>Enable 2FA</title>
+  <link rel="stylesheet" href="/static/auth/styles.css" />
+</head>
+<body class="login-body">
+<div class="bg"></div>
+
+<%
+// default to admin if not provided
+const _mode = (typeof mode !== 'undefined' ? mode : 'admin');
+const isMerchant = _mode === 'merchant';
+const postAction = isMerchant ? '/auth/merchant/2fa/setup' : '/auth/2fa/setup';
+const cancelHref = isMerchant ? '/auth/merchant/login' : '/admin';
+%>
+
+<div class="login-card">
+  <header class="brand">
+    <div class="logo">🔐</div>
+    <h1>Set up 2-Step Verification</h1>
+    <p class="muted">Scan the QR in Google Authenticator, then enter the 6-digit code.</p>
+  </header>
+
+  <div class="card" style="padding:14px">
+    <% if (qrDataUrl) { %>
+      <img alt="QR code" src="<%= qrDataUrl %>" style="display:block;width:180px;height:180px;margin:0 auto;border-radius:10px;border:1px solid var(--border)"/>
+    <% } %>
+    <div style="margin-top:10px; word-break:break-all">
+      <div class="muted">Account:</div><div><%= accountLabel %></div>
+      <div class="muted" style="margin-top:8px">Secret (backup):</div><code><%= secretBase32 %></code>
+    </div>
+  </div>
+
+  <% if (error) { %><div class="alert error" style="margin-top:12px"><%= error %></div><% } %>
+
+  <form method="POST" action="<%= postAction %>" class="card" style="margin-top:16px;max-width:420px">
+    <input type="hidden" name="token" value="<%= token %>"/>
+    <label>6-digit code</label>
+    <input class="input" name="code" inputmode="numeric" pattern="[0-9]{6}" maxlength="6" required placeholder="123456"/>
+    <div style="display:flex;gap:8px;margin-top:10px">
+      <button class="btn primary" type="submit">Enable 2FA</button>
+      <a class="btn ghost" href="<%= cancelHref %>">Cancel</a>
+    </div>
+  </form>
+</div>
+</body>
+</html>

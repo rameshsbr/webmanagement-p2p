@@ -1,0 +1,112 @@
+<% layout('superadmin/layout') -%>
+
+<div class="row between" style="margin-bottom:12px">
+  <div class="title">Merchant Users – <%= merchant.name %></div>
+  <div class="row" style="gap:8px">
+    <a class="btn" href="/superadmin/merchants/<%= merchant.id %>/edit">Back to Merchant</a>
+    <a class="btn primary" href="/superadmin/merchants/<%= merchant.id %>/users/new">New user</a>
+  </div>
+</div>
+
+<%
+  // Show once: either via ?creds=... in the URL, or a newCreds object from the route
+  let credsBlock = null;
+  if (typeof query !== 'undefined' && query.creds) {
+    try { credsBlock = JSON.parse(Buffer.from(String(query.creds), 'base64url').toString('utf8')); } catch {}
+  } else if (typeof newCreds !== 'undefined' && newCreds && newCreds.email && newCreds.password) {
+    credsBlock = newCreds;
+  }
+%>
+
+<% if (credsBlock) { %>
+  <div class="card" style="border-color:#34d399;background:#ecfdf5;margin-bottom:12px">
+    <div class="title">User created</div>
+    <p>Temporary credentials (shown once):</p>
+    <div class="row" style="gap:8px; align-items:center;">
+      <input readonly value="<%= credsBlock.email %>" style="max-width:300px"/>
+      <div style="position:relative; display:inline-block;">
+        <input id="tmp-pass" readonly value="<%= credsBlock.password %>" style="max-width:240px; padding-right:64px"/>
+        <button type="button" id="copy-tmp-pass" class="btn small" style="position:absolute; right:4px; top:50%; transform:translateY(-50%);">
+          Copy password
+        </button>
+      </div>
+    </div>
+    <p style="margin-top:8px;opacity:.8">
+      Merchant logs in at <code>/auth/merchant/login</code> and then completes 2FA.
+    </p>
+  </div>
+<% } %>
+
+<div class="card">
+  <table class="table-merchants">
+    <colgroup>
+      <col style="width:36%"/>
+      <col style="width:18%"/>
+      <col style="width:14%"/>
+      <col style="width:14%"/>
+      <col style="width:18%"/>
+    </colgroup>
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Role</th>
+        <th>Active</th>
+        <th>2FA</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <% (users || []).forEach(u => { %>
+        <tr>
+          <td class="truncate" title="<%= u.email %>"><%= u.email %></td>
+          <td><%= u.role %></td>
+          <td><%= u.active ? 'yes' : 'no' %></td>
+          <td><%= u.twoFactorEnabled ? 'enabled' : '—' %></td>
+          <td class="nowrap">
+            <a class="btn small" href="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/edit">Edit</a>
+            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/force-reset" style="display:inline">
+              <button class="btn small" type="submit">Force reset</button>
+            </form>
+            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this user?')">
+              <button class="btn small" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+      <% if (!users || users.length === 0) { %>
+        <tr><td colspan="5" style="opacity:.7">No users yet.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>
+
+<script>
+  (function(){
+    function legacyCopy(text) {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch {}
+      document.body.removeChild(ta);
+    }
+    const btn = document.getElementById('copy-tmp-pass');
+    const input = document.getElementById('tmp-pass');
+    if (btn && input) {
+      btn.addEventListener('click', async function(){
+        const txt = input.value || '';
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(txt);
+          } else {
+            legacyCopy(txt);
+          }
+          btn.textContent = 'Copied';
+          setTimeout(() => btn.textContent = 'Copy password', 1200);
+        } catch {
+          legacyCopy(txt);
+        }
+      });
+    }
+  })();
+</script>

@@ -1,0 +1,27 @@
+{
+  "name": "casino-payments-platform",
+  "private": true,
+  "workspaces": [
+    "apps/server"
+  ],
+  "scripts": {
+    "dev": "pnpm --filter @app/server dev",
+    "build": "pnpm --filter @app/server build",
+    "start": "pnpm --filter @app/server start",
+    "migrate:dev": "pnpm --filter @app/server prisma migrate dev",
+    "seed": "pnpm --filter @app/server seed"
+  },
+  "devDependencies": {
+    "pnpm": "^9.0.0"
+  },
+  "pnpm": {
+    "allowedBuiltDependencies": [
+      "prisma",
+      "@prisma/client",
+      "@prisma/engines"
+    ]
+  },
+  "dependencies": {
+    "multer": "1.4.5-lts.2"
+  }
+}

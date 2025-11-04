@@ -1,0 +1,298 @@
+<% layout('superadmin/layout') -%>
+
+<%
+  // Helpers for qs/paging
+  function toPairs(obj){ return Object.entries(obj||{}).map(function([k,v]){ if(Array.isArray(v))v=v[0]; if(v==null)v=''; return [k,String(v)] }); }
+  function qsString(obj){ return new URLSearchParams(toPairs(obj)).toString(); }
+  function pageHref(base, obj, p){ var usp=new URLSearchParams(toPairs(obj)); usp.set('page', String(p)); return base + '?' + usp.toString(); }
+
+  var basePath = (type === 'DEPOSIT' ? '/superadmin/deposits' : '/superadmin/withdrawals');
+  var qs = qsString(query || {});
+%>
+
+<style>
+  /* Compact panel at top with tabs + export buttons */
+  .panel.compact { padding: 10px 12px; display:flex; align-items:center; justify-content:space-between; gap:12px }
+  .pay-tabs { display:flex; gap:6px; align-items:center }
+  .pay-tabs .tab { padding: 6px 10px; border:1px solid var(--border); border-radius:10px; background:var(--panel); text-decoration:none; }
+  .pay-tabs .tab.active { background: var(--fore); color: var(--back); }
+
+  /* FILTERS — 4 rows × 3 columns on desktop; uniform control widths */
+  .filters {
+    display: grid;
+    gap: 10px;
+    align-items: center;
+    grid-template-columns: repeat(3, minmax(240px, 1fr));  /* desktop: 3 columns */
+  }
+  @media (max-width: 1100px) {
+    .filters { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+  }
+  @media (max-width: 700px) {
+    .filters { grid-template-columns: 1fr; }
+  }
+  .filters > * { min-width: 0; }
+  .filters .input,
+  .filters select { height: 36px; width: 100%; box-sizing: border-box; }
+
+  .filters .actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+  .filters .actions .btn { height: 36px; padding: 0 14px; }
+
+  /* Column settings (collapsible) */
+  .cols { display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin:10px 0 12px }
+  .cols summary { list-style:none; cursor:pointer; display:flex; align-items:baseline; gap:10px; padding:6px 0 }
+  .cols summary::-webkit-details-marker{ display:none }
+  .cols .muted{ opacity:.7 }
+  .cols .links a{ margin-left:8px; text-decoration:underline; cursor:pointer }
+  .cols .grid { display:grid; grid-template-columns: repeat(6, auto); gap:8px 16px }
+  .chk{ display:inline-flex; align-items:center; gap:8px; user-select:none }
+  .chk input[type="checkbox"]{ width:16px; height:16px }
+
+  .table-wrap { overflow:auto }
+  .mini { font-size:12px; opacity:.75 }
+  .pill { padding:2px 6px; border:1px solid var(--border); border-radius:999px }
+  .kvs { display:grid; grid-template-columns: 90px 1fr; gap:4px; font-size:12px; opacity:.9 }
+  .nowrap { white-space:nowrap }
+</style>
+
+<!-- Top bar: tabs + exports -->
+<div class="panel compact">
+  <nav class="pay-tabs">
+    <a class="tab <%= type==='DEPOSIT' ? 'active' : '' %>" href="/superadmin/deposits">Deposits</a>
+    <a class="tab <%= type==='WITHDRAWAL' ? 'active' : '' %>" href="/superadmin/withdrawals">Withdrawals</a>
+  </nav>
+  <div class="row" style="gap:8px">
+    <a class="btn" href="<%= (type==='DEPOSIT'?'/superadmin/deposits/export.csv':'/superadmin/withdrawals/export.csv') + (qs ? ('?'+qs) : '') %>">Export CSV</a>
+    <a class="btn" href="<%= (type==='DEPOSIT'?'/superadmin/deposits/export.xlsx':'/superadmin/withdrawals/export.xlsx') + (qs ? ('?'+qs) : '') %>">Export XLSX</a>
+  </div>
+</div>
+
+<!-- Filters (12 cells: 4 rows × 3 cols on desktop) -->
+<form class="card filters" method="GET" action="<%= basePath %>">
+  <!-- Row 1 -->
+  <input class="input" name="q" placeholder="Search (ref, merchant, email, phone)" value="<%= query.q || '' %>"/>
+  <input class="input" name="id" placeholder="Payment ID" value="<%= query.id || '' %>"/>
+  <input class="input" name="merchantId" placeholder="Merchant ID" value="<%= query.merchantId || '' %>"/>
+
+  <!-- Row 2 -->
+  <input class="input" name="currency" placeholder="Currency" value="<%= query.currency || '' %>"/>
+  <select class="input" name="status">
+    <option value="">Any status</option>
+    <% ["PENDING","SUBMITTED","APPROVED","REJECTED"].forEach(function(s){ %>
+      <option value="<%= s %>" <%= (String(query.status||'').toUpperCase()===s ? 'selected' : '') %>><%= s %></option>
+    <% }) %>
+  </select>
+  <input class="input" type="date" name="from" value="<%= query.from || '' %>"/>
+
+  <!-- Row 3 -->
+  <input class="input" type="date" name="to" value="<%= query.to || '' %>"/>
+  <select class="input" name="dateField">
+    <option value="createdAt" <%= (query.dateField||'')==='createdAt' ? 'selected' : '' %>>By created</option>
+    <option value="updatedAt" <%= (query.dateField||'')==='updatedAt' ? 'selected' : '' %>>By updated</option>
+  </select>
+  <select class="input" name="sort">
+    <% var sorts = ['createdAt:desc','createdAt:asc','updatedAt:desc','updatedAt:asc','amountCents:desc','amountCents:asc','status:asc','status:desc','currency:asc','currency:desc','referenceCode:asc','referenceCode:desc']; %>
+    <% sorts.forEach(function(s){ %>
+      <option value="<%= s %>" <%= (query.sort||'')===s ? 'selected' : '' %>><%= s %></option>
+    <% }) %>
+  </select>
+
+  <!-- Row 4: replaced Page/Per page with Has receipt + amount range -->
+  <select class="input" name="hasReceipt">
+    <option value="">Receipt: Any</option>
+    <option value="yes" <%= (query.hasReceipt||'')==='yes' ? 'selected' : '' %>>Receipt: Yes</option>
+    <option value="no"  <%= (query.hasReceipt||'')==='no'  ? 'selected' : '' %>>Receipt: No</option>
+  </select>
+  <input class="input" type="number" step="1" name="amountMin" placeholder="Min cents" value="<%= query.amountMin || '' %>"/>
+  <input class="input" type="number" step="1" name="amountMax" placeholder="Max cents" value="<%= query.amountMax || '' %>"/>
+
+  <!-- Apply (full-width row) -->
+  <div class="actions">
+    <button class="btn primary">Apply</button>
+  </div>
+</form>
+
+<!-- Column settings (clean, collapsible) -->
+<details class="cols" data-cols>
+  <summary>
+    <span class="muted">Column settings</span>
+    <span class="mini" data-cols-summary></span>
+  </summary>
+
+  <div class="links mini" style="margin:10px 0 6px">
+    <a href="#" id="cols-all">All</a> · <a href="#" id="cols-none">None</a>
+  </div>
+
+  <div class="grid">
+    <% var COLS = [
+      { id: 'ref',      label: 'Ref' },
+      { id: 'merchant', label: 'Merchant' },
+      { id: 'status',   label: 'Status' },
+      { id: 'amount',   label: 'Amount' },
+      { id: 'user',     label: 'User' },
+      { id: 'bank',     label: 'Bank' },
+      { id: 'receipt',  label: 'Receipt' },
+      { id: 'created',  label: 'Created' },
+      { id: 'updated',  label: 'Updated' },
+      { id: 'actions',  label: 'Actions' },
+    ]; %>
+    <% COLS.forEach(function(c){ %>
+      <label class="chk">
+        <input type="checkbox" class="col-toggle" data-col="<%= c.id %>" checked>
+        <span><%= c.label %></span>
+      </label>
+    <% }) %>
+  </div>
+</details>
+
+<div class="panel" style="margin-bottom:8px">
+  <div class="mini">Showing <%= items.length %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+</div>
+
+<div class="table-wrap">
+  <table class="table" data-table>
+    <thead>
+      <tr>
+        <th data-col="ref">Ref</th>
+        <th data-col="merchant">Merchant</th>
+        <th data-col="status">Status</th>
+        <th data-col="amount">Amount</th>
+        <th data-col="user">User</th>
+        <th data-col="bank">Bank</th>
+        <th data-col="receipt">Receipt</th>
+        <th data-col="created">Created</th>
+        <th data-col="updated">Updated</th>
+        <th data-col="actions">Change</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% items.forEach(function(p){ %>
+        <tr>
+          <td data-col="ref"><code><%= p.referenceCode %></code></td>
+          <td data-col="merchant">
+            <div class="kvs">
+              <div>Merchant</div><div><%= p.merchant?.name || '—' %></div>
+              <div>ID</div><div class="mini"><%= p.merchant?.id || '—' %></div>
+            </div>
+          </td>
+          <td data-col="status"><span class="pill"><%= p.status %></span></td>
+          <td data-col="amount"><%= p.amountCents %> <%= p.currency %></td>
+          <td data-col="user">
+            <div><%= p.user?.email || '—' %></div>
+            <div class="mini"><%= p.user?.phone || '' %></div>
+          </td>
+          <td data-col="bank"><%= p.bankAccount?.bankName || '—' %></td>
+
+          <!-- RECEIPTS (updated for multi) -->
+          <td data-col="receipt" class="nowrap">
+            <% 
+              var receipts = p._receipts || p.receipts || null;
+              var count = (typeof p._receiptCount === 'number')
+                ? p._receiptCount
+                : (receipts ? receipts.length : (p.receiptFile ? 1 : 0));
+            %>
+            <div class="mini" style="margin-bottom:6px">Receipts: <%= count %></div>
+
+            <% if (receipts && receipts.length) { %>
+              <div class="row" style="gap:6px; flex-wrap:wrap">
+                <% receipts.forEach(function(r, idx){ %>
+                  <a class="btn small" href="<%= r.path %>" target="_blank">View <%= idx+1 %></a>
+                  <form method="post" action="/superadmin/payments/<%= p.id %>/receipts/<%= r.id %>/remove" style="display:inline">
+                    <button class="btn small" type="submit" onclick="return confirm('Remove this receipt?')">Remove</button>
+                  </form>
+                <% }) %>
+              </div>
+            <% } else if (p.receiptFile) { %>
+              <div class="row" style="gap:6px; flex-wrap:wrap">
+                <a class="btn small" href="<%= p.receiptFile.path %>" target="_blank">View</a>
+                <form method="post" action="/superadmin/payments/<%= p.id %>/receipt/remove" style="display:inline">
+                  <button class="btn small" type="submit" onclick="return confirm('Remove most recent receipt?')">Remove recent</button>
+                </form>
+              </div>
+            <% } %>
+
+            <form method="post" action="/superadmin/payments/<%= p.id %>/receipt" enctype="multipart/form-data" style="display:inline-flex; gap:6px; margin-top:6px">
+              <input class="input" style="height:30px" type="file" name="receipt" accept="image/*,application/pdf" required>
+              <button class="btn small" type="submit"><%= (count>0) ? 'Add receipt' : 'Upload' %></button>
+            </form>
+          </td>
+          <!-- /RECEIPTS -->
+
+          <td data-col="created" class="mini"><%= p.createdAt.toISOString() %></td>
+          <td data-col="updated" class="mini"><%= p.updatedAt.toISOString() %></td>
+          <td data-col="actions">
+            <div class="row" style="gap:6px; flex-wrap:wrap">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/status" class="row" style="gap:6px">
+                <select name="toStatus" class="input">
+                  <% ['APPROVED','REJECTED','PENDING','SUBMITTED'].forEach(function(s){ %>
+                    <option value="<%= s %>" <%= p.status===s ? 'selected' : '' %>><%= s %></option>
+                  <% }) %>
+                </select>
+                <input class="input" name="reason" placeholder="Reason (optional)">
+                <button class="btn small" type="submit">Apply</button>
+              </form>
+
+              <form method="post" action="/superadmin/payments/<%= p.id %>/edit-amount" class="row" style="gap:6px">
+                <input class="input" type="number" step="1" name="amountCents" value="<%= p.amountCents %>" style="width:120px">
+                <input class="input" name="currency" value="<%= p.currency %>" style="width:90px">
+                <input class="input" name="reason" placeholder="Reason (required) *" required>
+                <button class="btn small" type="submit">Save</button>
+              </form>
+
+              <form method="post" action="/superadmin/payments/<%= p.id %>/notes" class="row" style="gap:6px">
+                <input class="input" name="notes" value="<%= p.notes || '' %>" placeholder="Notes" style="width:220px">
+                <button class="btn small" type="submit">Save</button>
+              </form>
+            </div>
+          </td>
+        </tr>
+      <% }) %>
+      <% if (!items.length) { %>
+        <tr><td colspan="10" class="mini">No results.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>
+
+<div class="row between" style="margin-top:10px">
+  <div class="mini">Showing <%= items.length %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <div class="row" style="gap:6px">
+    <a class="btn small" href="<%= page>1 ? pageHref(basePath, query, page-1) : 'javascript:void(0)' %>">Prev</a>
+    <a class="btn small" href="<%= page<pages ? pageHref(basePath, query, page+1) : 'javascript:void(0)' %>">Next</a>
+  </div>
+</div>
+
+<script>
+(function(){
+  // Columns: persist per type
+  var key = 'sa_pay_cols_' + '<%= type %>';
+  var toggles = Array.prototype.slice.call(document.querySelectorAll('.col-toggle'));
+
+  function apply(){
+    var map = {};
+    toggles.forEach(function(cb){ map[cb.dataset.col] = cb.checked; });
+    document.querySelectorAll('[data-col]').forEach(function(el){
+      var id = el.getAttribute('data-col'); el.style.display = map[id] ? '' : 'none';
+    });
+    // Summary text
+    try {
+      var on = Object.values(map).filter(Boolean).length;
+      var el = document.querySelector('[data-cols-summary]');
+      if (el) el.textContent = on + ' shown';
+    } catch {}
+    try { localStorage.setItem(key, JSON.stringify(map)); } catch {}
+  }
+
+  try {
+    var saved = localStorage.getItem(key);
+    if (saved) {
+      var map = JSON.parse(saved);
+      toggles.forEach(function(cb){ if (map.hasOwnProperty(cb.dataset.col)) cb.checked = !!map[cb.dataset.col]; });
+    }
+  } catch {}
+
+  toggles.forEach(function(cb){ cb.addEventListener('change', apply); });
+  document.getElementById('cols-all')?.addEventListener('click', function(e){ e.preventDefault(); toggles.forEach(function(cb){ cb.checked = true; }); apply(); });
+  document.getElementById('cols-none')?.addEventListener('click', function(e){ e.preventDefault(); toggles.forEach(function(cb){ cb.checked = false; }); apply(); });
+  apply();
+})();
+</script>

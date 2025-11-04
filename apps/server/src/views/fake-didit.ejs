@@ -1,0 +1,12 @@
+<!DOCTYPE html><html><body>
+<h3>Demo Didit Verification</h3>
+<p>Session: <%= session %></p>
+<p>Subject: <%= subj %></p>
+<form method="post" action="/webhooks/didit" target="_self">
+  <input type="hidden" name="sessionId" value="<%= session %>"/>
+  <input type="hidden" name="diditSubject" value="<%= subj || 'demo-user-123' %>"/>
+  <button name="status" value="approved">Approve</button>
+  <button name="status" value="rejected">Reject</button>
+</form>
+<script>window.onunload = () => window.close && window.close();</script>
+</body></html>

@@ -1,0 +1,63 @@
+<% layout('merchant/layout') -%>
+
+<%
+  const m = (typeof metrics === 'object' && metrics) ? metrics : {
+    pendingDeposits: 0,
+    pendingWithdrawals: 0,
+    todayDeposits: 0,
+    todayWithdrawals: 0,
+  };
+%>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Balance (cents)</div>
+    <div class="value"><%= (merchant?.balanceCents ?? 0) %></div>
+  </div>
+  <div class="kpi">
+    <div class="label">Pending deposits</div>
+    <div class="value"><%= m.pendingDeposits %></div>
+  </div>
+  <div class="kpi">
+    <div class="label">Pending withdrawals</div>
+    <div class="value"><%= m.pendingWithdrawals %></div>
+  </div>
+  <div class="kpi">
+    <div class="label">Today approved (cents)</div>
+    <div class="value"><%= (m.todayDeposits + m.todayWithdrawals) %></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="title">Latest activity</div>
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Reference</th>
+          <th>Type</th>
+          <th>Status</th>
+          <th>Amount</th>
+          <th>Currency</th>
+          <th>Created</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% if (!latest || !latest.length) { %>
+          <tr><td colspan="6" style="text-align:center;color:var(--ink-dim)">No activity</td></tr>
+        <% } else { %>
+          <% latest.forEach(x => { %>
+            <tr>
+              <td><%= x.referenceCode %></td>
+              <td><%= x.type %></td>
+              <td><%= x.status %></td>
+              <td><%= x.amountCents %></td>
+              <td><%= x.currency %></td>
+              <td><%= x.createdAt.toISOString() %></td>
+            </tr>
+          <% }) %>
+        <% } %>
+      </tbody>
+    </table>
+  </div>
+</div>

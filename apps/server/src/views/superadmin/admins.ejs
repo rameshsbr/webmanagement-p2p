@@ -1,0 +1,48 @@
+<% layout('superadmin/layout') -%>
+
+<!-- Right-aligned action bar under the page header -->
+<div class="page-actions" style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+  <a class="btn primary" href="/superadmin/admins/new">New admin</a>
+</div>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Email</th>
+        <th>Role</th>
+        <th>2FA</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <% admins.forEach(a => { %>
+        <tr>
+          <td><%= a.email %></td>
+          <td><%= a.role %></td>
+          <td><%= a.twoFactorEnabled ? 'enabled' : '-' %></td>
+          <td class="mini"><%= a.createdAt.toISOString() %></td>
+          <td class="nowrap">
+            <a class="btn small" href="/superadmin/admins/<%= a.id %>/edit">Edit</a>
+
+            <form method="post" action="/superadmin/admins/<%= a.id %>/reset-2fa" style="display:inline">
+              <button class="btn small" type="submit">Reset 2FA</button>
+            </form>
+
+            <form method="post" action="/superadmin/admins/<%= a.id %>/force-reset" style="display:inline" onsubmit="return confirm('Generate password reset link for this admin?')">
+              <button class="btn small" type="submit">Force reset</button>
+            </form>
+
+            <form method="post" action="/superadmin/admins/<%= a.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this admin?')">
+              <button class="btn small" type="submit">Delete</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+      <% if (!admins.length) { %>
+        <tr><td colspan="5" class="mini">No admins yet.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>

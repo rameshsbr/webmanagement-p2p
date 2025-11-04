@@ -1,0 +1,75 @@
+<!-- apps/server/src/views/admin-login.ejs -->
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title><%= title || 'Admin Login' %></title>
+  <link rel="stylesheet" href="/static/auth/styles.css" />
+  <% if (siteKey) { %>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <% } %>
+</head>
+<body class="login-body">
+  <div class="bg"></div>
+
+  <main class="login-card">
+    <header class="brand">
+      <div class="logo">💳</div>
+      <h1>Admin Portal</h1>
+      <p class="muted">Secure access portal</p>
+    </header>
+
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="alert error"><%= error %></div>
+    <% } %>
+
+    <form method="POST" action="/auth/admin/login" class="form" id="loginForm">
+      <div class="field">
+        <label>Email</label>
+        <input
+          type="email"
+          name="email"
+          required
+          autocomplete="username"
+          placeholder="you@company.com" />
+      </div>
+
+      <div class="field">
+        <label>Password</label>
+        <!-- IMPORTANT: use the wrapper so CSS applies like Merchant -->
+        <div class="password-wrap">
+          <input
+            id="password"
+            type="password"
+            name="password"
+            required
+            autocomplete="current-password"
+            placeholder="••••••••" />
+          <!-- Text-link toggle (no pill/button look) -->
+          <button
+            type="button"
+            class="toggle-pass"
+            aria-pressed="false">Show</button>
+        </div>
+      </div>
+
+      <% if (siteKey) { %>
+      <div class="field">
+        <label>Verification</label>
+        <!-- Turnstile widget; /static/auth/login.js handles token -->
+        <div class="cf-turnstile" data-sitekey="<%= siteKey %>" data-callback="__cfOk"></div>
+      </div>
+      <% } %>
+
+      <!-- Canonical hidden token (the shared script fills/validates this) -->
+      <input type="hidden" name="cf-turnstile-token" id="cfToken">
+
+      <button type="submit" class="btn primary w-100">Sign in</button>
+    </form>
+  </main>
+
+  <!-- Shared script wires Show/Hide + Turnstile safety net -->
+  <script src="/static/auth/login.js" defer></script>
+</body>
+</html>

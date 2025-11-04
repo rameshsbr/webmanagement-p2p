@@ -1,0 +1,27 @@
+<!-- views/partials/columns-popover.ejs -->
+<div class="cols" data-cols data-id="<%= idPrefix %>">
+  <button type="button" class="btn ghost cols-trigger" aria-expanded="false">
+    Columns
+  </button>
+
+  <div class="cols-popover" role="dialog" aria-label="Toggle columns">
+    <div class="row between" style="margin-bottom:8px">
+      <strong style="font-weight:600">Columns</strong>
+      <div class="muted small">
+        <a href="#" data-cols-all>All</a>
+        <span> · </span>
+        <a href="#" data-cols-none>None</a>
+      </div>
+    </div>
+
+    <div class="cols-grid">
+      <% (cols || []).forEach(c => { %>
+        <label class="switch">
+          <input type="checkbox" data-col="<%= c.key %>" <%= c.checked ? 'checked' : '' %> />
+          <span class="slider"></span>
+          <span class="switch-label"><%= c.label %></span>
+        </label>
+      <% }) %>
+    </div>
+  </div>
+</div>

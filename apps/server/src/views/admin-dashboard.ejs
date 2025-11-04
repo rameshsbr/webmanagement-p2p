@@ -1,0 +1,33 @@
+<% layout('admin/layout') -%>
+
+<%
+  // Safe defaults so the view never crashes
+  const m = (typeof metrics === 'object' && metrics) ? metrics : {
+    pendingDeposits: 0,
+    pendingWithdrawals: 0,
+    todayDeposits: 0,
+    todayWithdrawals: 0,
+  };
+%>
+
+<div class="kpis">
+  <div class="kpi">
+    <div class="label">Pending deposits</div>
+    <div class="value"><%= m.pendingDeposits %></div>
+  </div>
+
+  <div class="kpi">
+    <div class="label">Pending withdrawals</div>
+    <div class="value"><%= m.pendingWithdrawals %></div>
+  </div>
+
+  <div class="kpi">
+    <div class="label">Today deposits (cents)</div>
+    <div class="value"><%= m.todayDeposits %></div>
+  </div>
+
+  <div class="kpi">
+    <div class="label">Today withdrawals (cents)</div>
+    <div class="value"><%= m.todayWithdrawals %></div>
+  </div>
+</div>

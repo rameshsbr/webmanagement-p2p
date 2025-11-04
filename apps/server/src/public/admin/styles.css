@@ -1,0 +1,249 @@
+:root {
+  --font-sans: ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-16: 16px;
+  --fs-18: 18px;
+  --bg: #eef3f6;
+  --card: #fff;
+  --ink: #0f172a;
+  --ink-dim: #475569;
+  --muted: #dbe1e6;
+  --brand: #2c8d94;
+  --brand-ink: #f2fbfc;
+  --ghost: #e6f3f3;
+  --row: #f8fbfc;
+  --danger: #ef4444;
+}
+
+:root[data-theme="dark"] {
+  --bg: #0b1015;
+  --card: #121921;
+  --ink: #e6ecf3;
+  --ink-dim: #95a5b5;
+  --muted: #2a3642;
+  --brand: #2aa6b0;
+  --brand-ink: #041115;
+  --ghost: #0e2a2d;
+  --row: #0f1a21;
+  --danger: #f87171;
+}
+
+* { box-sizing: border-box }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: var(--fs-14)/1.5 var(--font-sans)
+}
+
+/* ── Top header ───────────────────────────────────────────── */
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--card);
+  border-bottom: 1px solid var(--muted);
+  padding: 10px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 30
+}
+.brand { font-weight: 800; letter-spacing: .3px }
+.brand-accent { color: var(--brand) }
+.header .spacer { flex: 1 }
+.btn.btn-icon.sb-toggle {
+  border: 1px solid var(--muted);
+  border-radius: 8px;
+  background: var(--card);
+  cursor: pointer
+}
+
+/* ── App shell (sidebar + content) ───────────────────────── */
+.shell {
+  display: grid;
+  grid-template-columns: 270px 1fr;
+  min-height: calc(100vh - 48px)
+}
+/* When collapsed: no sidebar track at all */
+.shell[data-collapsed="1"] { grid-template-columns: 1fr }
+.shell[data-collapsed="1"] .sidebar { display: none }
+body.sidebar-hidden .shell { grid-template-columns: 0 1fr }
+body.sidebar-hidden .sidebar { display: none }
+
+/* Sidebar */
+.sidebar {
+  background: var(--card);
+  border-right: 1px solid var(--muted);
+  padding: 14px;
+  position: sticky;
+  top: 48px;
+  height: calc(100vh - 48px);
+  overflow: auto
+}
+.sb-top-buttons { display:flex; gap:8px; margin-bottom:12px }
+.icon-btn{
+  width:36px;height:36px;display:inline-flex;align-items:center;justify-content:center;
+  border:1px solid var(--muted);border-radius:8px;background:var(--card);color:var(--ink);cursor:pointer
+}
+.icon-btn:hover{ filter:brightness(.98) }
+.icon-btn.active{ outline:2px solid var(--brand) }
+.icon-btn.danger{
+  background: color-mix(in oklab, var(--danger) 16%, var(--card));
+  border-color: color-mix(in oklab, var(--danger) 30%, var(--muted))
+}
+.nav-group{ margin:10px 0 4px; color:var(--ink-dim); font-weight:700; font-size:var(--fs-12) }
+.sidebar .nav a{
+  display:block; padding:8px 10px; border-radius:8px; margin-bottom:6px; color:inherit; text-decoration:none
+}
+.sidebar .nav a.active,.sidebar .nav a:hover{ background:var(--ghost) }
+.sb-title{ font-weight:700; color:var(--ink-dim); margin:12px 0 6px; font-size:var(--fs-12) }
+
+.sb-field{ display:grid; gap:6px; margin:8px 0 }
+.sb-field.align-right{ display:flex; justify-content:flex-end }
+
+.sidebar-section{ margin-bottom:14px }
+.sidebar .row{ display:flex; gap:8px }
+
+input, select{
+  width:100%; padding:9px 10px; border:1px solid var(--muted); border-radius:8px;
+  background:var(--card); color:var(--ink); font:inherit; line-height:1; min-height:40px
+}
+
+/* Content */
+.content{ padding:18px; min-width:0 }
+.page{ max-width:1200px; margin:0 auto; min-width:0 }
+.page>*{ min-width:0 }
+
+.panel.page-chrome{
+  background:transparent; border:0; padding:0; border-radius:12px;
+  margin:0 auto 14px; max-width:1200px
+}
+.page-title{
+  display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px;
+  background:var(--row); margin:0; font-size:var(--fs-18); font-weight:800; white-space:nowrap
+}
+
+/* Cards & buttons */
+.card{
+  background:var(--card); border:1px solid var(--muted); border-radius:12px; padding:16px; margin-bottom:16px
+}
+.title{
+  margin:0 0 10px 0; font-size:var(--fs-18); font-weight:800; color:var(--ink); white-space:nowrap
+}
+.btn{
+  display:inline-flex; align-items:center; gap:6px; padding:8px 12px; border-radius:8px; border:1px solid var(--muted);
+  background:var(--card); color:inherit; text-decoration:none; cursor:pointer; font:inherit
+}
+.btn:hover{ filter:brightness(.98) }
+.btn.primary{ background:var(--brand); color:var(--brand-ink); border-color:var(--brand) }
+.btn.ghost{ background:var(--ghost); border-color:var(--muted) }
+.btn.small{ padding:6px 10px }
+.btn.btn-icon{ padding:6px 8px }
+
+/* Filters */
+.filters-grid{ display:grid; gap:12px }
+/* Key change: use minmax(0,1fr) to prevent “Admin / Available currencies” from stretching */
+.grid-5{ grid-template-columns: repeat(5, minmax(0, 1fr)) }
+@media (max-width:1200px){ .grid-5{ grid-template-columns: repeat(3, minmax(0, 1fr)) } }
+@media (max-width:800px){  .grid-5{ grid-template-columns: repeat(2, minmax(0, 1fr)) } }
+.f-item{ display:grid; gap:6px; min-width:0 }
+.f-item label{
+  font-size:var(--fs-12); color:var(--ink-dim);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis; /* long captions don’t force the column wider */
+}
+.f-actions{ display:flex; align-items:end; justify-content:flex-end }
+
+/* DASHBOARD KPIs */
+.kpis{ display:grid; gap:14px; grid-template-columns:repeat(4, minmax(0,1fr)) }
+@media (max-width:1100px){ .kpis{ grid-template-columns:repeat(2, minmax(0,1fr)) } }
+@media (max-width:620px){ .kpis{ grid-template-columns:1fr } }
+.kpi{ background:var(--card); border:1px solid var(--muted); border-radius:12px; padding:14px 16px }
+.kpi .label{ font-size:var(--fs-13); color:var(--ink-dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.kpi .value{ margin:6px 0 0; font-size:22px; font-weight:800 }
+
+/* Date range popover */
+.range-input{
+  display:flex; align-items:center; gap:8px; position:relative; border:1px solid var(--muted);
+  border-radius:8px; padding:8px; background:var(--card)
+}
+.range-display{ flex:1 }
+.range-pop{
+  position:absolute; left:0; top:calc(100% + 6px); background:var(--card); border:1px solid var(--muted);
+  border-radius:10px; padding:12px; width:340px; box-shadow:0 8px 24px rgba(15,23,42,.12); z-index:10; display:none
+}
+:root[data-theme="dark"] .range-pop{ box-shadow:0 10px 26px rgba(0,0,0,.5) }
+.range-input.open .range-pop{ display:block }
+.range-pop .pop-row{ display:grid; gap:6px; margin-bottom:8px }
+.range-pop .pop-row label{ font-size:var(--fs-12); color:var(--ink-dim) }
+.range-pop .pop-actions{ display:flex; gap:8px; justify-content:flex-end }
+
+/* Collapsible “Column settings” */
+.collapsible .collapse-head{ display:flex; align-items:center; justify-content:space-between }
+.collapsible .collapse-title{ font-size:var(--fs-14); font-weight:800; color:var(--ink) }
+.collapsible .caret::after{ content:"▾"; display:inline-block; transition:transform .12s ease }
+.is-collapsed .caret::after{ transform:rotate(-90deg) }
+.is-collapsed .collapse-body{ display:none }
+.cols-grid{ display:grid; gap:8px; align-items:center; justify-items:start }
+.cols-grid.table-like{ grid-template-columns:repeat(4, minmax(220px,1fr)) }
+@media (max-width:1100px){ .cols-grid.table-like{ grid-template-columns:repeat(2, minmax(220px,1fr)) } }
+.chk{ display:inline-flex; flex-direction:row; align-items:center; gap:10px; padding:2px 4px; border-radius:8px; white-space:nowrap }
+.chk input{ width:18px; height:18px; margin:0 }
+.cap-label{ font-size:var(--fs-13); font-weight:600; color:var(--ink) }
+.hint{ color:var(--ink-dim); font-size:var(--fs-12) }
+
+/* Table */
+.table-wrap{ overflow:auto }
+.table{ width:100%; border-collapse:separate; border-spacing:0 }
+.table th,.table td{ padding:10px; border-bottom:1px solid var(--muted); vertical-align:top }
+.table th{ font-weight:700; background:var(--row); position:sticky; top:0 }
+
+/* Toast */
+.toast{
+  position:fixed; right:14px; bottom:14px; background:var(--card); border:1px solid var(--muted);
+  border-radius:10px; padding:10px 12px; opacity:0; transform:translateY(8px); transition:.2s;
+  box-shadow:0 8px 24px rgba(0,0,0,.12)
+}
+.toast.show{ opacity:1; transform:translateY(0) }
+
+/* iOS-style theme switch (icons embedded) */
+.ios-input{ position:absolute; opacity:0; pointer-events:none }
+.ios-switch{
+  --w:52px; --h:30px; --k:26px;
+  position:relative; display:inline-block; width:var(--w); height:var(--h);
+  border-radius:999px; background:var(--muted); border:1px solid var(--muted);
+  cursor:pointer; transition:background .18s ease
+}
+.ios-switch .knob{
+  position:absolute; top:50%; left:2px; width:var(--k); height:var(--k);
+  transform:translateY(-50%); border-radius:999px; background:var(--card);
+  box-shadow:0 1px 3px rgba(0,0,0,.35); transition:left .18s ease
+}
+.ios-switch .sun, .ios-switch .moon{
+  position:absolute; top:50%; transform:translateY(-50%); font-size:12px; opacity:.9; pointer-events:none
+}
+.ios-switch .sun{ left:8px }
+.ios-switch .moon{ right:8px; opacity:.4 }
+.ios-input:checked + .ios-switch{ background:var(--brand) }
+.ios-input:checked + .ios-switch .knob{ left:calc(var(--w) - var(--k) - 2px) }
+.ios-input:checked + .ios-switch .sun{ opacity:.5 }
+.ios-input:checked + .ios-switch .moon{ opacity:1 }
+
+/* === Phase E: filter-grid hard caps & select text flow === */
+.filters-grid .f-item,
+.filters-grid .f-item * { min-width: 0; }
+
+.filters-grid input,
+.filters-grid select {
+  width: 100%;
+  max-width: 100%;
+}
+
+/* Make long selected <option> text elide inside the control (browser-safe) */
+.filters-grid select {
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  overflow: hidden;
+}

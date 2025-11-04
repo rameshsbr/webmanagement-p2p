@@ -1,0 +1,203 @@
+:root {
+  --bg: #0b1020;
+  --bg2: #0f1530;
+  --card: rgba(255, 255, 255, 0.06);
+  --text: #e6e8ee;
+  --muted: #9aa3b2;
+  --primary: #4f8cff;
+  --primary-fg: #fff;
+  --border: rgba(255, 255, 255, 0.15);
+  --shadow: 0 10px 30px rgba(0, 0, 0, 0.35);
+  --radius: 16px;
+  --font: ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, Inter, "Helvetica Neue", Arial;
+}
+
+[data-theme='light'] {
+  --bg: #e9eef7;
+  --bg2: #dfe7f5;
+  --card: #fff;
+  --text: #0e1428;
+  --muted: #5b6476;
+  --primary: #355cff;
+  --primary-fg: #fff;
+  --border: rgba(13, 18, 38, 0.12);
+  --shadow: 0 10px 25px rgba(14, 20, 40, 0.1);
+}
+
+* {
+  box-sizing: border-box
+}
+
+html,
+body {
+  height: 100%
+}
+
+body.login-body {
+  margin: 0;
+  color: var(--text);
+  font: 16px/1.45 var(--font);
+  background:
+    radial-gradient(1200px 600px at 10% 10%, var(--bg2), transparent 60%),
+    radial-gradient(900px 500px at 90% 20%, #1b2a6b77, transparent 60%),
+    linear-gradient(160deg, var(--bg), #0a0f1e);
+  display: grid;
+  place-items: center;
+  overflow: auto;
+}
+
+.bg {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  filter: blur(60px) saturate(1.2) opacity(.7);
+}
+
+.login-card {
+  width: min(420px, calc(100% - 32px));
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 28px 26px;
+  backdrop-filter: blur(10px);
+}
+
+.brand {
+  text-align: center;
+  margin-bottom: 12px
+}
+
+.brand .logo {
+  font-size: 42px;
+  margin-bottom: 6px
+}
+
+.brand h1 {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 700
+}
+
+.brand .muted {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px
+}
+
+.form .field {
+  margin: 12px 0
+}
+
+label {
+  display: block;
+  font-size: 12px;
+  color: var(--muted);
+  margin: 0 0 6px;
+  font-weight: 600;
+}
+
+input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  padding: 12px 12px;
+  outline: none;
+}
+
+input:focus {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in oklab, var(--primary) 20%, transparent);
+}
+
+.btn {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.btn.primary {
+  background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 92%, #fff) 0%, var(--primary) 100%);
+  box-shadow: 0 10px 22px color-mix(in oklab, var(--primary) 25%, transparent);
+  border-color: color-mix(in oklab, var(--primary) 70%, #000);
+  color: var(--primary-fg);
+}
+
+.btn.primary:hover {
+  filter: brightness(0.98)
+}
+
+.btn.small {
+  font-size: 12px;
+  padding: 6px 8px
+}
+
+.btn.w-100 {
+  width: 100%
+}
+
+.alert.error {
+  background: #ff525233;
+  border: 1px solid #ff8a8a66;
+  color: #ffd7d7;
+  padding: 10px 12px;
+  border-radius: 10px;
+  font-size: 13px;
+  margin: 10px 0;
+}
+
+.foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 8px
+}
+
+.cf-turnstile {
+  margin-top: 6px
+}
+
+/* --- Centered password field + inline toggle --- */
+.password-wrap {
+  position: relative;
+}
+
+/* Ensure room for the toggle so text doesn’t hide under it */
+.password-wrap input[type="password"],
+.password-wrap input[type="text"] {
+  padding-right: 56px;
+}
+
+/* Toggle = subtle text link (matches Merchant) */
+.password-wrap .toggle-pass {
+  position: absolute;
+  right: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  appearance: none;
+  -webkit-appearance: none;
+  border: 0;
+  background: transparent;
+  padding: 0 6px;
+  margin: 0;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.password-wrap .toggle-pass:hover {
+  text-decoration: underline;
+}
+
+.password-wrap .toggle-pass:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--primary) 40%, transparent);
+  border-radius: 6px;
+  outline-offset: 1px;
+}

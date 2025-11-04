@@ -1,0 +1,913 @@
+<% layout('superadmin/layout') %>
+
+<%
+  const fields = (bank && bank.fields) || {};
+  const core = fields.core || {};
+  const extra = Array.isArray(fields.extra) ? fields.extra.slice().sort((a,b)=> (a.order||0)-(b.order||0)) : [];
+  function coreVisible(k) {
+    if (core[k] && typeof core[k].visible === 'boolean') return !!core[k].visible;
+    return k === 'iban' ? false : true;
+  }
+  function coreLabel(k, fallback) {
+    const v = core[k] && typeof core[k].label === 'string' ? core[k].label : '';
+    return v || fallback;
+  }
+  function coreOrderDefault(k) {
+    // Stable defaults for known fields; promoted columns get 100+ index (set inline below)
+    const map = { holderName:10, bankName:20, accountNo:30, iban:40, label:50 };
+    return map[k] || 999;
+  }
+  function titleize(s) {
+    return String(s||'')
+      .replace(/[_\-]+/g, ' ')
+      .replace(/([a-z0-9])([A-Z])/g,'$1 $2')
+      .replace(/\s+/g,' ')
+      .trim()
+      .replace(/\b\w/g, c => c.toUpperCase());
+  }
+%>
+
+<style>
+  .form-grid { display:grid; grid-template-columns: repeat(12, 1fr); gap: 14px; align-items:end; }
+  .col-2 { grid-column: span 2; }
+  .col-3 { grid-column: span 3; }
+  .col-4 { grid-column: span 4; }
+  .col-5 { grid-column: span 5; }
+  .col-6 { grid-column: span 6; }
+  .col-8 { grid-column: span 8; }
+  .col-12{ grid-column: 1 / -1; }
+
+  .w-xxs { max-width: 110px; }
+  .w-xs  { max-width: 140px; }
+  .w-sm  { max-width: 200px; }
+  .w-md  { max-width: 320px; }
+  .w-lg  { max-width: 520px; }
+
+  .stack { display:flex; flex-direction:column; gap:6px; }
+  .rowhead { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+  .labelline { display:flex; align-items:center; gap:8px; }
+  .toolsline { display:flex; align-items:center; gap:10px; }
+  .tight { display:flex; align-items:center; gap:10px; }
+  .control-row { display:flex; align-items:center; gap:10px; }
+  .control-row > .grow { flex: 1 1 auto; min-width: 160px; }
+
+  .ios-toggle-switch { position: relative; display:inline-block; width: 44px; height: 24px; }
+  .ios-toggle-switch input { opacity:0; width:0; height:0; }
+  .ios-toggle-switch .slider { position:absolute; inset:0; cursor:pointer; background:#cbd5e1; transition:.25s; border-radius:24px; box-shadow: inset 0 0 0 1px #b6c0cf; }
+  .ios-toggle-switch .slider:before { content:""; position:absolute; height:18px; width:18px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.25s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
+  .ios-toggle-switch input:checked + .slider { background:#34c759; box-shadow: inset 0 0 0 1px #2fb24f; }
+  .ios-toggle-switch input:checked + .slider:before { transform: translateX(20px); }
+
+  #extraTable { display:none; }
+  .muted { color:#6b7280; font-size:12px; }
+  .builder { display:grid; grid-template-columns: 1fr 200px 1fr 140px 120px; gap:8px; align-items:center; margin: 8px 0 8px; }
+
+  .iconbtn, .pencil-core, .trash-core { border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:6px; cursor:pointer; line-height:0; }
+  .iconbtn:hover, .pencil-core:hover, .trash-core:hover { background:#f9fafb; }
+
+  .editable-label[data-editing="1"] { outline: 2px solid #93c5fd; background: #eff6ff; border-radius: 6px; padding: 0 4px; }
+
+  #extraMount { display:grid; grid-template-columns: repeat(12, 1fr); gap:14px; }
+  .extra-card { grid-column: span 6; display:flex; flex-direction:column; gap:6px; }
+
+  .promoted-grid { display:grid; grid-template-columns: repeat(12, 1fr); gap:14px; }
+
+  /* Drag & drop */
+  .drag-handle { border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:6px; cursor:grab; line-height:0; }
+  .drag-handle:active { cursor:grabbing; }
+  .draggable.dragging { opacity:.6; }
+
+  /* spacing between meta row and core grid */
+  .section-gap { margin-top: 6px; }
+</style>
+
+<div class="page">
+  <h1 class="mb-3"><%= bank ? 'Edit Bank' : 'New Bank' %></h1>
+
+  <% if (errors && errors.length) { %>
+    <div class="alert alert-danger">
+      <ul>
+        <% errors.forEach(e => { %>
+          <li><%= e.message || e %></li>
+        <% }) %>
+      </ul>
+    </div>
+  <% } %>
+
+  <form id="bankForm" method="post" action="<%= bank ? '/superadmin/banks/' + bank.id : '/superadmin/banks' %>">
+    <!-- Hidden holders for custom core labels -->
+    <input type="hidden" name="core_label_holderName" value="<%- coreLabel('holderName','Account Holder Name') %>">
+    <input type="hidden" name="core_label_bankName"   value="<%- coreLabel('bankName','Bank Name') %>">
+    <input type="hidden" name="core_label_accountNo"  value="<%- coreLabel('accountNo','Account / PayID Value') %>">
+    <input type="hidden" name="core_label_iban"       value="<%- coreLabel('iban','IBAN (optional)') %>">
+    <input type="hidden" name="core_label_label"      value="<%- coreLabel('label','Label (shown to payers)') %>">
+
+    <!-- Meta row (NOT draggable) -->
+    <div class="form-grid">
+      <div class="stack col-4">
+        <label>Merchant</label>
+        <select name="merchantId" class="w-md">
+          <option value="global" <%= (!bank || bank.merchantId===null) ? 'selected' : '' %>>GLOBAL</option>
+          <% merchants.forEach(m => { %>
+            <option value="<%= m.id %>" <%= bank && bank.merchantId===m.id ? 'selected' : '' %>><%= m.name %></option>
+          <% }) %>
+        </select>
+      </div>
+
+      <div class="stack col-2">
+        <label>Currency</label>
+        <input name="currency" class="w-xxs" value="<%= bank ? bank.currency : 'AUD' %>" required />
+      </div>
+
+      <div class="stack col-3">
+        <label>Method</label>
+        <select name="method" class="w-sm">
+          <option value="OSKO" <%= !bank || bank.method==='OSKO' ? 'selected' : '' %>>OSKO</option>
+          <option value="PAYID" <%= bank && bank.method==='PAYID' ? 'selected' : '' %>>PayID</option>
+        </select>
+      </div>
+
+      <div class="stack col-3">
+        <label class="labelline">
+          <span>Active</span>
+          <label class="ios-toggle-switch">
+            <input type="checkbox" name="active" <%= bank ? (bank.active ? 'checked' : '') : 'checked' %> />
+            <span class="slider"></span>
+          </label>
+        </label>
+      </div>
+    </div>
+
+    <!-- CORE grid (draggable) -->
+    <div id="coreGrid" class="form-grid section-gap">
+      <!-- Core: Holder Name -->
+      <div class="stack col-6 core-block draggable" data-core-block="holderName">
+        <div class="rowhead">
+          <span class="labelline">
+            <span class="editable-label" data-core="holderName" data-default="Account Holder Name"><%- coreLabel('holderName','Account Holder Name') %></span>
+            <button type="button" class="pencil-core" data-edit="holderName" title="Rename">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="trash-core" data-delete-core="holderName" title="Remove this field">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <!-- visibility + deleted flags -->
+            <input type="hidden" name="core_visible_holderName" value="<%= coreVisible('holderName') ? 1 : 0 %>">
+            <input type="hidden" name="core_deleted_holderName" value="0">
+            <label class="ios-toggle-switch">
+              <input type="checkbox" data-sync="core_visible_holderName" <%= coreVisible('holderName') ? 'checked' : '' %> />
+              <span class="slider"></span>
+            </label>
+          </span>
+          <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <input type="hidden" name="core_order_holderName" value="<%= (core.holderName && typeof core.holderName.order==='number') ? core.holderName.order : coreOrderDefault('holderName') %>">
+        <div class="control-row">
+          <input name="holderName" class="w-md grow" value="<%= bank ? bank.holderName : '' %>" required />
+        </div>
+      </div>
+
+      <!-- Core: Bank Name -->
+      <div class="stack col-6 core-block draggable" data-core-block="bankName">
+        <div class="rowhead">
+          <span class="labelline">
+            <span class="editable-label" data-core="bankName" data-default="Bank Name"><%- coreLabel('bankName','Bank Name') %></span>
+            <button type="button" class="pencil-core" data-edit="bankName" title="Rename">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="trash-core" data-delete-core="bankName" title="Remove this field">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <input type="hidden" name="core_visible_bankName" value="<%= coreVisible('bankName') ? 1 : 0 %>">
+            <input type="hidden" name="core_deleted_bankName" value="0">
+            <label class="ios-toggle-switch">
+              <input type="checkbox" data-sync="core_visible_bankName" <%= coreVisible('bankName') ? 'checked' : '' %> />
+              <span class="slider"></span>
+            </label>
+          </span>
+          <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <input type="hidden" name="core_order_bankName" value="<%= (core.bankName && typeof core.bankName.order==='number') ? core.bankName.order : coreOrderDefault('bankName') %>">
+        <div class="control-row">
+          <input name="bankName" class="w-md grow" value="<%= bank ? bank.bankName : '' %>" required />
+        </div>
+      </div>
+
+      <!-- Core: Account / PayID -->
+      <div class="stack col-6 core-block draggable" data-core-block="accountNo">
+        <div class="rowhead">
+          <span class="labelline">
+            <span class="editable-label" data-core="accountNo" data-default="Account / PayID Value"><%- coreLabel('accountNo','Account / PayID Value') %></span>
+            <button type="button" class="pencil-core" data-edit="accountNo" title="Rename">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="trash-core" data-delete-core="accountNo" title="Remove this field">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <input type="hidden" name="core_visible_accountNo" value="<%= coreVisible('accountNo') ? 1 : 0 %>">
+            <input type="hidden" name="core_deleted_accountNo" value="0">
+            <label class="ios-toggle-switch">
+              <input type="checkbox" data-sync="core_visible_accountNo" <%= coreVisible('accountNo') ? 'checked' : '' %> />
+              <span class="slider"></span>
+            </label>
+          </span>
+          <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <input type="hidden" name="core_order_accountNo" value="<%= (core.accountNo && typeof core.accountNo.order==='number') ? core.accountNo.order : coreOrderDefault('accountNo') %>">
+        <div class="control-row">
+          <input name="accountNo" class="w-md grow" value="<%= bank ? bank.accountNo : '' %>" required />
+        </div>
+      </div>
+
+      <!-- Core: IBAN -->
+      <div class="stack col-6 core-block draggable" data-core-block="iban">
+        <div class="rowhead">
+          <span class="labelline">
+            <span class="editable-label" data-core="iban" data-default="IBAN (optional)"><%- coreLabel('iban','IBAN (optional)') %></span>
+            <button type="button" class="pencil-core" data-edit="iban" title="Rename">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="trash-core" data-delete-core="iban" title="Remove this field">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <input type="hidden" name="core_visible_iban" value="<%= coreVisible('iban') ? 1 : 0 %>">
+            <input type="hidden" name="core_deleted_iban" value="0">
+            <label class="ios-toggle-switch">
+              <input type="checkbox" data-sync="core_visible_iban" <%= coreVisible('iban') ? 'checked' : '' %> />
+              <span class="slider"></span>
+            </label>
+          </span>
+          <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <input type="hidden" name="core_order_iban" value="<%= (core.iban && typeof core.iban.order==='number') ? core.iban.order : coreOrderDefault('iban') %>">
+        <div class="control-row">
+          <input name="iban" class="w-md grow" value="<%= bank && bank.iban ? bank.iban : '' %>" />
+        </div>
+      </div>
+
+      <!-- Core: Label -->
+      <div class="stack col-6 core-block draggable" data-core-block="label">
+        <div class="rowhead">
+          <span class="labelline">
+            <span class="editable-label" data-core="label" data-default="Label (shown to payers)"><%- coreLabel('label','Label (shown to payers)') %></span>
+            <button type="button" class="pencil-core" data-edit="label" title="Rename">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <button type="button" class="trash-core" data-delete-core="label" title="Remove this field">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </button>
+            <input type="hidden" name="core_visible_label" value="<%= coreVisible('label') ? 1 : 0 %>">
+            <input type="hidden" name="core_deleted_label" value="0">
+            <label class="ios-toggle-switch">
+              <input type="checkbox" data-sync="core_visible_label" <%= coreVisible('label') ? 'checked' : '' %> />
+              <span class="slider"></span>
+            </label>
+          </span>
+          <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+          </button>
+        </div>
+        <input type="hidden" name="core_order_label" value="<%= (core.label && typeof core.label.order==='number') ? core.label.order : coreOrderDefault('label') %>">
+        <div class="control-row">
+          <input name="label" class="w-md grow" value="<%= bank && bank.label ? bank.label : '' %>" />
+        </div>
+      </div>
+    </div>
+
+    <!-- Promoted columns (auto from DB schema) -->
+    <% if (Array.isArray(promotedCols) && promotedCols.length) { %>
+      <div class="col-12 section-gap">
+        <div class="rowhead">
+          <h3>Additional Database Columns</h3>
+          <span class="muted">These are real columns on <code>BankAccount</code>, discovered from the database.</span>
+        </div>
+      </div>
+      <div class="promoted-grid col-12">
+        <% promotedCols.forEach(function(col, i) { 
+             const key = col.name;
+             const defLabel = titleize(key);
+             const vis = coreVisible(key);
+             const val = bank ? bank[key] : '';
+             const orderVal = (core[key] && typeof core[key].order === 'number') ? core[key].order : (100 + i);
+        %>
+          <div class="stack col-6 core-block draggable" data-core-block="<%- key %>">
+            <div class="rowhead">
+              <span class="labelline">
+                <span class="editable-label" data-core="<%- key %>" data-default="<%- defLabel %>"><%- coreLabel(key, defLabel) %></span>
+                <button type="button" class="pencil-core" data-edit="<%- key %>" title="Rename">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <button type="button" class="trash-core" data-delete-core="<%- key %>" title="Remove this field">
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <input type="hidden" name="core_visible_<%- key %>" value="<%= vis ? 1 : 0 %>">
+                <input type="hidden" name="core_deleted_<%- key %>" value="0">
+                <label class="ios-toggle-switch">
+                  <input type="checkbox" data-sync="core_visible_<%- key %>" <%= vis ? 'checked' : '' %> />
+                  <span class="slider"></span>
+                </label>
+              </span>
+              <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+              </button>
+            </div>
+            <input type="hidden" name="core_order_<%- key %>" value="<%= orderVal %>">
+            <div class="control-row">
+              <% if (col.input === 'checkbox') { %>
+                <label class="ios-toggle-switch">
+                  <input type="checkbox" name="<%- key %>" <%= val ? 'checked' : '' %> />
+                  <span class="slider"></span>
+                </label>
+              <% } else if (col.input === 'number') { %>
+                <input name="<%- key %>" type="number" class="w-md grow" value="<%- (val ?? '') %>" />
+              <% } else if (col.input === 'date') { %>
+                <input name="<%- key %>" type="date" class="w-md grow" value="<%- val ? new Date(val).toISOString().slice(0,10) : '' %>" />
+              <% } else { %>
+                <input name="<%- key %>" class="w-md grow" value="<%- (val ?? '') %>" />
+              <% } %>
+            </div>
+            <input type="hidden" name="core_label_<%- key %>" value="<%- coreLabel(key, defLabel) %>">
+          </div>
+        <% }) %>
+      </div>
+    <% } %>
+
+    <!-- Extra cards mount -->
+    <div class="col-12 section-gap">
+      <div id="extraMount"></div>
+    </div>
+
+    <!-- Instructions (NOT draggable) -->
+    <div class="form-grid section-gap">
+      <div class="stack col-12">
+        <label>Instructions (shown on deposit)</label>
+        <textarea name="instructions" rows="3" class="w-lg"><%= bank && bank.instructions ? bank.instructions : '' %></textarea>
+      </div>
+    </div>
+
+    <div class="mt-3">
+      <div class="rowhead">
+        <h3 class="mb-2">Additional fields</h3>
+        <span class="muted">Drag cards to reorder. New fields appear above as cards. They’re saved with “Save additional” or the main Save button.</span>
+      </div>
+
+      <div id="builder" class="builder">
+        <input id="b_label" placeholder="Label (e.g. BSB)" />
+        <select id="b_type">
+          <% const typeOptions = ['text','textarea','number','email','tel','date','url','note']; %>
+          <% typeOptions.forEach(t => { %>
+            <option value="<%= t %>" <%= t==='number' ? 'selected' : '' %>><%= t === 'note' ? 'note (read-only)' : t %></option>
+          <% }) %>
+        </select>
+        <input id="b_value" placeholder="Value (e.g. 123456)" />
+        <div class="tight">
+          <span>Visible</span>
+          <label class="ios-toggle-switch">
+            <input type="checkbox" id="b_visible" checked />
+            <span class="slider"></span>
+          </label>
+        </div>
+        <div class="toolsline">
+          <button type="button" class="btn btn-primary" id="b_add">Add field</button>
+          <button type="button" class="btn" id="b_save">Save additional</button>
+        </div>
+      </div>
+
+      <table class="table compact mt-1" id="extraTable">
+        <thead>
+          <tr>
+            <th class="handlecell"></th>
+            <th>Label</th>
+            <th>Type</th>
+            <th>Value</th>
+            <th>Visible</th>
+            <th class="col-order">Order</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% const TYPE_LIST = ['text','textarea','number','email','tel','date','url','note']; %>
+          <% if (extra.length) { %>
+            <% extra.forEach((f) => { %>
+              <tr data-uid="x<%- (Math.random().toString(36).slice(2,10)) %>">
+                <td class="menu"><button type="button" class="iconbtn editBtn" title="Edit">
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button></td>
+                <td>
+                  <input name="extra_label[]" value="<%- f.label %>" />
+                  <input type="hidden" name="extra_key[]" value="<%- f.key || '' %>" />
+                </td>
+                <td>
+                  <select name="extra_type[]">
+                    <% TYPE_LIST.forEach(t => { %>
+                      <option value="<%= t %>" <%= f.type===t ? 'selected' : '' %>><%= t === 'note' ? 'note (read-only)' : t %></option>
+                    <% }) %>
+                  </select>
+                </td>
+                <td><input name="extra_value[]" value="<%- f.value || '' %>" /></td>
+                <td>
+                  <input type="hidden" name="extra_visible[]" value="<%= f.visible ? 1 : 0 %>" />
+                  <input type="checkbox" class="visible-toggle" <%= f.visible ? 'checked' : '' %> />
+                </td>
+                <td class="col-order"><input name="extra_order[]" type="number" value="<%- typeof f.order==='number' ? f.order : 0 %>" /></td>
+              </tr>
+            <% }) %>
+          <% } %>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-3">
+      <button type="submit" class="btn btn-primary">Save</button>
+      <a class="btn" href="/superadmin/banks">Cancel</a>
+    </div>
+  </form>
+</div>
+
+<script>
+(function () {
+  const form = document.getElementById('bankForm');
+
+  /* sync helper for the core visibility checkboxes (checkbox controls hidden input) */
+  function wireCoreSync() {
+    document.querySelectorAll('input[type="checkbox"][data-sync]').forEach(cb => {
+      cb.addEventListener('change', () => {
+        const name = cb.getAttribute('data-sync');
+        const hidden = form.querySelector('input[type="hidden"][name="'+name+'"]');
+        if (hidden) hidden.value = cb.checked ? '1' : '0';
+      });
+    });
+  }
+  wireCoreSync();
+
+  /* Inline label edit for core/promo fields */
+  function startInlineEdit(span, hidden) {
+    if (!span || !hidden || span.dataset.editing === '1') return;
+    span.dataset.editing = '1';
+    const current = span.textContent || span.getAttribute('data-default') || '';
+    const inp = document.createElement('input');
+    inp.type = 'text';
+    inp.value = current;
+    inp.style.maxWidth = '260px';
+    function finalize(save) {
+      const def = span.getAttribute('data-default') || '';
+      const val = (save ? inp.value.trim() : current) || def;
+      span.textContent = val;
+      hidden.value = val === def ? '' : val;
+      span.dataset.editing = '0';
+      span.classList.remove('editing');
+    }
+    inp.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); finalize(true); }
+      if (e.key === 'Escape') { e.preventDefault(); finalize(false); }
+    });
+    inp.addEventListener('blur', () => finalize(true));
+    span.textContent = ''; span.appendChild(inp); span.classList.add('editing');
+    inp.focus(); inp.select();
+  }
+  document.querySelectorAll('.pencil-core').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-edit');
+      startInlineEdit(
+        document.querySelector('.editable-label[data-core="'+key+'"]'),
+        document.querySelector('input[name="core_label_'+key+'"]')
+      );
+    });
+  });
+
+  /* trash a core/promo field: uncheck + set hidden visible=0, mark deleted=1, disable value inputs, hide */
+  document.querySelectorAll('.trash-core').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const key = btn.getAttribute('data-delete-core');
+      const block = document.querySelector('.core-block[data-core-block="'+key+'"]');
+      if (!block) return;
+
+      const cb = block.querySelector('input[type="checkbox"][data-sync]');
+      const hiddenVisible = block.querySelector('input[type="hidden"][name="core_visible_'+key+'"]');
+      const hiddenDeleted = block.querySelector('input[type="hidden"][name="core_deleted_'+key+'"]');
+
+      if (cb) cb.checked = false;
+      if (hiddenVisible) hiddenVisible.value = '0';
+      if (hiddenDeleted) hiddenDeleted.value = '1';
+
+      block.querySelectorAll('input, select, textarea').forEach(el => {
+        const n = (el.name || '');
+        const keep =
+          el.type === 'hidden' &&
+          (n.startsWith('core_visible_') || n.startsWith('core_deleted_') || n.startsWith('core_label_') || n.startsWith('core_order_'));
+        if (!keep) el.disabled = true;
+      });
+
+      block.style.display = 'none';
+    });
+  });
+
+  /* ---------------- Grid-aware Drag & Drop (row-major: top→bottom, left→right) ---------------- */
+  function makeSortableGrid(container, itemSelector, onSorted) {
+    let draggingEl = null;
+    const containerRect = () => container.getBoundingClientRect();
+
+    function readingOrderItems() {
+      const items = Array.from(container.querySelectorAll(':scope > ' + itemSelector));
+      const crect = containerRect();
+      return items
+        .map(el => {
+          const r = el.getBoundingClientRect();
+          // use position relative to container to reduce jitter
+          const cx = (r.left - crect.left) + r.width/2;
+          const cy = (r.top  - crect.top ) + r.height/2;
+          return { el, key: cy * 10000 + cx };
+        })
+        .sort((a,b) => a.key - b.key)
+        .map(x => x.el);
+    }
+
+    function insertByPoint(x, y) {
+      const crect = containerRect();
+      const relX = x - crect.left;
+      const relY = y - crect.top;
+      const items = readingOrderItems().filter(el => el !== draggingEl);
+      const pKey = relY * 10000 + relX;
+      let idx = items.length;
+      for (let i=0;i<items.length;i++) {
+        const r = items[i].getBoundingClientRect();
+        const cx = (r.left - crect.left) + r.width/2;
+        const cy = (r.top  - crect.top ) + r.height/2;
+        const key = cy * 10000 + cx;
+        if (pKey < key) { idx = i; break; }
+      }
+      const ref = items[idx] || null;
+      if (ref) container.insertBefore(draggingEl, ref);
+      else container.appendChild(draggingEl);
+    }
+
+    container.addEventListener('dragstart', (e) => {
+      const handle = e.target.closest('.drag-handle');
+      if (!handle) { e.preventDefault(); return; }
+      const item = handle.closest(itemSelector);
+      if (!item || item.parentElement !== container) { e.preventDefault(); return; }
+      draggingEl = item;
+      draggingEl.classList.add('dragging');
+      e.dataTransfer.effectAllowed = 'move';
+      try { e.dataTransfer.setData('text/plain', ''); } catch {}
+    });
+
+    container.addEventListener('dragend', () => {
+      if (draggingEl) draggingEl.classList.remove('dragging');
+      draggingEl = null;
+      onSorted && onSorted();
+    });
+
+    container.addEventListener('dragover', (e) => {
+      if (!draggingEl) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+      insertByPoint(e.clientX, e.clientY);
+    });
+  }
+
+  /* Writers: convert DOM order → 10, 20, 30... */
+  function writeCoreOrders() {
+    const container = document.getElementById('coreGrid');
+    const items = Array.from(container.querySelectorAll(':scope > .core-block.draggable'));
+    items.forEach((el, idx) => {
+      const key = el.getAttribute('data-core-block');
+      const inp = form.querySelector('input[name="core_order_'+key+'"]');
+      if (inp) inp.value = String((idx+1)*10);
+    });
+  }
+  function writePromotedOrders() {
+    const container = document.querySelector('.promoted-grid');
+    if (!container) return;
+    const items = Array.from(container.querySelectorAll(':scope > .core-block.draggable'));
+    items.forEach((el, idx) => {
+      const key = el.getAttribute('data-core-block');
+      const inp = form.querySelector('input[name="core_order_'+key+'"]');
+      if (inp) inp.value = String((idx+1)*10 + 100);
+    });
+  }
+  function writeExtraOrders() {
+    const container = document.getElementById('extraMount');
+    const cards = Array.from(container.querySelectorAll(':scope > .extra-card.draggable'));
+    cards.forEach((card, idx) => {
+      const uid = card.dataset.uid;
+      const tr = document.querySelector('#extraTable tbody tr[data-uid="'+uid+'"]');
+      const inp = tr && tr.querySelector('input[name="extra_order[]"]');
+      if (inp) inp.value = String((idx+1)*10);
+    });
+  }
+
+  /* ===== EXTRA helpers ===== */
+  function readExtraOrderByTr(tr) {
+    const inp = tr.querySelector('input[name="extra_order[]"]');
+    return Number(inp?.value || 0);
+  }
+  function extraRowsSorted() {
+    return Array.from(document.querySelectorAll('#extraTable tbody tr'))
+      .map(tr => ({ tr, uid: tr.dataset.uid, order: readExtraOrderByTr(tr) }))
+      .sort((a,b) => a.order - b.order);
+  }
+  function nextExtraOrder() {
+    const arr = extraRowsSorted();
+    if (!arr.length) return 10;
+    return Math.max(...arr.map(x => x.order || 0)) + 10;
+  }
+
+  /* EXTRA cards (mirror hidden table) */
+  const TYPE_LIST = ['text','textarea','number','email','tel','date','url','note'];
+  const tbody = document.querySelector('#extraTable tbody');
+  const mount = document.getElementById('extraMount');
+  function uid() { return 'x' + Math.random().toString(36).slice(2, 10); }
+
+  function renderCardForRow(tr) {
+    if (!tr) return;
+    if (!tr.dataset.uid) tr.dataset.uid = uid();
+    const id = tr.dataset.uid;
+
+    const inLabel  = tr.querySelector('input[name="extra_label[]"]');
+    const inType   = tr.querySelector('select[name="extra_type[]"]');
+    const inValue  = tr.querySelector('input[name="extra_value[]"]');
+    const inVisHid = tr.querySelector('input[name="extra_visible[]"]');
+    const inOrder  = tr.querySelector('input[name="extra_order[]"]');
+    const startOrder = Number(inOrder && inOrder.value ? inOrder.value : 0) || nextExtraOrder();
+    if (inOrder) inOrder.value = String(startOrder);
+
+    const card = document.createElement('div');
+    card.className = 'extra-card draggable';
+    card.dataset.uid = id;
+    card.innerHTML = `
+  <div class="rowhead">
+    <span class="labelline">
+      <span class="editable-label" data-extra="${id}">${inLabel.value || ''}</span>
+      <button type="button" class="iconbtn pencil-extra" title="Rename">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <button type="button" class="iconbtn trash-extra" title="Delete">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button>
+      <label class="ios-toggle-switch">
+        <input type="checkbox" class="extra-visible" ${inVisHid.value==='1'?'checked':''} />
+        <span class="slider"></span>
+      </label>
+    </span>
+    <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+    </button>
+  </div>
+  <div class="control-row">
+    <span class="grow" data-extra-control></span>
+  </div>
+`;
+
+    function renderControl() {
+      const slot = card.querySelector('[data-extra-control]');
+      slot.innerHTML = '';
+      const t = inType.value;
+      let el;
+      if (t === 'textarea' || t === 'note') {
+        el = document.createElement('textarea');
+        el.rows = 2;
+        el.value = inValue.value || '';
+        if (t === 'note') el.readOnly = true;
+      } else {
+        el = document.createElement('input');
+        el.type = (t === 'number' || t === 'email' || t === 'tel' || t === 'date' || t === 'url') ? t : 'text';
+        el.value = inValue.value || '';
+      }
+      el.className = 'w-md grow';
+      el.addEventListener('input', () => { inValue.value = el.value; });
+      slot.appendChild(el);
+    }
+
+    card.querySelector('.extra-visible').addEventListener('change', (e) => {
+      inVisHid.value = e.target.checked ? '1' : '0';
+    });
+
+    card.querySelector('.pencil-extra').addEventListener('click', () => {
+      const span = card.querySelector('.editable-label[data-extra="'+id+'"]');
+      if (span.dataset.editing === '1') return;
+      span.dataset.editing = '1';
+      const current = span.textContent;
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.value = current;
+      inp.style.maxWidth = '260px';
+      function finish(save) {
+        const v = save ? inp.value.trim() : current;
+        span.textContent = v || current;
+        inLabel.value = span.textContent;
+        span.dataset.editing = '0';
+      }
+      inp.addEventListener('keydown', (e)=>{ if (e.key==='Enter'){ e.preventDefault(); finish(true); } if (e.key==='Escape'){ e.preventDefault(); finish(false); }});
+      inp.addEventListener('blur', ()=> finish(true));
+      span.textContent = ''; span.appendChild(inp); inp.focus(); inp.select();
+    });
+
+    card.querySelector('.trash-extra').addEventListener('click', () => {
+      tr.remove();
+      card.remove();
+      writeExtraOrders();
+    });
+
+    mount.appendChild(card);
+    renderControl();
+  }
+
+  Array.from(tbody.querySelectorAll('tr')).forEach(tr => renderCardForRow(tr));
+
+  /* Builder */
+  const b = {
+    label:  document.getElementById('b_label'),
+    type:   document.getElementById('b_type'),
+    value:  document.getElementById('b_value'),
+    vis:    document.getElementById('b_visible'),
+    add:    document.getElementById('b_add'),
+    save:   document.getElementById('b_save'),
+  };
+
+  function slug(s) {
+    return String(s || '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+      .slice(0, 40) || 'field';
+  }
+
+  const CORE_MATCH = [
+    { key:'holderName', re: [/^account\s*holder\s*name$/i, /^holder\s*name$/i, /^account\s*name$/i] },
+    { key:'bankName',   re: [/^bank\s*name$/i] },
+    { key:'accountNo',  re: [/^account(\s*number|\s*no\.?)?$/i, /^payid/i, /^account\s*number\s*\/\s*payid/i] },
+    { key:'iban',       re: [/^iban/i] },
+    { key:'label',      re: [/^label(\s*\(shown to payers\))?$/i, /^label$/i] },
+  ];
+
+  function tryPromoteToCore(labelText, value) {
+    const L = String(labelText||'').trim();
+    for (const item of CORE_MATCH) {
+      if (item.re.some(r => r.test(L))) {
+        const block = document.querySelector('.core-block[data-core-block="'+item.key+'"]');
+        if (block) {
+          block.style.display = '';
+          block.querySelectorAll('[disabled]').forEach(el => el.disabled = false);
+
+          const showToggle = block.querySelector('input[type="checkbox"][data-sync]');
+          const hiddenVisible = block.querySelector('input[type="hidden"][name="core_visible_'+item.key+'"]');
+          const hiddenDeleted = block.querySelector('input[type="hidden"][name="core_deleted_'+item.key+'"]');
+          if (showToggle) showToggle.checked = true;
+          if (hiddenVisible) hiddenVisible.value = '1';
+          if (hiddenDeleted) hiddenDeleted.value = '0';
+
+          const input = block.querySelector('input[name="'+item.key+'"], textarea[name="'+item.key+'"]');
+          if (input && (value||'').trim()) input.value = value;
+        }
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function addExtraRowViaBuilder() {
+    const label = (b.label.value || '').trim();
+    if (!label) { b.label.focus(); return; }
+    const type  = b.type.value;
+    const value = b.value.value;
+
+    if (tryPromoteToCore(label, value)) {
+      b.label.value = ''; b.value.value = ''; b.vis.checked = true;
+      return;
+    }
+
+    const ord = nextExtraOrder();
+
+    const tr = document.createElement('tr');
+    tr.dataset.uid = 'x' + Math.random().toString(36).slice(2,10);
+    tr.innerHTML = `
+      <td class="menu"><button type="button" class="iconbtn editBtn" title="Edit">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+      </button></td>
+      <td>
+        <input name="extra_label[]" value="${label.replace(/"/g,'&quot;')}" />
+        <input type="hidden" name="extra_key[]" value="${slug(label).replace(/"/g,'&quot;')}" />
+      </td>
+      <td>
+        <select name="extra_type[]">
+          ${TYPE_LIST.map(t => `<option value="${t}" ${t===type?'selected':''}>${t==='note'?'note (read-only)':t}</option>`).join('')}
+        </select>
+      </td>
+      <td><input name="extra_value[]" value="${(value||'').replace(/"/g,'&quot;')}" /></td>
+      <td>
+        <input type="hidden" name="extra_visible[]" value="${b.vis.checked ? '1' : '0'}" />
+        <input type="checkbox" class="visible-toggle" ${b.vis.checked?'checked':''} />
+      </td>
+      <td class="col-order"><input name="extra_order[]" type="number" value="${ord}" /></td>
+    `;
+    tbody.appendChild(tr);
+    renderCardForRow(tr);
+    writeExtraOrders();
+
+    b.label.value = ''; b.value.value = ''; b.vis.checked = true;
+  }
+
+  if (b.add) b.add.addEventListener('click', addExtraRowViaBuilder);
+
+  /* Save additional via fetch; ensure visibility + orders */
+  function syncCoreVisibilityBeforeSend() {
+    document.querySelectorAll('input[type="checkbox"][data-sync]').forEach(cb => {
+      const name = cb.getAttribute('data-sync');
+      const hidden = form.querySelector('input[type="hidden"][name="'+name+'"]');
+      if (hidden) hidden.value = cb.checked ? '1' : '0';
+    });
+  }
+
+  if (b.save) {
+    b.save.addEventListener('click', async () => {
+      if ((b.label.value || '').trim()) addExtraRowViaBuilder();
+      syncCoreVisibilityBeforeSend();
+      writeCoreOrders();
+      writePromotedOrders();
+      writeExtraOrders();
+      const fd = new FormData(form);
+      try {
+        const resp = await fetch(form.action, {
+          method: 'POST',
+          body: fd,
+          headers: { 'X-Requested-With': 'XMLHttpRequest' },
+          credentials: 'same-origin'
+        });
+        if (!resp.ok) throw new Error('save failed');
+        <% if (bank && bank.id) { %>
+          window.location.href = "/superadmin/banks/<%- bank.id %>/edit?saved=1";
+        <% } else { %>
+          window.location.href = "/superadmin/banks";
+        <% } %>
+      } catch {
+        form.submit();
+      }
+    });
+  }
+
+  /* extras defensive sync (if toggled inside hidden table) */
+  const tbodyEl = document.querySelector('#extraTable tbody');
+  tbodyEl.addEventListener('change', function (e) {
+    const t = e.target;
+    if (t && t.classList && t.classList.contains('visible-toggle')) {
+      const row = t.closest('tr');
+      const hidden = row && row.querySelector('input[type="hidden"][name="extra_visible[]"]');
+      if (hidden) hidden.value = t.checked ? '1' : '0';
+    }
+  });
+
+  /* Apply SAVED ORDER on load — this fixes "reopens in original order" */
+  function applySavedOrder(container, selector, prefix) {
+    if (!container) return;
+    const items = Array.from(container.querySelectorAll(':scope > ' + selector));
+    const scored = items.map(el => {
+      const key = el.getAttribute('data-core-block');
+      const inp = form.querySelector('input[name="'+prefix+key+'"]');
+      const ord = Number(inp && inp.value ? inp.value : 0);
+      return { el, ord: Number.isFinite(ord) ? ord : 9999 };
+    }).sort((a,b) => a.ord - b.ord);
+    scored.forEach(s => container.appendChild(s.el));
+  }
+  applySavedOrder(document.getElementById('coreGrid'), '.core-block.draggable', 'core_order_');
+  applySavedOrder(document.querySelector('.promoted-grid'), '.core-block.draggable', 'core_order_');
+
+  // Ensure extra cards are shown in saved order too
+  function applySavedExtraCardOrder() {
+    const pairs = [];
+    const cards = Array.from(document.querySelectorAll('#extraMount > .extra-card.draggable'));
+    cards.forEach(card => {
+      const uid = card.dataset.uid;
+      const tr = document.querySelector('#extraTable tbody tr[data-uid="'+uid+'"]');
+      const ord = Number(tr && tr.querySelector('input[name="extra_order[]"]')?.value || 0) || 0;
+      pairs.push({ card, ord });
+    });
+    pairs.sort((a,b) => a.ord - b.ord).forEach(p => mount.appendChild(p.card));
+  }
+  applySavedExtraCardOrder();
+
+  /* Make sections sortable (ONLY the dedicated containers) */
+  const coreContainer = document.getElementById('coreGrid');
+  const promotedContainer = document.querySelector('.promoted-grid');
+  const extraContainer = document.getElementById('extraMount');
+
+  makeSortableGrid(coreContainer, '.core-block.draggable', writeCoreOrders);
+  if (promotedContainer) makeSortableGrid(promotedContainer, '.core-block.draggable', writePromotedOrders);
+  makeSortableGrid(extraContainer, '.extra-card.draggable', writeExtraOrders);
+
+  /* On full submit finalize vis + orders */
+  form.addEventListener('submit', function () {
+    syncCoreVisibilityBeforeSend();
+    writeCoreOrders();
+    writePromotedOrders();
+    writeExtraOrders();
+  });
+})();
+</script>

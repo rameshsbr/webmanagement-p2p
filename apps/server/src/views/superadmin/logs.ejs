@@ -1,0 +1,61 @@
+<% layout('superadmin/layout') -%>
+
+<div class="page-chrome">
+  <h1 class="page-title">Audit Log</h1>
+  <div class="row" style="gap:.5rem;align-items:center">
+    <form method="get" action="/superadmin/logs" class="row" style="gap:.5rem">
+      <input type="text" name="q" placeholder="Search action / admin / target / IP" value="<%= (typeof q!=='undefined' && q) ? q : '' %>" />
+      <button class="btn small">Search</button>
+      <% if (q) { %><a class="btn small" href="/superadmin/logs">Clear</a><% } %>
+    </form>
+    <div class="spacer"></div>
+    <a class="btn small" href="/superadmin/logs.csv">Download audit CSV</a>
+    <a class="btn small" href="/superadmin/login-logs.csv">Download login CSV</a>
+    <a class="btn small" href="/superadmin/logs.xlsx">Download audit XLSX</a>
+    <a class="btn small" href="/superadmin/login-logs.xlsx">Download login XLSX</a>
+  </div>
+</div>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th style="white-space:nowrap">Time</th>
+        <th>Admin</th>
+        <th>Action</th>
+        <th>Target</th>
+        <th>IP</th>
+        <th>Meta</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!logs || logs.length === 0) { %>
+        <tr><td colspan="6" class="muted">No audit entries.</td></tr>
+      <% } %>
+      <% logs.forEach(l => { %>
+        <tr>
+          <td style="white-space:nowrap"><%= l.createdAt ? l.createdAt.toISOString() : '' %></td>
+          <td>
+            <%= (l.admin && l.admin.email) ? l.admin.email : (l.adminId || '-') %>
+          </td>
+          <td><code><%= l.action %></code></td>
+          <td>
+            <%= l.targetType || '-' %>
+            <% if (l.targetId) { %>
+              <small class="muted">(<%= l.targetId %>)</small>
+            <% } %>
+          </td>
+          <td><%= l.ip || '' %></td>
+          <td>
+            <% if (l.meta) { %>
+              <details>
+                <summary>view</summary>
+                <pre style="margin:0;white-space:pre-wrap"><%= JSON.stringify(l.meta, null, 2) %></pre>
+              </details>
+            <% } else { %>-<% } %>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

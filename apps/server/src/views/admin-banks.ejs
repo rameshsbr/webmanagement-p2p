@@ -1,0 +1,38 @@
+<% layout('admin/layout') -%>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Currency</th>
+        <th>Bank</th>
+        <th>Holder</th>
+        <th>Account</th>
+        <th>Active</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!banks || banks.length === 0) { %>
+        <tr>
+          <td colspan="7" style="text-align:center;color:var(--ink-dim)">No banks</td>
+        </tr>
+      <% } else { %>
+        <% banks.forEach(b => { %>
+          <tr>
+            <td><%= b.id %></td>
+            <td><%= b.currency %></td>
+            <td><%= b.bankName %></td>
+            <td><%= b.holderName %></td>
+            <td><%= b.accountNo %></td>
+            <td><%= b.active ? 'Yes' : 'No' %></td>
+            <td>
+              <a class="btn small" href="/admin/bank-transfer/banks/<%= b.id %>/edit">Edit</a>
+            </td>
+          </tr>
+        <% }) %>
+      <% } %>
+    </tbody>
+  </table>
+</div>

@@ -1,0 +1,73 @@
+<% layout('superadmin/layout') %>
+
+<div class="page">
+  <h1 class="mb-3">Banks</h1>
+
+  <form class="filters mb-3" method="get" action="/superadmin/banks">
+    <label>Merchant:
+      <select name="merchantId">
+        <option value="" <%= !filters.qMerchant ? 'selected' : '' %>>Any</option>
+        <option value="global" <%= filters.qMerchant==='global' ? 'selected' : '' %>>GLOBAL</option>
+        <% merchants.forEach(m => { %>
+          <option value="<%= m.id %>" <%= filters.qMerchant===m.id ? 'selected' : '' %>><%= m.name %></option>
+        <% }) %>
+      </select>
+    </label>
+    <label>Currency:
+      <input name="currency" value="<%= filters.qCurrency || '' %>" placeholder="AUD" style="width: 6rem;" />
+    </label>
+    <label>Active:
+      <select name="active">
+        <option value="" <%= !filters.qActive ? 'selected' : '' %>>Any</option>
+        <option value="true" <%= filters.qActive==='true' ? 'selected' : '' %>>Active</option>
+        <option value="false" <%= filters.qActive==='false' ? 'selected' : '' %>>Inactive</option>
+      </select>
+    </label>
+    <button type="submit">Filter</button>
+    <a class="btn" href="/superadmin/banks.csv">Download CSV</a>
+    <a class="btn btn-primary" href="/superadmin/banks/new">+ New Bank</a>
+  </form>
+
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Merchant</th>
+        <th>Currency</th>
+        <th>Method</th>
+        <th>Label</th>
+        <th>Holder</th>
+        <th>Bank</th>
+        <th>Account</th>
+        <th>Active</th>
+        <th>Used</th>
+        <th>Created</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <% banks.forEach(b => { %>
+        <tr>
+          <td><%= b.merchantId ? merchants.find(m => m.id===b.merchantId)?.name : 'GLOBAL' %></td>
+          <td><%= b.currency %></td>
+          <td><%= b.method %></td>
+          <td><%= b.label || '' %></td>
+          <td><%= b.holderName %></td>
+          <td><%= b.bankName %></td>
+          <td><%= b.accountNo %></td>
+          <td><%= b.active ? 'Yes' : 'No' %></td>
+          <td><%= b._count.payments %></td>
+          <td><%= b.createdAt.toISOString().slice(0,19).replace('T',' ') %></td>
+          <td style="white-space: nowrap;">
+            <a class="btn" href="/superadmin/banks/<%= b.id %>/edit">Edit</a>
+            <form action="/superadmin/banks/<%= b.id %>/toggle" method="post" style="display:inline;">
+              <button type="submit"><%= b.active ? 'Deactivate' : 'Activate' %></button>
+            </form>
+            <form action="/superadmin/banks/<%= b.id %>/delete" method="post" style="display:inline;" onsubmit="return confirm('Delete or archive this bank? If it has payments it will be archived (inactive).');">
+              <button type="submit">Delete/Archive</button>
+            </form>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

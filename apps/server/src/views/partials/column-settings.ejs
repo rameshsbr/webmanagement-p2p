@@ -1,0 +1,33 @@
+<%
+  const storageKey = (typeof key !== 'undefined' && key) ? key : 'admin.columns';
+  const defs = (typeof defaults !== 'undefined' && defaults) ? defaults : {
+    txnId:true, userId:true, currency:true, amount:true, status:true,
+    bank:true, created:true, depositTime:true, processingTime:true, userInfo:true, actions:true
+  };
+  const localLabelMap = {
+    txnId:'Transaction ID', userId:'User ID', currency:'Currency', amount:'Amount', status:'Status',
+    bank:'Bank name', created:'Date of creation', depositTime:'Time of deposit',
+    payoutTime:'Time of payout', processingTime:'Time of processing', userInfo:'User info', actions:'Actions'
+  };
+  const labels = Object.assign({}, localLabelMap, (typeof labelMap !== 'undefined' && labelMap) ? labelMap : {});
+  const heading = (typeof columnHeading !== 'undefined' && columnHeading) ? columnHeading : 'COLUMN SETTINGS';
+  const startCollapsed = !!(typeof collapsed !== 'undefined' && collapsed);
+%>
+<div class="card collapsible <%= startCollapsed ? 'is-collapsed' : '' %>" data-collapsible data-storage-key="<%= storageKey %>">
+  <div class="collapse-head">
+    <span class="collapse-title"><%= heading %></span>
+    <button type="button" class="btn btn-icon caret" data-toggle-collapse aria-label="Toggle column settings"></button>
+  </div>
+
+  <div class="collapse-body">
+    <div class="cols-grid table-like">
+      <% Object.entries(defs).forEach(([k,v])=>{ %>
+        <label class="chk">
+          <input type="checkbox" data-col-toggle="<%= k %>" <%= v?'checked':'' %> />
+          <span class="cap-label"><%= labels[k] || (k[0].toUpperCase()+k.slice(1)) %></span>
+        </label>
+      <% }) %>
+    </div>
+    <div class="hint">Visibility is saved locally.</div>
+  </div>
+</div>

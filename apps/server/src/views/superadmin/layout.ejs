@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="<%= theme %>">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title><%= title %></title>
+  <link rel="stylesheet" href="/static/admin/styles.css"/>
+  <link rel="stylesheet" href="/static/superadmin/styles.css"/>
+</head>
+<body>
+  <header class="header">
+    <button class="btn btn-icon sb-toggle" type="button">☰</button>
+    <div class="brand"><span class="brand-accent">SUPER&nbsp;</span>ADMIN</div>
+    <div class="spacer"></div>
+  </header>
+
+  <div class="shell" data-shell>
+    <aside class="sidebar">
+      <%- include('sidebar') %>
+    </aside>
+
+    <main class="content">
+      <div class="panel page-chrome">
+        <h1 class="page-title"><%= title %></h1>
+      </div>
+      <section class="page"><%- body %></section>
+    </main>
+  </div>
+
+  <script src="/static/superadmin/superadmin.js" defer></script>
+</body>
+</html>

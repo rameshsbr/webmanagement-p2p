@@ -1,0 +1,493 @@
+<% layout('superadmin/layout') -%>
+
+<!-- status banners (non-intrusive) -->
+<% if (error) { %>
+  <div class="panel" style="border-color:#fecaca;background:#fff1f2;color:#991b1b">
+    <strong>⚠️ Error:</strong> <%= error %>
+  </div>
+<% } %>
+<% if (copied) { %>
+  <div class="panel" style="border-color:#bbf7d0;background:#f0fdf4;color:#166534">
+    <strong>✅ Copied.</strong> Source: <em><%= copiedFromLabel %></em>. Review below and Save to confirm.
+  </div>
+<% } %>
+<% if (usedFallback && currentBank) { %>
+  <div class="panel" style="border-color:#fde68a;background:#fffbeb;color:#92400e">
+    Showing <strong>merchant default</strong> because no form exists for this specific bank yet.
+  </div>
+<% } %>
+
+<!-- COPY PANEL (separate form, no nesting) -->
+<div class="panel copy-panel">
+  <form id="copyForm" method="post" action="/superadmin/forms/<%= current || '' %>/copy-from" class="copy-grid">
+    <div class="field-col">
+      <div class="muted lbl">Copy from merchant</div>
+      <select id="copyFromMerchant" class="sel-merch">
+        <% merchants.forEach(m => { %>
+          <option value="<%= m.id %>" <%= (current===m.id)?'selected':'' %>><%= m.name %></option>
+        <% }) %>
+      </select>
+    </div>
+
+    <div class="field-col">
+      <div class="muted lbl">Copy from their bank</div>
+      <select id="copyFromBank" class="sel-bank">
+        <option value="">— Merchant default —</option>
+      </select>
+    </div>
+
+    <div class="field-col actions">
+      <button class="btn btn-accent" type="submit" onclick="return confirm('This will OVERWRITE the current form for this target selection. Continue?')">Copy here</button>
+    </div>
+
+    <div class="muted note">
+      Target is the selection in the top bar below (Merchant + Bank).
+    </div>
+
+    <input type="hidden" name="fromMerchantId" id="copyFromMerchantInput" />
+    <input type="hidden" name="fromBankAccountId" id="copyFromBankInput" />
+    <input type="hidden" name="toBankAccountId" id="copyToBankInput" />
+  </form>
+</div>
+
+<form id="forms-editor" method="post" action="/superadmin/forms/<%= current || (merchants[0] && merchants[0].id) || '' %>">
+  <input type="hidden" name="depositJson" id="depositJson"/>
+  <input type="hidden" name="withdrawalJson" id="withdrawalJson"/>
+  <!-- carry bank scope when saving -->
+  <input type="hidden" name="bankAccountId" id="bankIdInput" value="<%= currentBank || '' %>"/>
+
+  <!-- Top bar: merchant + bank -->
+  <div class="panel">
+    <div class="target-grid">
+      <label class="form-line">
+        <span class="muted lab">Merchant</span>
+        <select id="merchantSel" name="merchantId" class="sel-merch">
+          <% merchants.forEach(m => { %>
+            <option value="<%= m.id %>" <%= (current===m.id)?'selected':'' %>><%= m.name %></option>
+          <% }) %>
+        </select>
+      </label>
+
+      <label class="form-line">
+        <span class="muted lab">Bank</span>
+        <select id="bankSel" class="sel-bank">
+          <option value="" <%= !currentBank ? 'selected' : '' %>>Default (merchant-level)</option>
+          <% (banks || []).forEach(b => { %>
+            <option value="<%= b.id %>" <%= (currentBank===b.id)?'selected':'' %>>
+              <%= (b.label || (b.bankName + ' • ' + String(b.accountNo||'').slice(-4))) + ' — ' + (b.method || '').toUpperCase() %>
+            </option>
+          <% }) %>
+        </select>
+      </label>
+    </div>
+  </div>
+
+  <!-- Two columns -->
+  <div class="row" style="gap:16px; align-items:flex-start; display:flex; flex-wrap:wrap;">
+    <div class="panel col">
+      <h3>DEPOSIT FIELDS</h3>
+      <div id="depList" class="field-list"></div>
+      <button class="btn small" type="button" id="addDep">＋ Add field</button>
+    </div>
+
+    <div class="panel col">
+      <h3>WITHDRAWAL FIELDS</h3>
+      <div id="wdrList" class="field-list"></div>
+      <button class="btn small" type="button" id="addWdr">＋ Add field</button>
+    </div>
+  </div>
+
+  <!-- Save -->
+  <div class="panel save-panel">
+    <button class="btn btn-primary" type="submit">SAVE</button>
+  </div>
+</form>
+
+<style>
+  /* --- New layout helpers for the copy bar and top bar --- */
+  .copy-panel { padding-top:14px; padding-bottom:14px; }
+  .copy-grid{
+    display:grid;
+    grid-template-columns: auto auto auto 1fr;
+    column-gap:16px;
+    row-gap:6px;
+    align-items:end;
+  }
+  .copy-grid .field-col{ padding:4px 0; }
+  .copy-grid .lbl{ margin-bottom:4px; }
+  .copy-grid .actions{ display:flex; align-items:end; }
+  .copy-grid .note{ margin-left:auto; align-self:center; }
+
+  .target-grid{
+    display:grid;
+    grid-template-columns: repeat(2, minmax(320px, 1fr));
+    gap:16px;
+    align-items:end;
+  }
+  .form-line{
+    display:grid;
+    grid-template-columns: 96px auto; /* label width => inputs start at same x */
+    gap:8px;
+    align-items:center;
+  }
+  .form-line .lab{ text-align:left; padding-top:2px; }
+
+  /* Cap the select widths so they aren't comically long */
+  .sel-merch{ width:260px; max-width:260px; }
+  .sel-bank{  width:360px; max-width:360px; }
+
+  /* Center the save button with some breathing room */
+  .save-panel{ display:flex; justify-content:center; margin-top:12px; }
+
+  /* Button accents (local-only so other pages remain untouched) */
+  .btn-accent{
+    background:#22c55e;       /* emerald-500 */
+    border-color:#16a34a;
+    color:#fff;
+  }
+  .btn-accent:hover{ filter:brightness(.96); }
+
+  .btn-primary{
+    background:#6366f1;       /* indigo-500 */
+    border-color:#4f46e5;
+    color:#fff;
+  }
+  .btn-primary:hover{ filter:brightness(.96); }
+
+  /* --- Existing styles (unchanged) --- */
+  .col{ flex:1; min-width:360px; }
+  .field-card{
+    border:1px solid var(--ink-2);
+    border-radius:12px;
+    padding:20px;
+    margin:22px 0;
+    background:var(--panel,#fff);
+    position:relative;
+  }
+  .grid{ display:grid; grid-template-columns: 160px 1fr; gap:14px; align-items:center; }
+  .full { grid-column: 1 / -1; }
+  .muted{ opacity:.7; font-size:12px; }
+  .digits-wrap{ display:none; gap:8px; align-items:center; margin-top:8px; }
+  .digits-input{ width:120px; }
+  .field-card > .grid{ margin-bottom:16px; }
+  .field-card > .grid:last-child{ margin-bottom:0; }
+  .block-actions{ position:static; display:flex; gap:8px; }
+  .icon-mini{
+    padding:4px 8px; border:1px solid var(--ink-2);
+    background:var(--panel,#fff); border-radius:6px; cursor:pointer; line-height:1;
+  }
+  .icon-mini:hover{ background:var(--ink-1); }
+  .data-row{ display:grid; grid-template-columns: 1fr auto; gap:8px; margin-bottom:6px; }
+  .opt-actions{ display:flex; gap:6px; }
+  .drag{ opacity:.6 }
+
+  .toggle {
+    position: relative; display: inline-flex; align-items: center;
+    width: 56px; height: 28px; border-radius: 999px;
+    border: 1px solid var(--ink-3, #cbd5e1);
+    background: var(--ink-1, #f1f5f9); cursor: pointer; user-select: none;
+    transition: background .18s ease, border-color .18s ease;
+  }
+  .toggle-input { display: none; }
+  .toggle-knob {
+    position: absolute; top: 3px; bottom: 3px; left: 3px; right: calc(50% + 3px);
+    border-radius: 999px; display: flex; align-items: center; justify-content: center;
+    font-size: 11px; font-weight:600; letter-spacing:.2px;
+    transition: all .18s ease; background: #ffffff; color: #334155;
+    border:1px solid var(--ink-3, #cbd5e1); box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  .toggle.on { background: rgba(59,130,246,.15); border-color: var(--brand, #3b82f6); }
+  .toggle.on .toggle-knob { left: calc(50% + 3px); right: 3px; background: var(--brand, #3b82f6); color: #fff; border-color: var(--brand, #3b82f6); }
+  .req-wrap{ display:flex; align-items:center; justify-content:space-between; gap:12px; }
+  @media (max-width: 980px){
+    .grid{ grid-template-columns: 1fr; }
+    .req-wrap{ justify-content:flex-start; gap:10px; }
+    .sel-merch, .sel-bank { width:100%; max-width:100%; }
+    .target-grid{ grid-template-columns: 1fr; }
+    .form-line{ grid-template-columns: 96px 1fr; }
+  }
+</style>
+
+<script>
+(function(){
+  const cfg = <%- JSON.stringify(config || {deposit:[],withdrawal:[]}) %>;
+  const currentMerchant = "<%= current || '' %>";
+  const currentBank = "<%= currentBank || '' %>";
+
+  const merchantSel = document.getElementById('merchantSel');
+  const bankSel = document.getElementById('bankSel');
+  const bankIdInput = document.getElementById('bankIdInput');
+
+  // COPY PANEL elements
+  const copyFromMerchant = document.getElementById('copyFromMerchant');
+  const copyFromBank = document.getElementById('copyFromBank');
+  const copyFromMerchantInput = document.getElementById('copyFromMerchantInput');
+  const copyFromBankInput = document.getElementById('copyFromBankInput');
+  const copyToBankInput = document.getElementById('copyToBankInput');
+  const copyForm = document.getElementById('copyForm');
+
+  async function loadSourceBanks(mid){
+    try{
+      copyFromBank.innerHTML = '<option value="">— Merchant default —</option>';
+      if (!mid) return;
+      const res = await fetch('/superadmin/forms/banks.json?merchantId=' + encodeURIComponent(mid), { credentials: 'same-origin' });
+      const json = await res.json();
+      if (json && json.ok && Array.isArray(json.banks)) {
+        json.banks.forEach(b => {
+          const label = (b.label || ('Bank • ' + (b.method || '')));
+          const opt = document.createElement('option');
+          opt.value = b.id;
+          opt.textContent = label + (b.active ? '' : ' [inactive]');
+          copyFromBank.appendChild(opt);
+        });
+      }
+    } catch(e) {}
+  }
+
+  // init copy list with current merchant
+  loadSourceBanks(copyFromMerchant.value);
+
+  copyFromMerchant.addEventListener('change', ()=>{
+    loadSourceBanks(copyFromMerchant.value);
+  });
+
+  // keep copy target in sync with current bank selection
+  copyToBankInput.value = currentBank || "";
+
+  copyForm.addEventListener('submit', (e)=>{
+    copyFromMerchantInput.value = copyFromMerchant.value;
+    copyFromBankInput.value = copyFromBank.value || "";
+    copyToBankInput.value = (document.getElementById('bankSel').value || "");
+  });
+
+  // navigation for target selection
+  merchantSel.addEventListener('change', ()=>{
+    // when merchant changes, reset bank to default
+    location.href = '/superadmin/forms?merchantId=' + encodeURIComponent(merchantSel.value);
+  });
+  bankSel.addEventListener('change', ()=>{
+    const qp = new URLSearchParams({ merchantId: merchantSel.value });
+    if (bankSel.value) qp.set('bankAccountId', bankSel.value);
+    location.href = '/superadmin/forms?' + qp.toString();
+  });
+
+  // existing editor
+  const depList = document.getElementById('depList');
+  const wdrList = document.getElementById('wdrList');
+  const addDep = document.getElementById('addDep');
+  const addWdr = document.getElementById('addWdr');
+
+  const modes = [['input','Input'],['file','File'],['select','Select']];
+
+  function normalizeRow(r){
+    if (!r) return { name:"", display:"input", field:"text", placeholder:"", required:false, digits:0, options:[] };
+    const name = String(r.name ?? r.key ?? r.label ?? "").trim();
+    const displayRaw = String(r.display ?? r.mode ?? "input").toLowerCase();
+    const display = (displayRaw==="file"||displayRaw==="select") ? displayRaw : "input";
+
+    // support: text | number | phone | email | phone_email
+    let field = null;
+    if (display==="input"){
+      const f = String(r.field ?? "text").toLowerCase();
+      field = (["text","number","phone","email","phone_email"].includes(f)) ? f : "text";
+    }
+
+    let options = [];
+    if (Array.isArray(r.options)) options = r.options.map(String);
+    else if (typeof r.data === "string") options = r.data.split(",").map(s=>s.trim()).filter(Boolean);
+    const digits = Number.isFinite(+r.digits) ? Math.max(0,+r.digits) : 0;
+    return { name, display, field, placeholder: r.placeholder ?? "", required: !!r.required, digits, options };
+  }
+
+  function el(tag, attrs={}, children){
+    const e = document.createElement(tag);
+    for (const [k,v] of Object.entries(attrs||{})){
+      if (k==='class') e.className = v;
+      else if (k==='style') e.setAttribute('style', v);
+      else if (k.startsWith('on') && typeof v==='function') e.addEventListener(k.slice(2), v);
+      else e.setAttribute(k,v);
+    }
+    (Array.isArray(children)?children:[children]).forEach(c=>{
+      if (c==null) return;
+      if (typeof c === 'string') e.appendChild(document.createTextNode(c));
+      else e.appendChild(c);
+    });
+    return e;
+  }
+  function wrap(label, node){ return el('div',{class:'grid'},[ el('div',{class:'muted'},label), node ]); }
+  function optionRow(listEl, value){
+    const r = el('div',{class:'data-row'},[
+      el('input',{type:'text', class:'i-opt', value:value||'', placeholder:'Option value'}),
+      el('div',{class:'opt-actions'},[
+        el('button',{type:'button', class:'icon-mini', onclick:()=>{ listEl.appendChild(optionRow(listEl,'')); }},'＋'),
+        el('button',{type:'button', class:'icon-mini', onclick:()=>{ const all=listEl.querySelectorAll('.data-row'); if(all.length>1) r.remove(); else r.querySelector('input').value=''; }},'－')
+      ])
+    ]);
+    listEl.appendChild(r);
+    return r;
+  }
+
+  function makeToggle(initial){
+    const input = el('input',{type:'checkbox', class:'i-required toggle-input'});
+    input.checked = !!initial;
+    const knob = el('span',{class:'toggle-knob'});
+    const shell = el('label',{class:'toggle'},[input, knob]);
+    function sync(){
+      shell.classList.toggle('on', input.checked);
+      knob.textContent = input.checked ? 'ON' : 'OFF';
+    }
+    input.addEventListener('change', sync);
+    sync();
+    return { root: shell, input };
+  }
+
+  function makeCard(kind, data){
+    const d = normalizeRow(data);
+    const card = el('div',{class:'field-card', draggable:'true'});
+
+    const actions = el('div',{class:'block-actions'},[
+      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const clone = makeCard(kind,{display:'input',field:'text',required:true}); card.parentElement.insertBefore(clone, card.nextSibling); clone.querySelector('.i-name').focus(); }},'＋'),
+      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const list=card.parentElement; if(list.querySelectorAll('.field-card').length>1) card.remove(); }},'－')
+    ]);
+
+    const name = el('input',{type:'text', class:'i-name', value:d.name||'', placeholder:'Field name'});
+    const display = el('select',{class:'i-display'});
+    modes.forEach(([v,t])=> display.appendChild(new Option(t,v, false, d.display===v)));
+    const field = el('select',{class:'i-field'});
+    const digitsWrap = el('div',{class:'digits-wrap'},[
+      el('span',{class:'muted'},'Number of digits. 0 - unlimited.'),
+      el('input',{type:'number', min:'0', step:'1', class:'digits-input i-digits', value: d.digits||0})
+    ]);
+    const fieldRow = el('div',{class:'grid'},[
+      el('div',{class:'muted'},'Field:'),
+      el('div',{},[field, digitsWrap])
+    ]);
+    const placeholder = el('input',{type:'text', class:'i-placeholder', value:d.placeholder||'', placeholder:'Placeholder'});
+
+    const req = makeToggle(d.required);
+    const reqRow = el('div',{class:'grid'},[
+      el('div',{class:'muted'},'Required field?'),
+      el('div',{class:'req-wrap'},[req.root, actions])
+    ]);
+
+    const dataWrap = el('div',{class:'grid full i-data-wrap'},[
+      el('div',{class:'muted'},'Data'),
+      el('div',{},[
+        el('div',{class:'i-data-list'}),
+        el('button',{type:'button', class:'icon-mini', onclick:(e)=>{e.preventDefault(); optionRow(card.querySelector('.i-data-list'),''); }},'＋ Add option')
+      ])
+    ]);
+
+    card.appendChild(wrap('Field name', name));
+    card.appendChild(wrap('Display mode', display));
+    card.appendChild(fieldRow);
+    card.appendChild(wrap('Placeholder', placeholder));
+    card.appendChild(reqRow);
+    card.appendChild(dataWrap);
+
+    function syncByDisplay(){
+      const mode = display.value;
+      field.innerHTML = '';
+      if (mode==='input'){
+        field.disabled = false;
+        // NEW choices
+        const opts = [
+          ['text','text'],
+          ['number','number'],
+          ['phone','phone number'],
+          ['email','email'],
+          ['phone_email','phone or email']
+        ];
+        opts.forEach(([v,t]) => field.appendChild(new Option(t, v)));
+        field.value = (d.field && opts.some(o=>o[0]===d.field)) ? d.field : 'text';
+        digitsWrap.style.display = (field.value==='number') ? 'flex' : 'none';
+        dataWrap.style.display = 'none';
+      } else if (mode==='file'){
+        field.appendChild(new Option('null','null'));
+        field.value = 'null'; field.disabled = true;
+        digitsWrap.style.display = 'none';
+        dataWrap.style.display = 'none';
+      } else { // select
+        field.appendChild(new Option('null','null'));
+        field.value = 'null'; field.disabled = true;
+        digitsWrap.style.display = 'none';
+        dataWrap.style.display = '';
+        const list = card.querySelector('.i-data-list');
+        if (!list.children.length) optionRow(list,'');
+      }
+    }
+    display.addEventListener('change', syncByDisplay);
+    field.addEventListener('change', ()=>{ digitsWrap.style.display = (field.value==='number') ? 'flex' : 'none'; });
+
+    // init
+    syncByDisplay();
+    if (d.display==='select'){
+      const list = card.querySelector('.i-data-list');
+      list.innerHTML = '';
+      (d.options||[]).forEach(v=> optionRow(list,v));
+      if (!(d.options||[]).length) optionRow(list,'');
+    }
+
+    // drag re-order
+    card.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain','drag'); card.classList.add('drag'); });
+    card.addEventListener('dragend', ()=> card.classList.remove('drag'));
+    card.addEventListener('dragover', e=>{
+      e.preventDefault();
+      const list = card.parentElement;
+      const dragging = list.querySelector('.field-card.drag');
+      if (!dragging || dragging===card) return;
+      const rect = card.getBoundingClientRect();
+      const before = (e.clientY - rect.top) < rect.height/2;
+      list.insertBefore(dragging, before ? card : card.nextSibling);
+    });
+
+    return card;
+  }
+
+  function load(){
+    depList.innerHTML = ''; wdrList.innerHTML = '';
+    (cfg.deposit||[]).map(normalizeRow).forEach(x=> depList.appendChild(makeCard('deposit', x)));
+    (cfg.withdrawal||[]).map(normalizeRow).forEach(x=> wdrList.appendChild(makeCard('withdrawal', x)));
+    if (!depList.children.length) depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true}));
+    if (!wdrList.children.length) wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true}));
+  }
+  addDep.addEventListener('click', ()=> depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true})));
+  addWdr.addEventListener('click', ()=> wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true})));
+  load();
+
+  // Pack JSON and include the bank scope; skip blank-name rows to avoid server-side validation errors
+  document.getElementById('forms-editor').addEventListener('submit', ()=>{
+    function pack(list){
+      const rows = [];
+      list.querySelectorAll('.field-card').forEach(card=>{
+        const name = card.querySelector('.i-name').value.trim();
+        if (!name) return; // IMPORTANT: drop unfinished rows
+        const display = card.querySelector('.i-display').value;
+        const fieldSel = card.querySelector('.i-field').value;
+        const placeholder = card.querySelector('.i-placeholder').value;
+        const required = card.querySelector('.i-required').checked;
+        const digits = Number(card.querySelector('.i-digits')?.value || 0);
+        const row = {
+          name,
+          display,
+          // NEW: keep exact selection (text/number/phone/email/phone_email)
+          field: display==='input' ? fieldSel : null,
+          placeholder,
+          required,
+          // digits only meaningful for number
+          digits: (display==='input' && fieldSel==='number') ? (Number.isFinite(digits) ? digits : 0) : 0,
+          options: []
+        };
+        if (display==='select'){
+          row.options = Array.from(card.querySelectorAll('.i-opt')).map(i=>i.value.trim()).filter(Boolean);
+        }
+        rows.push(row);
+      });
+      return rows;
+    }
+    bankIdInput.value = bankSel.value || '';
+    document.getElementById('depositJson').value = JSON.stringify(pack(depList));
+    document.getElementById('withdrawalJson').value = JSON.stringify(pack(wdrList));
+  });
+})();
+</script>

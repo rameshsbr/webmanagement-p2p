@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="<%= theme || 'light' %>">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title><%= title %></title>
+
+  <!-- Apply saved theme ASAP (localStorage -> cookie -> OS). Mirror on <body> when available. -->
+  <script>
+  (function () {
+    try {
+      var t = localStorage.getItem('merchant.theme');
+      if (!t) {
+        var m = document.cookie.match(/(?:^|; )merchant_theme=([^;]+)/);
+        t = m ? decodeURIComponent(m[1]) : '';
+      }
+      if (!t && window.matchMedia && matchMedia('(prefers-color-scheme: dark)').matches) t = 'dark';
+      if (!t) t = 'light';
+
+      var root = document.documentElement;
+      root.setAttribute('data-theme', t);
+      root.classList.toggle('dark', t === 'dark');
+
+      // Body may not exist yet; mirror when it does.
+      var setBody = function () {
+        document.body && document.body.setAttribute('data-theme', t);
+        document.body && document.body.classList.toggle('dark', t === 'dark');
+      };
+      if (document.body) setBody(); else document.addEventListener('DOMContentLoaded', setBody);
+    } catch (e) {}
+  })();
+  </script>
+
+  <!-- Reuse admin base styles + (optional) merchant overrides -->
+  <link rel="stylesheet" href="/static/admin/styles.css"/>
+  <link rel="stylesheet" href="/static/merchant/styles.css"/>
+</head>
+<body data-theme="<%= theme || 'light' %>">
+  <% var IS_AUTH = (typeof isAuthView !== 'undefined' && isAuthView); %>
+  <% var MER     = (typeof merchant !== 'undefined' && merchant) ? merchant : null; %>
+
+  <header class="header" role="banner">
+    <button class="btn btn-icon sb-toggle" type="button" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
+    <div class="brand"><span class="brand-accent">MERCHANT&nbsp;</span>PORTAL</div>
+    <div class="spacer"></div>
+  </header>
+
+  <div class="shell" data-shell>
+    <aside class="sidebar" data-sidebar>
+      <div class="sb-top-buttons">
+        <button type="button" class="icon-btn" data-show="reports" title="Overview">📊</button>
+        <button type="button" class="icon-btn" data-show="prefs"   title="Settings">⚙️</button>
+        <a class="icon-btn danger" href="/merchant/logout" title="Logout">⏏</a>
+      </div>
+
+      <div class="sidebar-section" data-section="reports">
+        <div class="sb-title">OVERVIEW</div>
+        <nav class="nav">
+          <a class="nav-link" href="/merchant">Home</a>
+          <div class="nav-group">PAYMENTS</div>
+          <a class="nav-link" href="/merchant/payments/deposits">Deposits</a>
+          <a class="nav-link" href="/merchant/payments/withdrawals">Withdrawals</a>
+          <a class="nav-link" href="/merchant/ledger">Ledger</a>
+          <a class="nav-link" href="/merchant/keys">API Keys</a>
+        </nav>
+      </div>
+
+      <div class="sidebar-section" data-section="prefs">
+        <div class="sb-title">ACCOUNT</div>
+        <label class="sb-field">
+          <span>E-mail</span>
+          <input id="pref-email" type="email"
+                 value="<%= MER && MER.email ? MER.email : '' %>"
+                 readonly/>
+        </label>
+
+        <div class="sb-title">DISPLAY</div>
+        <label class="sb-field">
+          <span>Currency</span>
+          <select id="pref-currency">
+            <option>Malaysian ringgit</option>
+            <option>Indonesian rupiah</option>
+            <option>US dollar</option>
+            <option>Euro</option>
+            <option>Thai baht</option>
+            <option>Vietnamese dong</option>
+          </select>
+        </label>
+        <label class="sb-field">
+          <span>Time zone</span>
+          <select id="pref-tz"></select>
+        </label>
+
+        <div class="sb-field align-right">
+          <input id="pref-dark" class="ios-input" type="checkbox"/>
+          <label class="ios-switch" for="pref-dark" title="Toggle theme">
+            <span class="sun">☀️</span>
+            <span class="moon">🌙</span>
+            <span class="knob"></span>
+          </label>
+        </div>
+
+        <div class="sb-title">SECURITY</div>
+        <nav class="nav">
+          <span class="nav-link" style="opacity:.7;cursor:default">Read-only portal</span>
+        </nav>
+
+        <div class="row">
+          <button type="button" class="btn small" id="prefs-save">SAVE</button>
+          <button type="button" class="btn small" id="prefs-cancel">CANCEL</button>
+        </div>
+      </div>
+    </aside>
+
+    <main class="content">
+      <div class="panel page-chrome">
+        <h1 class="page-title"><%= title %></h1>
+      </div>
+      <section class="page">
+        <%- body %>
+      </section>
+    </main>
+  </div>
+
+  <script src="/static/merchant/merchant.js" defer></script>
+</body>
+</html>

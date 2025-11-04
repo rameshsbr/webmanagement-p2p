@@ -1,0 +1,192 @@
+<% layout('superadmin/layout') -%>
+
+<% if (typeof saved !== 'undefined' && saved) { %>
+  <div style="
+    position:fixed; right:16px; top:16px; z-index:9;
+    background:#e6ffed; color:#065f46; border:1px solid #34d399;
+    padding:10px 12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.08);
+  ">Saved ✅</div>
+<% } %>
+
+<form method="post" action="<%= merchant ? '/superadmin/merchants/'+merchant.id+'/edit' : '/superadmin/merchants/new' %>" class="card">
+  <div class="f-item"><label>Name</label><input name="name" value="<%= merchant?.name||'' %>" required/></div>
+
+  <div class="f-item">
+    <label>Email</label>
+    <input name="email" type="email" value="<%= merchant?.email||'' %>" placeholder="billing@example.com"/>
+  </div>
+
+  <div class="f-item">
+    <label>Website / Webhook URL</label>
+    <input name="webhookUrl" value="<%= merchant?.webhookUrl||'' %>" placeholder="https://example.com/webhook"/>
+  </div>
+
+  <div class="f-item">
+    <label>Default currency</label>
+    <input name="defaultCurrency" value="<%= merchant?.defaultCurrency||'USD' %>" placeholder="USD"/>
+  </div>
+
+  <div class="f-item">
+    <label>Status</label>
+    <select name="status">
+      <option value="active"     <%= merchant?.status==='active'?'selected':'' %>>active</option>
+      <option value="suspended"  <%= merchant?.status==='suspended'?'selected':'' %>>suspended</option>
+      <option value="closed"     <%= merchant?.status==='closed'?'selected':'' %>>closed</option>
+    </select>
+  </div>
+
+  <label class="chk" style="margin-top:6px">
+    <input type="checkbox" name="active" <%= merchant?.active?'checked':'' %>/> Active
+  </label>
+
+  <div class="row" style="margin-top:12px"><button class="btn primary">Save</button></div>
+</form>
+
+<% if (merchant) { %>
+  <div class="card">
+    <div class="title">API rate limits</div>
+    <form method="post" action="/superadmin/merchants/<%= merchant.id %>/limits">
+      <div class="f-item">
+        <label>Max requests per minute</label>
+        <input name="maxReqPerMin" type="number" value="<%= merchant?.limits?.maxReqPerMin ?? '' %>" placeholder="leave blank = unlimited"/>
+      </div>
+      <div class="f-item">
+        <label>IP allow list (comma or space separated)</label>
+        <input name="ipAllowList" value="<%= (merchant?.limits?.ipAllowList||[]).join(', ') %>"/>
+      </div>
+      <button class="btn">Save limits</button>
+    </form>
+  </div>
+
+  <div class="card">
+    <div class="title">Telegram channels</div>
+    <form method="post" action="/superadmin/merchants/<%= merchant.id %>/notify/add" class="row" style="gap:8px">
+      <input type="hidden" name="type" value="TELEGRAM"/>
+      <input name="chatId" placeholder="Chat ID" required/>
+      <select name="direction">
+        <option>BOTH</option>
+        <option>INCOMING</option>
+        <option>OUTGOING</option>
+      </select>
+      <button class="btn small">Add</button>
+    </form>
+    <ul>
+      <% (channels||[]).forEach(n => { %>
+        <li>
+          <code><%= n.type %></code> <%= n.chatId %> (<%= n.direction %>)
+          <form method="post" action="/superadmin/merchants/<%= merchant.id %>/notify/<%= n.id %>/delete" style="display:inline">
+            <button class="btn small">Remove</button>
+          </form>
+        </li>
+      <% }) %>
+      <% if (!channels || channels.length === 0) { %>
+        <li style="opacity:.7">No channels yet.</li>
+      <% } %>
+    </ul>
+  </div>
+
+  <% if (newCreds) { %>
+  <div class="card" style="border-color:#34d399;background:#ecfdf5">
+    <div class="title">User created</div>
+    <p>
+      Temporary credentials (shown once):
+    </p>
+    <div class="row" style="gap:8px; align-items:center;">
+      <input readonly value="<%= newCreds.email %>" style="max-width:300px"/>
+      <input id="tmp-pass" readonly value="<%= newCreds.password %>" style="max-width:240px"/>
+      <button type="button" class="btn small" onclick="
+        navigator.clipboard.writeText(document.getElementById('tmp-pass').value)
+      ">Copy password</button>
+    </div>
+    <p style="margin-top:8px;opacity:.8">
+      Share with the merchant and ask them to log in at <code>/merchant/login</code> and set a new password & 2FA.
+    </p>
+  </div>
+  <% } %>
+
+  <% if (newApiKey) { %>
+  <div class="card" style="border-color:#34d399;background:#ecfdf5">
+    <div class="title">API key created</div>
+    <p>This API key is shown <strong>once</strong>. Copy and store it securely:</p>
+    <div class="row" style="gap:8px; align-items:center;">
+      <input id="api-key-plaintext" readonly value="<%= newApiKey %>" style="flex:1; min-width:280px"/>
+      <button type="button" class="btn small" onclick="
+        navigator.clipboard.writeText(document.getElementById('api-key-plaintext').value)
+      ">Copy</button>
+    </div>
+  </div>
+  <% } %>
+
+  <div class="card">
+    <div class="title">API keys</div>
+
+    <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/new" class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px">
+      <input name="label" placeholder="Label (optional)" style="min-width:200px"/>
+      <input name="scopes" placeholder="Scopes (csv, e.g. payments:read,payments:write)" style="min-width:360px; flex:1"/>
+      <button class="btn small">Create key</button>
+    </form>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Key</th>
+          <th>Label</th>
+          <th>Scopes</th>
+          <th>Last used</th>
+          <th>Created</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+      <% (apiKeys||[]).forEach(k => { 
+           const prefix = k.prefix || (k.id ? String(k.id).slice(0,8) : 'key');
+           const last4 = k.last4 || '';
+           const revoked = (k.active === false);
+        %>
+        <tr style="<%= revoked ? 'opacity:.6' : '' %>">
+          <td class="mono">
+            <code><%= prefix %>.****<%= last4 %></code>
+            <%= revoked ? '<span style="color:#b91c1c; margin-left:6px">(revoked)</span>' : '' %>
+          </td>
+          <td><%= k.label || '—' %></td>
+          <td class="mini"><%= Array.isArray(k.scopes) ? k.scopes.join(', ') : (k.scopes || '—') %></td>
+          <td class="mini"><%= k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : '—' %></td>
+          <td class="mini"><%= k.createdAt ? new Date(k.createdAt).toISOString() : '—' %></td>
+          <td class="nowrap">
+            <% if (!revoked) { %>
+            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/<%= k.id %>/revoke" style="display:inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
+              <button class="btn small">Revoke</button>
+            </form>
+            <% } %>
+          </td>
+        </tr>
+      <% }) %>
+      <% if (!apiKeys || apiKeys.length === 0) { %>
+        <tr><td colspan="6" class="mini" style="opacity:.7">No API keys yet.</td></tr>
+      <% } %>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="title">Merchant users</div>
+
+    <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/new?from=edit" class="row" style="gap:8px;flex-wrap:wrap">
+      <input name="email" type="email" placeholder="user@merchant.com" required style="min-width:260px"/>
+      <select name="role">
+        <option value="OWNER">OWNER</option>
+        <option value="MANAGER" selected>MANAGER</option>
+        <option value="ANALYST">ANALYST</option>
+      </select>
+      <label class="chk" title="User can log in immediately">
+        <input type="checkbox" name="active" checked/> Active
+      </label>
+      <label class="chk" title="Generate a strong temporary password">
+        <input type="checkbox" name="generate" checked/> Auto-generate password
+      </label>
+      <button class="btn small">Create user</button>
+      <a class="btn small" href="/superadmin/merchants/<%= merchant.id %>/users" style="margin-left:auto">Manage users…</a>
+    </form>
+  </div>
+
+<% } %>

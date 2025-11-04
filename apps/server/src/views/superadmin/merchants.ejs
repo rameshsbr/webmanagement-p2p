@@ -1,0 +1,47 @@
+<% layout('superadmin/layout') -%>
+
+<!-- Single actions bar; removes the inner duplicate header and aligns the action to the right -->
+<div class="page-actions" style="display:flex; justify-content:flex-end; margin-bottom:12px;">
+  <a class="btn primary" href="/superadmin/merchants/new">New merchant</a>
+</div>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Email</th>
+        <th>Status</th>
+        <th>Currency</th>
+        <th>Active</th>
+        <th>API limit</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      <% (merchants || []).forEach(m => { %>
+        <tr>
+          <td><%= m.name %></td>
+          <td class="truncate" title="<%= m.email || '' %>"><%= m.email || '—' %></td>
+          <td class="capitalize"><%= m.status || '—' %></td>
+          <td><%= (m.defaultCurrency || '—').toUpperCase() %></td>
+          <td><%= m.active ? 'yes' : 'no' %></td>
+          <td>
+            <% if (m.limits && m.limits.maxReqPerMin != null) { %>
+              <%= m.limits.maxReqPerMin %>/min
+            <% } else { %>
+              —
+            <% } %>
+          </td>
+          <td class="nowrap">
+            <a class="btn small" href="/superadmin/merchants/<%= m.id %>/edit">Edit</a>
+            <a class="btn small" href="/superadmin/merchants/<%= m.id %>/users">Users</a>
+          </td>
+        </tr>
+      <% }) %>
+      <% if (!merchants || merchants.length === 0) { %>
+        <tr><td colspan="7" class="mini">No merchants yet.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>

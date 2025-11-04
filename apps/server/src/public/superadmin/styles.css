@@ -1,0 +1,93 @@
+/* piggyback admin theme; add subtle accent for super admin */
+@import url("/static/admin/styles.css");
+.brand-accent { color: #8b5cf6; }
+
+/* Ensure the white card never lets table bleed outside */
+.card { overflow: hidden; }
+
+/* Merchants table alignment */
+.table-merchants {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  margin-top: 8px;
+}
+
+.table-merchants thead th {
+  text-align: left;
+  font-weight: 600;
+  opacity: .75;
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(0,0,0,.08);
+}
+
+.table-merchants tbody td {
+  padding: 10px 8px;
+  border-bottom: 1px solid rgba(0,0,0,.06);
+  vertical-align: middle;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Slightly wider actions column so Edit/Users never push the card edge */
+.table-merchants col.col-name     { width: 24%; }
+.table-merchants col.col-email    { width: 24%; }
+.table-merchants col.col-status   { width: 12%; }
+.table-merchants col.col-currency { width: 10%; }
+.table-merchants col.col-active   { width: 10%; }
+.table-merchants col.col-api      { width: 12%; }
+.table-merchants col.col-actions  { width: 8%; }
+
+/* Utilities */
+.truncate   { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.capitalize { text-transform: capitalize; }
+.uppercase  { text-transform: uppercase; }
+.nowrap     { white-space: nowrap; text-align: right; }
+
+/* Optional: if someone shrinks the window too far, allow horizontal scroll instead of overflow */
+.card > .table-merchants { display:block; overflow-x:auto; }
+
+/* Columns popover */
+.cols { position: relative; display: inline-block; }
+.cols .cols-trigger { min-width: 120px; }
+
+.cols .cols-popover {
+  position: absolute; z-index: 30; top: calc(100% + 8px); left: 0;
+  min-width: 320px; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel); box-shadow: 0 10px 30px rgba(0,0,0,.12);
+  display: none;
+}
+.cols .cols-popover.open { display: block; }
+
+.cols .cols-grid {
+  display: grid; grid-template-columns: repeat(2, minmax(140px, 1fr));
+  gap: 10px 16px;
+}
+
+/* Fancy toggle switches */
+.switch { display:flex; align-items:center; gap:10px; cursor:pointer; user-select:none; }
+.switch input { display:none; }
+.switch .slider {
+  position: relative; width: 38px; height: 22px; border-radius: 999px;
+  background: #d1d5db; transition: background .15s ease;
+}
+.switch .slider::after {
+  content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px;
+  border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.2); transition: transform .15s ease;
+}
+.switch input:checked + .slider { background: #60a5fa; }
+.switch input:checked + .slider::after { transform: translateX(16px); }
+.switch .switch-label { font-size: 13px; }
+
+/* Hide columns (th + td) */
+.hidden-col { display: none; }
+
+/* small helpers */
+.tabs { display:flex; gap:8px; align-items:center; }
+.tabs .tab { padding:6px 10px; border-radius:8px; border:1px solid var(--border); background: var(--bg); }
+.tabs .tab.active { background: var(--panel); font-weight:600; }
+
+.page-actions { display:flex; justify-content:flex-end; margin-bottom:12px }

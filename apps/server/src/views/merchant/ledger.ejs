@@ -1,0 +1,28 @@
+<% layout('merchant/layout') -%>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Amount (cents)</th>
+        <th>Reason</th>
+        <th>Created</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!entries || !entries.length) { %>
+        <tr><td colspan="4" style="text-align:center;color:var(--ink-dim)">No ledger entries</td></tr>
+      <% } else { %>
+        <% entries.forEach(e => { %>
+          <tr>
+            <td><%= e.id %></td>
+            <td><%= e.amountCents %></td>
+            <td><%= e.reason %></td>
+            <td><%= e.createdAt.toISOString() %></td>
+          </tr>
+        <% }) %>
+      <% } %>
+    </tbody>
+  </table>
+</div>

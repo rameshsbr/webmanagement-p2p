@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Merchant Login</title>
+  <link rel="stylesheet" href="/static/auth/styles.css" />
+</head>
+<body class="login-body">
+  <div class="bg" aria-hidden="true"></div>
+
+  <section class="login-card" role="region" aria-labelledby="login-title">
+    <div class="brand">
+      <div class="logo" aria-hidden="true">🪙</div>
+      <h1 id="login-title">Merchant Portal</h1>
+      <p class="muted">Sign in to manage deposits, withdrawals &amp; API keys.</p>
+    </div>
+
+    <% if (typeof reset !== 'undefined' && reset) { %>
+      <div class="alert success" role="status">Password updated. Please sign in.</div>
+    <% } %>
+
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="alert error" role="alert"><%= error %></div>
+    <% } %>
+
+    <form class="form" method="POST" action="/auth/merchant/login" novalidate>
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email"
+               placeholder="you@company.com" autocomplete="username" required />
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <div class="password-wrap" style="position:relative">
+          <input id="password" name="password" type="password"
+                 placeholder="••••••••" autocomplete="current-password" required style="padding-right:72px" />
+          <button type="button" id="toggle-pass" class="toggle-pass" aria-pressed="false" aria-label="Show password"
+                  style="position:absolute; right:6px; top:50%; transform:translateY(-50%);">
+            Show
+          </button>
+        </div>
+      </div>
+
+      <button class="btn primary w-100" type="submit">Sign in</button>
+      <div class="foot">
+        <small class="muted">Having trouble? Contact your admin.</small>
+      </div>
+    </form>
+  </section>
+
+  <script>
+    (function(){
+      var btn = document.getElementById('toggle-pass');
+      var input = document.getElementById('password');
+      if (btn && input) {
+        btn.addEventListener('click', function(){
+          var isHidden = input.type === 'password';
+          input.type = isHidden ? 'text' : 'password';
+          btn.textContent = isHidden ? 'Hide' : 'Show';
+          btn.setAttribute('aria-pressed', String(isHidden));
+        });
+      }
+    })();
+  </script>
+</body>
+</html>

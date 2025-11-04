@@ -1,0 +1,54 @@
+<% layout('merchant/layout') -%>
+
+<div class="card">
+  <div class="title">API Keys</div>
+  <p class="muted">Read-only keys scoped to your account. Create, rotate, or revoke as needed.</p>
+
+  <form method="post" action="/merchant/keys/create" style="margin:12px 0">
+    <button class="btn primary" type="submit">Create new key</button>
+  </form>
+
+  <% if (justCreated) { %>
+    <div class="card" style="background:var(--row);border-style:dashed">
+      <div class="title" style="margin:0 0 8px 0">Copy your new key now</div>
+      <code style="display:block;word-break:break-all"><%= justCreated %></code>
+      <div class="muted">This is the only time we show the full secret. Store it securely.</div>
+    </div>
+  <% } %>
+
+  <div class="table-wrap" style="margin-top:12px">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>KEY</th><th>STATUS</th><th>SCOPES</th>
+          <th>CREATED</th><th>LAST USED</th><th>EXPIRES</th><th>ACTIONS</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% if (!keys.length) { %>
+          <tr><td colspan="7" style="text-align:center;color:var(--ink-dim)">No keys yet</td></tr>
+        <% } %>
+        <% keys.forEach(k => { %>
+          <tr>
+            <td><%= `${k.prefix}.••••••••••••••••••••••••${k.last4}` %></td>
+            <td><%= k.active ? 'Active' : 'Revoked' %></td>
+            <td><%= k.scopes.join(', ') || '-' %></td>
+            <td><%= k.createdAt.toISOString() %></td>
+            <td><%= k.lastUsedAt ? k.lastUsedAt.toISOString() : '—' %></td>
+            <td><%= k.expiresAt ? k.expiresAt.toISOString() : '—' %></td>
+            <td class="actions">
+              <% if (k.active) { %>
+                <form method="post" action="/merchant/keys/<%= k.id %>/rotate" style="display:inline" onsubmit="return confirm('Rotate this key? Old one will be revoked.')">
+                  <button class="btn small" type="submit">Rotate</button>
+                </form>
+                <form method="post" action="/merchant/keys/<%= k.id %>/revoke" style="display:inline" onsubmit="return confirm('Revoke this key?')">
+                  <button class="btn small danger" type="submit">Revoke</button>
+                </form>
+              <% } else { %> — <% } %>
+            </td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+</div>

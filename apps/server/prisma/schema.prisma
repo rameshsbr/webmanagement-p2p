@@ -1,0 +1,401 @@
+// prisma/schema.prisma
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/**
+ * ───────── EXISTING MODELS (kept as-is, only added safe relations) ─────────
+ */
+model Merchant {
+  id           String                @id @default(cuid())
+  name         String
+  webhookUrl   String?
+  balanceCents Int                   @default(0)
+  status       String                @default("active")
+  apiKeys      MerchantApiKey[]
+  bankAccounts BankAccount[]
+  paymentReqs  PaymentRequest[]
+  ledger       LedgerEntry[]
+  createdAt    DateTime              @default(now())
+  updatedAt    DateTime              @updatedAt
+  channels     NotificationChannel[]
+
+  email           String? // NEW: optional
+  defaultCurrency String  @default("USD") // NEW: required with default
+  active          Boolean @default(true)
+
+  // new relations for super-admin features
+  users     MerchantUser[]
+  limits    MerchantLimits?
+  blocklist PayerBlocklist[]
+
+  // NEW: per-merchant checkout/SDK form configuration
+  // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
+  formConfigs MerchantFormConfig[]
+}
+
+model MerchantApiKey {
+  id String @id @default(cuid())
+
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchantId String
+
+  prefix    String   @unique
+  secretEnc String
+  last4     String
+  scopes    String[] @default([])
+  active    Boolean  @default(true)
+
+  createdAt  DateTime  @default(now())
+  lastUsedAt DateTime?
+  expiresAt  DateTime?
+
+  @@index([merchantId])
+}
+
+model User {
+  id            String                  @id @default(cuid())
+  email         String?                 @unique
+  phone         String?                 @unique
+  diditSubject  String                  @unique
+  verifiedAt    DateTime?
+  kyc           KycVerification[]
+  paymentReqs   PaymentRequest[]
+  withdrawDests WithdrawalDestination[]
+  createdAt     DateTime                @default(now())
+
+  // NEW: back-reference for PayerBlocklist.user
+  blocklistEntries PayerBlocklist[]
+}
+
+model KycVerification {
+  id                String   @id @default(cuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider          String
+  status            String // pending|approved|rejected
+  externalSessionId String   @unique
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+model BankAccount {
+  id         String    @id @default(cuid())
+  merchantId String?
+  merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+
+  currency     String
+  holderName   String
+  bankName     String
+  accountNo    String
+  iban         String?
+  instructions String?
+
+  // Phase-2 fields
+  method String  @default("OSKO") // OSKO | PAYID | FPX | DUITNOW | etc.
+  label  String? // friendly name for UI
+
+  fields Json? // { core: {holderName:{visible}, bankName:{visible}, accountNo:{visible}, iban:{visible}}, extra: [{key,label,type,value,visible,order}] }
+
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  payments PaymentRequest[] @relation("BankToPayment")
+
+  // Opposite side of MerchantFormConfig.bankAccount
+  formConfigs MerchantFormConfig[]
+
+  @@index([merchantId, currency, method, active])
+}
+
+model ReceiptFile {
+  id        String   @id @default(cuid())
+  path      String
+  mimeType  String
+  size      Int
+  original  String
+  createdAt DateTime @default(now())
+
+  // OLD 1:1 backref (keep during transition)
+  payment PaymentRequest? @relation("ReceiptToPayment")
+
+  // NEW multi-receipt relation (Phase 2, nullable for backfill)
+  paymentId String?
+  paymentV2 PaymentRequest? @relation("PaymentReceipts", fields: [paymentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentId, createdAt])
+}
+
+model NotificationChannel {
+  id         String                @id @default(cuid())
+  merchantId String
+  type       NotificationType
+  chatId     String
+  direction  NotificationDirection @default(BOTH)
+  active     Boolean               @default(true)
+  createdAt  DateTime              @default(now())
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, type, chatId, direction])
+  @@index([merchantId])
+}
+
+enum PaymentType {
+  DEPOSIT
+  WITHDRAWAL
+}
+
+enum PaymentStatus {
+  PENDING
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum NotificationType {
+  TELEGRAM
+}
+
+enum NotificationDirection {
+  INCOMING
+  OUTGOING
+  BOTH
+}
+
+model PaymentRequest {
+  id            String        @id @default(cuid())
+  type          PaymentType
+  status        PaymentStatus @default(PENDING)
+  amountCents   Int
+  currency      String
+  referenceCode String        @unique
+
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  bankAccountId String?
+  bankAccount   BankAccount? @relation("BankToPayment", fields: [bankAccountId], references: [id])
+
+  // OLD single receipt (kept)
+  receiptFileId String?      @unique
+  receiptFile   ReceiptFile? @relation("ReceiptToPayment", fields: [receiptFileId], references: [id])
+
+  // NEW multi-receipt (Phase 2)
+  receipts ReceiptFile[] @relation("PaymentReceipts")
+
+  detailsJson    Json?
+  rejectedReason String?
+  notes          String? // ← added so superadmin notes route works
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+}
+
+model WithdrawalDestination {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  currency   String
+  bankName   String
+  holderName String
+  accountNo  String
+  iban       String?
+  createdAt  DateTime @default(now())
+}
+
+model LedgerEntry {
+  id          String   @id @default(cuid())
+  merchantId  String
+  merchant    Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  amountCents Int // + credit, - debit
+  reason      String
+  paymentId   String?
+  createdAt   DateTime @default(now())
+}
+
+/**
+ * ───────── NEW / UPDATED FOR SUPER ADMIN ─────────
+ */
+
+enum AdminRole {
+  SUPER
+  ADMIN
+  SUPPORT
+}
+
+model AdminUser {
+  id               String    @id @default(cuid())
+  email            String    @unique
+  passwordHash     String
+  role             String    @default("admin") // "SUPER" or "ADMIN" (string for now)
+  active           Boolean   @default(true)
+  displayName      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt // ← add default so backfill works
+  twoFactorEnabled Boolean   @default(false)
+  totpSecret       String?
+  lastLoginAt      DateTime?
+
+  auditLogs   AdminAuditLog[]
+  loginLogs   AdminLoginLog[]
+  resetTokens AdminPasswordReset[]
+}
+
+model AdminLoginLog {
+  id        String     @id @default(cuid())
+  adminId   String?
+  admin     AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  email     String?
+  success   Boolean
+  ip        String?
+  userAgent String?
+  createdAt DateTime   @default(now())
+
+  @@index([adminId])
+  @@index([email])
+}
+
+model AdminAuditLog {
+  id         String     @id @default(cuid())
+  adminId    String?
+  admin      AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
+  action     String
+  targetType String?
+  targetId   String?
+  ip         String?
+  meta       Json?
+  createdAt  DateTime   @default(now())
+
+  @@index([adminId])
+  @@index([targetType, targetId])
+}
+
+enum MerchantRole {
+  OWNER
+  MANAGER
+  ANALYST
+}
+
+model MerchantUser {
+  id               String       @id @default(cuid())
+  merchantId       String
+  merchant         Merchant     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  email            String       @unique
+  passwordHash     String
+  role             MerchantRole @default(MANAGER)
+  active           Boolean      @default(true)
+  twoFactorEnabled Boolean      @default(false)
+  totpSecret       String?
+  createdAt        DateTime     @default(now())
+  updatedAt        DateTime     @updatedAt
+  lastLoginAt      DateTime?
+
+  loginLogs   MerchantLoginLog[]
+  resetTokens MerchantPasswordReset[]
+
+  @@index([merchantId])
+}
+
+model MerchantLoginLog {
+  id             String        @id @default(cuid())
+  merchantUserId String?
+  merchantUser   MerchantUser? @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
+  email          String?
+  success        Boolean
+  ip             String?
+  userAgent      String?
+  createdAt      DateTime      @default(now())
+
+  @@index([merchantUserId])
+  @@index([email])
+}
+
+model MerchantLimits {
+  merchantId   String   @id
+  merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  maxReqPerMin Int?
+  ipAllowList  String[] @default([])
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model PayerBlocklist {
+  id         String    @id @default(cuid())
+  merchantId String?
+  merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
+  userId     String?
+  user       User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+  reason     String?
+  active     Boolean   @default(true)
+  createdAt  DateTime  @default(now())
+  updatedAt  DateTime  @updatedAt
+
+  @@unique([merchantId, userId])
+  @@index([merchantId])
+  @@index([userId])
+}
+
+model AdminPasswordReset {
+  id        String    @id @default(cuid())
+  adminId   String
+  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  token     String    @unique
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([adminId])
+}
+
+model MerchantPasswordReset {
+  id             String       @id @default(cuid())
+  merchantUserId String
+  merchantUser   MerchantUser @relation(fields: [merchantUserId], references: [id], onDelete: Cascade)
+  token          String       @unique
+  expiresAt      DateTime
+  usedAt         DateTime?
+  createdAt      DateTime     @default(now())
+
+  @@index([merchantUserId])
+}
+
+model IdempotencyKey {
+  id        String   @id @default(cuid())
+  scope     String
+  key       String
+  response  Json
+  createdAt DateTime @default(now())
+
+  @@unique([scope, key])
+}
+
+/**
+ * ───────── UPDATED: Per-merchant *and/or* per-bank Form Configuration ─────────
+ * If bankAccountId is NULL ⇒ merchant-level default.
+ * Unique per (merchantId, bankAccountId).
+ */
+model MerchantFormConfig {
+  id         String   @id @default(cuid())
+  merchantId String
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+
+  bankAccountId String?
+  bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+
+  // JSON arrays of { name,display,field,placeholder,required,digits?,options? }
+  deposit    Json?
+  withdrawal Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([merchantId, bankAccountId])
+}

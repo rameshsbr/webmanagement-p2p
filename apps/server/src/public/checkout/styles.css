@@ -1,0 +1,71 @@
+/* apps/server/src/public/checkout/styles.css */
+/* Tiny theming polish for the modal shell created by checkout-widget.js */
+
+.payx-overlay.payx-theme-dark .payx-box {
+  background: #111 !important;
+  color: #eee !important;
+  box-shadow: 0 12px 36px rgba(0,0,0,.5) !important;
+}
+
+.payx-overlay.payx-theme-dark .payx-close {
+  background: #222 !important;
+  color: #eee !important;
+  border: 1px solid #333 !important;
+}
+
+.payx-overlay.payx-theme-light .payx-box {
+  background: #fff !important;
+  color: #222 !important;
+}
+
+.payx-overlay.payx-theme-light .payx-close {
+  background: #eee !important;
+  color: #222 !important;
+  border: 1px solid #ddd !important;
+}
+
+/* Optional hover niceties */
+.payx-close:hover { filter: brightness(0.96); }
+
+/* Key-value rows in Step 2 transfer screen */
+.payx-kv {
+  display: grid;
+  grid-template-columns: 160px 1fr auto;
+  gap: 8px;
+  align-items: center;
+  margin: 8px 0;
+}
+.payx-kv-label { opacity: .7; }
+.payx-kv-value {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  word-break: break-word;
+}
+.payx-copy {
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 6px;
+  border: 1px solid #ddd;
+  background: #f7f7f7;
+  cursor: pointer;
+}
+
+/* Tiny toast used by "Copy" buttons */
+.payx-toast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  transform: translateX(-50%) translateY(8px);
+  background: rgba(20,20,20,.95);
+  color: #fff;
+  padding: 8px 12px;
+  border-radius: 8px;
+  font-size: 12px;
+  opacity: 0;
+  transition: opacity .15s ease, transform .15s ease;
+  z-index: 100000;
+  pointer-events: none;
+}
+.payx-toast.show {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}

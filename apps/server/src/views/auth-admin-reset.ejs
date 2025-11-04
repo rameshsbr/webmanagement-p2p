@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title><%= title || 'Reset Password' %></title>
+  <link rel="stylesheet" href="/static/auth/styles.css" />
+</head>
+<body class="login-body">
+  <div class="bg"></div>
+
+  <main class="login-card">
+    <header class="brand">
+      <div class="logo">🔒</div>
+      <h1>Reset Password</h1>
+      <p class="muted">Enter a new password</p>
+    </header>
+
+    <% if (error) { %>
+      <div class="alert error"><%= error %></div>
+    <% } %>
+
+    <form method="POST" action="/auth/admin/reset" class="form">
+      <input type="hidden" name="token" value="<%= token %>"/>
+
+      <div class="field">
+        <label>New password</label>
+        <div class="password-wrap">
+          <input id="password" type="password" name="password" placeholder="••••••••" required minlength="8" />
+          <button type="button" class="toggle-pass" aria-pressed="false">Show</button>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>Confirm password</label>
+        <div class="password-wrap">
+          <input id="confirm" type="password" name="confirm" placeholder="••••••••" required minlength="8" />
+          <button type="button" class="toggle-pass" aria-pressed="false">Show</button>
+        </div>
+      </div>
+
+      <button type="submit" class="btn primary w-100">Update password</button>
+    </form>
+  </main>
+
+  <script src="/static/auth/login.js" defer></script>
+</body>
+</html>

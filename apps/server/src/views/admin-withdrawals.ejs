@@ -1,0 +1,60 @@
+<% layout('admin/layout') -%>
+
+<%- include('partials/filters-bar', { query, type: 'WITHDRAWAL', exportBase: 'withdrawals' }) %>
+<%- include('partials/column-settings', { key: 'admin.columns.withdrawals' }) %>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th data-col="txnId">TRANSACTION ID</th>
+        <th data-col="userId">USER ID</th>
+        <th data-col="currency">CURRENCY</th>
+        <th data-col="amount">AMOUNT</th>
+        <th data-col="status">STATUS</th>
+        <th data-col="bank">BANK NAME</th>
+        <th data-col="created">DATE OF CREATION</th>
+        <th data-col="updated">TIME OF PROCESSING</th>
+        <th data-col="userInfo">USER INFO</th>
+        <th data-col="actions">ACTIONS</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!table.items.length) { %>
+        <tr><td colspan="10" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+      <% } %>
+      <% table.items.forEach(r=>{ %>
+        <tr>
+          <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
+          <td data-col="userId"><%= r.userId %></td>
+          <td data-col="currency"><%= r.currency %></td>
+          <td data-col="amount"><%= r.amountCents %></td>
+          <td data-col="status">
+            <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
+            <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
+            <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
+            <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+          </td>
+          <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
+          <td data-col="created"><%= r.createdAt.toISOString() %></td>
+          <td data-col="updated"><%= r.updatedAt.toISOString() %></td>
+          <td data-col="userInfo" style="max-width:280px">
+            <div><b>Email:</b> <%= r.user?.email || '-' %></div>
+            <div><b>Phone:</b> <%= r.user?.phone || '-' %></div>
+          </td>
+          <td data-col="actions" class="actions">
+            <% if (r.status==='PENDING') { %>
+              <form method="post" action="/admin/withdrawals/<%= r.id %>/approve" style="display:inline" onsubmit="return confirm('Approve this withdrawal? It will deduct merchant balance.')">
+                <button class="btn small primary" type="submit">Approve</button>
+              </form>
+              <form method="post" action="/admin/withdrawals/<%= r.id %>/reject" style="display:inline" onsubmit="return confirm('Reject this withdrawal?')">
+                <input type="hidden" name="reason" value="Manual reject"/>
+                <button class="btn small danger" type="submit">Reject</button>
+              </form>
+            <% } else { %>&mdash;<% } %>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

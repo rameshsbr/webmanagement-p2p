@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="<%= theme %>">
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>
+    <%= title %>
+  </title>
+  <link rel="stylesheet" href="/static/admin/styles.css" />
+</head>
+
+<body>
+  <% var IS_AUTH=(typeof isAuthView !=='undefined' && isAuthView); %>
+    <% var ADM=(typeof admin !=='undefined' && admin) ? admin : null; %>
+
+      <header class="header" role="banner">
+        <button class="btn btn-icon sb-toggle" type="button" title="Toggle sidebar"
+          aria-label="Toggle sidebar">☰</button>
+        <div class="brand"><span class="brand-accent">ADMIN&nbsp;</span>PORTAL</div>
+        <div class="spacer"></div>
+        <% /* Top actions removed per requirements */ %>
+      </header>
+
+      <div class="shell" data-shell>
+        <% if (!IS_AUTH) { %>
+          <!-- ===== Sidebar (from partial) ===== -->
+          <aside class="sidebar" data-sidebar>
+            <%- include('../partials/sidebar', { ADM: ADM }) %>
+          </aside>
+          <!-- ===== /Sidebar ===== -->
+          <% } %>
+
+            <main class="content <%= IS_AUTH ? 'auth-only' : '' %>">
+              <% if (!IS_AUTH) { %>
+                <div class="panel page-chrome">
+                  <h1 class="page-title">
+                    <%= title %>
+                  </h1>
+                </div>
+                <% } %>
+
+                  <section class="page">
+                    <%- body %>
+                  </section>
+            </main>
+      </div>
+
+      <script src="/static/admin/admin.js" defer></script>
+</body>
+
+</html>

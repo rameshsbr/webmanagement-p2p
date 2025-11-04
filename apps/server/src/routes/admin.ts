@@ -34,7 +34,7 @@ function formatAmount(cents: number, currency?: string | null) {
 }
 
 function sortSpec(s?: string) {
-  const wl = new Set(['createdAt','updatedAt','amountCents','status','currency','referenceCode']);
+  const wl = new Set(['createdAt','processedAt','updatedAt','amountCents','status','currency','referenceCode']);
   let col: string = 'createdAt', dir: 'asc'|'desc' = 'desc';
   if (s) {
     const [c, d] = s.split(':');
@@ -61,7 +61,7 @@ const listQuery = z.object({
   amountMax: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
-  dateField: z.enum(['createdAt','updatedAt']).optional(),
+  dateField: z.enum(['createdAt','processedAt','updatedAt']).optional(),
   sort: z.string().optional(),
   page: z.string().optional(),
   perPage: z.string().optional()
@@ -342,6 +342,9 @@ router.get('/export/deposits.csv', async (req: Request, res: Response) => {
   const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','updatedAt','receipt'] });
   csv.pipe(res);
   for (const x of items) {
+    const processedAt = x.processedAt || x.updatedAt;
+    const processedAtDate = processedAt ? new Date(processedAt as any) : null;
+    const processingSeconds = processedAtDate ? Math.max(0, Math.round((processedAtDate.getTime() - x.createdAt.getTime()) / 1000)) : null;
     csv.write({
       id: x.id, referenceCode: x.referenceCode, userId: x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
@@ -360,7 +363,9 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
     { header: 'User', key: 'userId', width: 16 },{ header: 'Merchant', key: 'merchant', width: 24 },
     { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount', key: 'amount', width: 14 },
     { header: 'Status', key: 'status', width: 12 },{ header: 'Bank', key: 'bank', width: 18 },
-    { header: 'Created', key: 'createdAt', width: 22 },{ header: 'Updated', key: 'updatedAt', width: 22 },
+    { header: 'Created', key: 'createdAt', width: 22 },{ header: 'Processed', key: 'processedAt', width: 22 },
+    { header: 'Processing (s)', key: 'processingSeconds', width: 16 },
+    { header: 'Processed by', key: 'processedBy', width: 24 },
     { header: 'Receipt', key: 'receipt', width: 28 },
   ];
   items.forEach(x => ws.addRow({
@@ -438,6 +443,9 @@ router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
   const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','updatedAt'] });
   csv.pipe(res);
   for (const x of items) {
+    const processedAt = x.processedAt || x.updatedAt;
+    const processedAtDate = processedAt ? new Date(processedAt as any) : null;
+    const processingSeconds = processedAtDate ? Math.max(0, Math.round((processedAtDate.getTime() - x.createdAt.getTime()) / 1000)) : null;
     csv.write({
       id: x.id, referenceCode: x.referenceCode, userId: x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
@@ -455,7 +463,9 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
     { header: 'User', key: 'userId', width: 16 },{ header: 'Merchant', key: 'merchant', width: 24 },
     { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount', key: 'amount', width: 14 },
     { header: 'Status', key: 'status', width: 12 },{ header: 'Bank', key: 'bank', width: 18 },
-    { header: 'Created', key: 'createdAt', width: 22 },{ header: 'Updated', key: 'updatedAt', width: 22 },
+    { header: 'Created', key: 'createdAt', width: 22 },{ header: 'Processed', key: 'processedAt', width: 22 },
+    { header: 'Processing (s)', key: 'processingSeconds', width: 16 },
+    { header: 'Processed by', key: 'processedBy', width: 24 },
   ];
   items.forEach(x => ws.addRow({
     id: x.id, referenceCode: x.referenceCode, userId: x.userId, merchant: x.merchant?.name ?? '',

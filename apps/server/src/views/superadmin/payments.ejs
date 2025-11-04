@@ -90,7 +90,7 @@
     <option value="updatedAt" <%= (query.dateField||'')==='updatedAt' ? 'selected' : '' %>>By updated</option>
   </select>
   <select class="input" name="sort">
-    <% var sorts = ['createdAt:desc','createdAt:asc','updatedAt:desc','updatedAt:asc','amountCents:desc','amountCents:asc','status:asc','status:desc','currency:asc','currency:desc','referenceCode:asc','referenceCode:desc']; %>
+    <% var sorts = ['createdAt:desc','createdAt:asc','processedAt:desc','processedAt:asc','amountCents:desc','amountCents:asc','status:asc','status:desc','currency:asc','currency:desc','referenceCode:asc','referenceCode:desc']; %>
     <% sorts.forEach(function(s){ %>
       <option value="<%= s %>" <%= (query.sort||'')===s ? 'selected' : '' %>><%= s %></option>
     <% }) %>

@@ -35,6 +35,7 @@ function sortSpec(s?: string) {
   // allowlist of sortable columns + default
   const wl = new Set([
     "createdAt",
+    "processedAt",
     "updatedAt",
     "amountCents",
     "status",
@@ -66,12 +67,22 @@ function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   // Amount range
   if (q.amountMin || q.amountMax) {
     where.amountCents = {};
-    if (q.amountMin) where.amountCents.gte = Number(q.amountMin);
-    if (q.amountMax) where.amountCents.lte = Number(q.amountMax);
+    if (q.amountMin) {
+      const v = Number(q.amountMin);
+      if (Number.isFinite(v)) where.amountCents.gte = Math.round(v * 100);
+    }
+    if (q.amountMax) {
+      const v = Number(q.amountMax);
+      if (Number.isFinite(v)) where.amountCents.lte = Math.round(v * 100);
+    }
   }
 
   // Date window (inclusive, whole-day)
-  const df = q.dateField === "updatedAt" ? "updatedAt" : "createdAt";
+  const df = q.dateField === "processedAt"
+    ? "processedAt"
+    : q.dateField === "updatedAt"
+      ? "updatedAt"
+      : "createdAt";
   if (q.from || q.to) {
     where[df] = {};
     if (q.from) {

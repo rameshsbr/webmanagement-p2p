@@ -81,8 +81,12 @@ function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL')
   return where;
 }
 
-async function fetchPayments(req: Request, type: 'DEPOSIT'|'WITHDRAWAL') {
-  const q = listQuery.parse(req.query);
+async function fetchPayments(
+  req: Request,
+  type: 'DEPOSIT'|'WITHDRAWAL',
+  overrides?: Partial<Record<keyof z.infer<typeof listQuery>, string | undefined>>
+) {
+  const q = listQuery.parse({ ...req.query, ...(overrides || {}) });
   const where = whereFrom(q, type);
   const page = Math.max(1, int(q.page, 1));
   const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
@@ -111,9 +115,10 @@ async function fetchPayments(req: Request, type: 'DEPOSIT'|'WITHDRAWAL') {
 // Dashboard
 // ───────────────────────────────────────────────────────────────────────────────
 router.get('/', async (_req, res) => {
+  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
   const [pendingDeposits, pendingWithdrawals, totalsToday] = await Promise.all([
-    prisma.paymentRequest.count({ where: { type: 'DEPOSIT', status: 'PENDING' } }),
-    prisma.paymentRequest.count({ where: { type: 'WITHDRAWAL', status: 'PENDING' } }),
+    prisma.paymentRequest.count({ where: { type: 'DEPOSIT', status: { in: awaitingStatuses } } }),
+    prisma.paymentRequest.count({ where: { type: 'WITHDRAWAL', status: { in: awaitingStatuses } } }),
     prisma.paymentRequest.groupBy({
       by: ['type'],
       where: { createdAt: { gte: new Date(new Date().setHours(0,0,0,0)) }, status: 'APPROVED' },
@@ -139,8 +144,7 @@ router.get('/report/deposits', async (req, res) => {
 
 // DB-level filtering for PENDING so new items appear immediately
 router.get('/report/deposits/pending', async (req, res) => {
-  const reqPending = { ...req, query: { ...req.query, status: 'PENDING' } } as Request;
-  const { total, items, page, perPage, pages, query } = await fetchPayments(reqPending, 'DEPOSIT');
+  const { total, items, page, perPage, pages, query } = await fetchPayments(req, 'DEPOSIT', { status: 'PENDING,SUBMITTED' });
   res.render('admin-deposits-pending', {
     title: 'Pending deposit requests',
     table: { total, items, page, perPage, pages },
@@ -151,7 +155,9 @@ router.get('/report/deposits/pending', async (req, res) => {
 router.post('/deposits/:id/approve', async (req, res) => {
   const id = req.params.id;
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
-  if (!pr || pr.type !== 'DEPOSIT' || pr.status !== 'PENDING') return res.status(400).json({ ok: false, error: 'Invalid state' });
+  if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
+    return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.paymentRequest.update({ where: { id }, data: { status: 'APPROVED', updatedAt: new Date() } });
@@ -169,7 +175,9 @@ router.post('/deposits/:id/reject', async (req, res) => {
   const id = req.params.id;
   const reason = (req.body?.reason as string) || 'Rejected by admin';
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
-  if (!pr || pr.type !== 'DEPOSIT' || pr.status !== 'PENDING') return res.status(400).json({ ok: false, error: 'Invalid state' });
+  if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
+    return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
 
   await prisma.paymentRequest.update({ where: { id }, data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date() } });
   safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} — ${reason}`).catch(()=>{});
@@ -222,8 +230,7 @@ router.get('/report/withdrawals', async (req, res) => {
 
 // DB-level filtering for PENDING so new items appear immediately
 router.get('/report/withdrawals/pending', async (req, res) => {
-  const reqPending = { ...req, query: { ...req.query, status: 'PENDING' } } as Request;
-  const { total, items, page, perPage, pages, query } = await fetchPayments(reqPending, 'WITHDRAWAL');
+  const { total, items, page, perPage, pages, query } = await fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' });
   res.render('admin-withdrawals-pending', {
     title: 'Pending withdrawal requests',
     table: { total, items, page, perPage, pages },
@@ -234,7 +241,9 @@ router.get('/report/withdrawals/pending', async (req, res) => {
 router.post('/withdrawals/:id/approve', async (req, res) => {
   const id = req.params.id;
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
-  if (!pr || pr.type !== 'WITHDRAWAL' || pr.status !== 'PENDING') return res.status(400).json({ ok: false, error: 'Invalid state' });
+  if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
+    return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
 
   // balance check
   const m = await prisma.merchant.findUnique({ where: { id: pr.merchantId }, select: { balanceCents: true, name: true } });
@@ -256,7 +265,9 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
   const id = req.params.id;
   const reason = (req.body?.reason as string) || 'Rejected by admin';
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
-  if (!pr || pr.type !== 'WITHDRAWAL' || pr.status !== 'PENDING') return res.status(400).json({ ok: false, error: 'Invalid state' });
+  if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
+    return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
 
   await prisma.paymentRequest.update({ where: { id }, data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date() } });
   safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} — ${reason}`).catch(()=>{});

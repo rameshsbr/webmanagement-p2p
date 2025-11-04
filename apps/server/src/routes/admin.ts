@@ -148,7 +148,8 @@ router.get('/report/deposits/pending', async (req, res) => {
   res.render('admin-deposits-pending', {
     title: 'Pending deposit requests',
     table: { total, items, page, perPage, pages },
-    query
+    query,
+    returnTo: req.originalUrl
   });
 });
 
@@ -159,29 +160,62 @@ router.post('/deposits/:id/approve', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
+  const returnToRaw = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
+  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
+  const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim() : '';
+  const amountRaw = typeof req.body?.amountCents === 'string' ? req.body.amountCents.trim() : '';
+
+  let nextAmount = pr.amountCents;
+  if (amountRaw.length) {
+    const parsed = Number.parseInt(amountRaw, 10);
+    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
+      return res.status(400).json({ ok: false, error: 'Invalid amount' });
+    }
+    nextAmount = parsed;
+  }
+
+  if (nextAmount !== pr.amountCents && !comment) {
+    return res.status(400).json({ ok: false, error: 'Comment required when adjusting amount' });
+  }
+
   await prisma.$transaction(async (tx) => {
-    await tx.paymentRequest.update({ where: { id }, data: { status: 'APPROVED', updatedAt: new Date() } });
-    await tx.ledgerEntry.create({
-      data: { merchantId: pr.merchantId, amountCents: pr.amountCents, reason: `Deposit ${pr.referenceCode}`, paymentId: pr.id }
+    await tx.paymentRequest.update({
+      where: { id },
+      data: {
+        status: 'APPROVED',
+        amountCents: nextAmount,
+        updatedAt: new Date(),
+        ...(comment ? { notes: comment } : {})
+      }
     });
-    await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { increment: pr.amountCents } } });
+    await tx.ledgerEntry.create({
+      data: { merchantId: pr.merchantId, amountCents: nextAmount, reason: `Deposit ${pr.referenceCode}`, paymentId: pr.id }
+    });
+    await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { increment: nextAmount } } });
   });
 
-  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} (merchant ${pr.merchant.name})`).catch(()=>{});
-  res.redirect('back');
+  const approveNote = comment ? ` — ${comment}` : '';
+  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${nextAmount} ${pr.currency} (merchant ${pr.merchant.name})${approveNote}`).catch(()=>{});
+  res.redirect(redirectTarget);
 });
 
 router.post('/deposits/:id/reject', async (req, res) => {
   const id = req.params.id;
-  const reason = (req.body?.reason as string) || 'Rejected by admin';
+  const returnToRaw = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
+  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
+  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
   if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
+  if (!reason) {
+    return res.status(400).json({ ok: false, error: 'Comment is required to reject' });
+  }
+
   await prisma.paymentRequest.update({ where: { id }, data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date() } });
   safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} — ${reason}`).catch(()=>{});
-  res.redirect('back');
+  res.redirect(redirectTarget);
 });
 
 router.get('/export/deposits.csv', async (req: Request, res: Response) => {

@@ -52,7 +52,7 @@
           <td><%= formatAmount(r.amountCents, r.currency) %></td>
           <td><%= r.bankAccount?.bankName || '-' %></td>
           <td><%= formatDateTime(r.createdAt) %></td>
-          <td><%= formatDateTime(r.updatedAt) %></td>
+          <td><%= formatDateTime(r.processedAt || r.updatedAt) %></td>
           <td>
             <% if (r.receiptFile) { %>
               <a class="btn small" target="_blank" href="<%= r.receiptFile.path.startsWith('/') ? r.receiptFile.path : ('/uploads/'+r.receiptFile.path) %>">View</a>

@@ -155,6 +155,28 @@ async function fetchPayments(
   return { total, items, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
 }
 
+function resolveReturnTo(raw: unknown, fallback: string) {
+  if (typeof raw === 'string' && raw.startsWith('/admin')) return raw;
+  return fallback;
+}
+
+function extractProcessingDetails(pr: {
+  createdAt: Date;
+  updatedAt: Date;
+  processedAt?: Date | null;
+  processedByAdmin?: { displayName: string | null; email: string | null; id: string } | null;
+}) {
+  const processed = pr.processedAt ?? pr.updatedAt ?? null;
+  const processedDate = processed ? new Date(processed) : null;
+  const processingSeconds = processedDate
+    ? Math.max(0, Math.round((processedDate.getTime() - pr.createdAt.getTime()) / 1000))
+    : null;
+  const processedBy = pr.processedByAdmin
+    ? pr.processedByAdmin.displayName || pr.processedByAdmin.email || pr.processedByAdmin.id
+    : '';
+  return { processedDate, processingSeconds, processedBy };
+}
+
 // ───────────────────────────────────────────────────────────────────────────────
 // Dashboard
 // ───────────────────────────────────────────────────────────────────────────────
@@ -243,25 +265,7 @@ router.post('/deposits/:id/approve', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Comment required when adjusting the amount' });
   }
 
-  const returnToRaw = body.returnTo || '';
-  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
-  const returnToRaw = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
-  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
-  const comment = typeof req.body?.comment === 'string' ? req.body.comment.trim() : '';
-  const amountRaw = typeof req.body?.amountCents === 'string' ? req.body.amountCents.trim() : '';
-
-  let nextAmount = pr.amountCents;
-  if (amountRaw.length) {
-    const parsed = Number.parseInt(amountRaw, 10);
-    if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed <= 0) {
-      return res.status(400).json({ ok: false, error: 'Invalid amount' });
-    }
-    nextAmount = parsed;
-  }
-
-  if (nextAmount !== pr.amountCents && !comment) {
-    return res.status(400).json({ ok: false, error: 'Comment required when adjusting amount' });
-  }
+  const redirectTarget = resolveReturnTo(body.returnTo, '/admin/report/deposits/pending');
 
   await prisma.$transaction(async (tx) => {
     await tx.paymentRequest.update({
@@ -269,10 +273,9 @@ router.post('/deposits/:id/approve', async (req, res) => {
       data: {
         status: 'APPROVED',
         updatedAt: new Date(),
+        processedAt: new Date(),
         processedByAdminId: req.admin?.sub ?? null,
         ...(amountChanged ? { amountCents: nextAmount } : {}),
-        amountCents: nextAmount,
-        updatedAt: new Date(),
         ...(comment ? { notes: comment } : {})
       }
     });
@@ -285,9 +288,6 @@ router.post('/deposits/:id/approve', async (req, res) => {
   const suffix = comment ? ` — ${comment}` : '';
   safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${formatAmount(nextAmount, pr.currency)} (merchant ${pr.merchant.name})${suffix}`).catch(() => {});
   res.json({ ok: true, redirect: redirectTarget });
-  const approveNote = comment ? ` — ${comment}` : '';
-  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${nextAmount} ${pr.currency} (merchant ${pr.merchant.name})${approveNote}`).catch(()=>{});
-  res.redirect(redirectTarget);
 });
 
 router.post('/deposits/:id/reject', async (req, res) => {
@@ -302,16 +302,12 @@ router.post('/deposits/:id/reject', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Comment is required' });
   }
 
-  const returnToRaw = typeof req.body?.returnTo === 'string' ? req.body.returnTo : '';
-  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
-  const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
   if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
-  const returnToRaw = parsed.data.returnTo || '';
-  const redirectTarget = returnToRaw.startsWith('/admin') ? returnToRaw : '/admin/report/deposits/pending';
+  const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/deposits/pending');
 
   await prisma.paymentRequest.update({
     where: { id },
@@ -320,35 +316,32 @@ router.post('/deposits/:id/reject', async (req, res) => {
       rejectedReason: comment,
       notes: comment,
       updatedAt: new Date(),
+      processedAt: new Date(),
       processedByAdminId: req.admin?.sub ?? null
     }
   });
   safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} — ${comment}`).catch(() => {});
   res.json({ ok: true, redirect: redirectTarget });
-
-  if (!reason) {
-    return res.status(400).json({ ok: false, error: 'Comment is required to reject' });
-  }
-
-  await prisma.paymentRequest.update({ where: { id }, data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date() } });
-  safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${pr.amountCents} ${pr.currency} — ${reason}`).catch(()=>{});
-  res.redirect(redirectTarget);
 });
 
 router.get('/export/deposits.csv', async (req: Request, res: Response) => {
   const { items } = await fetchPayments(req, 'DEPOSIT');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="deposits.csv"');
-  const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','updatedAt','receipt'] });
+  const csv = stringify({
+    header: true,
+    columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','processedAt','processingSeconds','processedBy','receipt']
+  });
   csv.pipe(res);
   for (const x of items) {
-    const processedAt = x.processedAt || x.updatedAt;
-    const processedAtDate = processedAt ? new Date(processedAt as any) : null;
-    const processingSeconds = processedAtDate ? Math.max(0, Math.round((processedAtDate.getTime() - x.createdAt.getTime()) / 1000)) : null;
+    const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
     csv.write({
       id: x.id, referenceCode: x.referenceCode, userId: x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
-      bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(), updatedAt: x.updatedAt.toISOString(),
+      bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
+      processedAt: processedDate ? processedDate.toISOString() : '',
+      processingSeconds: processingSeconds ?? '',
+      processedBy,
       receipt: x.receiptFile?.original ?? ''
     });
   }
@@ -368,11 +361,24 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
     { header: 'Processed by', key: 'processedBy', width: 24 },
     { header: 'Receipt', key: 'receipt', width: 28 },
   ];
-  items.forEach(x => ws.addRow({
-    id: x.id, referenceCode: x.referenceCode, userId: x.userId, merchant: x.merchant?.name ?? '',
-    currency: x.currency, amount: x.amountCents / 100, status: x.status, bank: x.bankAccount?.bankName ?? '',
-    createdAt: x.createdAt, updatedAt: x.updatedAt, receipt: x.receiptFile?.original ?? ''
-  }));
+  items.forEach(x => {
+    const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
+    ws.addRow({
+      id: x.id,
+      referenceCode: x.referenceCode,
+      userId: x.userId,
+      merchant: x.merchant?.name ?? '',
+      currency: x.currency,
+      amount: x.amountCents / 100,
+      status: x.status,
+      bank: x.bankAccount?.bankName ?? '',
+      createdAt: x.createdAt,
+      processedAt: processedDate,
+      processingSeconds,
+      processedBy,
+      receipt: x.receiptFile?.original ?? ''
+    });
+  });
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition','attachment; filename="deposits.xlsx"');
   await wb.xlsx.write(res); res.end();
@@ -408,7 +414,12 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
   await prisma.$transaction(async (tx) => {
     await tx.paymentRequest.update({
       where: { id },
-      data: { status: 'APPROVED', updatedAt: new Date(), processedByAdminId: req.admin?.sub ?? null }
+      data: {
+        status: 'APPROVED',
+        updatedAt: new Date(),
+        processedAt: new Date(),
+        processedByAdminId: req.admin?.sub ?? null
+      }
     });
     await tx.ledgerEntry.create({
       data: { merchantId: pr.merchantId, amountCents: -pr.amountCents, reason: `Withdrawal ${pr.referenceCode}`, paymentId: pr.id }
@@ -430,7 +441,13 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
 
   await prisma.paymentRequest.update({
     where: { id },
-    data: { status: 'REJECTED', rejectedReason: reason, updatedAt: new Date(), processedByAdminId: req.admin?.sub ?? null }
+    data: {
+      status: 'REJECTED',
+      rejectedReason: reason,
+      updatedAt: new Date(),
+      processedAt: new Date(),
+      processedByAdminId: req.admin?.sub ?? null
+    }
   });
   safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} — ${reason}`).catch(()=>{});
   res.redirect('back');
@@ -440,16 +457,20 @@ router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
   const { items } = await fetchPayments(req, 'WITHDRAWAL');
   res.setHeader('Content-Type', 'text/csv');
   res.setHeader('Content-Disposition', 'attachment; filename="withdrawals.csv"');
-  const csv = stringify({ header: true, columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','updatedAt'] });
+  const csv = stringify({
+    header: true,
+    columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','processedAt','processingSeconds','processedBy']
+  });
   csv.pipe(res);
   for (const x of items) {
-    const processedAt = x.processedAt || x.updatedAt;
-    const processedAtDate = processedAt ? new Date(processedAt as any) : null;
-    const processingSeconds = processedAtDate ? Math.max(0, Math.round((processedAtDate.getTime() - x.createdAt.getTime()) / 1000)) : null;
+    const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
     csv.write({
       id: x.id, referenceCode: x.referenceCode, userId: x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
-      bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(), updatedAt: x.updatedAt.toISOString()
+      bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
+      processedAt: processedDate ? processedDate.toISOString() : '',
+      processingSeconds: processingSeconds ?? '',
+      processedBy
     });
   }
   csv.end();
@@ -467,11 +488,23 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
     { header: 'Processing (s)', key: 'processingSeconds', width: 16 },
     { header: 'Processed by', key: 'processedBy', width: 24 },
   ];
-  items.forEach(x => ws.addRow({
-    id: x.id, referenceCode: x.referenceCode, userId: x.userId, merchant: x.merchant?.name ?? '',
-    currency: x.currency, amount: x.amountCents / 100, status: x.status, bank: x.bankAccount?.bankName ?? '',
-    createdAt: x.createdAt, updatedAt: x.updatedAt
-  }));
+  items.forEach(x => {
+    const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
+    ws.addRow({
+      id: x.id,
+      referenceCode: x.referenceCode,
+      userId: x.userId,
+      merchant: x.merchant?.name ?? '',
+      currency: x.currency,
+      amount: x.amountCents / 100,
+      status: x.status,
+      bank: x.bankAccount?.bankName ?? '',
+      createdAt: x.createdAt,
+      processedAt: processedDate,
+      processingSeconds,
+      processedBy,
+    });
+  });
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition','attachment; filename="withdrawals.xlsx"');
   await wb.xlsx.write(res); res.end();

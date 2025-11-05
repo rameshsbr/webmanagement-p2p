@@ -178,6 +178,7 @@ model PaymentRequest {
 
   processedByAdminId String?
   processedByAdmin   AdminUser? @relation("PaymentProcessedBy", fields: [processedByAdminId], references: [id], onDelete: SetNull)
+  processedAt        DateTime?
 
   merchantId String
   merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)

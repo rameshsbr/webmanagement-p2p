@@ -44,7 +44,6 @@
           <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
           <td data-col="amount"><%= formatAmount(r.amountCents, r.currency) %></td>
-          <td data-col="amount"><%= r.amountCents %></td>
           <td data-col="status">
             <% if (r.status === 'SUBMITTED') { %>
               <span class="badge">Submitted</span>
@@ -78,9 +77,6 @@
               type="button"
               class="btn small primary"
               data-approve
-              class="btn small primary"
-              type="button"
-              data-admin-action="approve"
               data-id="<%= r.id %>"
               data-reference="<%= r.referenceCode %>"
               data-amount="<%= r.amountCents %>"
@@ -90,9 +86,6 @@
               type="button"
               class="btn small danger"
               data-reject
-              class="btn small danger"
-              type="button"
-              data-admin-action="reject"
               data-id="<%= r.id %>"
               data-reference="<%= r.referenceCode %>"
               data-amount="<%= r.amountCents %>"

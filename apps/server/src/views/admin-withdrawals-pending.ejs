@@ -44,20 +44,12 @@
           <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
           <td data-col="amount"><%= formatAmount(r.amountCents, r.currency) %></td>
-          <td data-col="amount"><%= r.amountCents %></td>
           <td data-col="status">
             <% if (r.status === 'SUBMITTED') { %>
               <span class="badge">Submitted</span>
             <% } else { %>
               <span class="badge warn">Pending</span>
             <% } %>
-          </td>
-          <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
-          <td data-col="created"><%= r.createdAt.toISOString() %></td>
-          <td data-col="updated"><%= r.updatedAt.toISOString() %></td>
-          <td data-col="userInfo" style="max-width:280px">
-            <div><b>Email:</b> <%= r.user?.email || '-' %></div>
-            <div><b>Phone:</b> <%= r.user?.phone || '-' %></div>
           </td>
           <td data-col="bank"><%= r.bankAccount?.bankName || r.detailsJson?.destination?.bankName || '-' %></td>
           <td data-col="created"><%= formatDateTime(r.createdAt) %></td>

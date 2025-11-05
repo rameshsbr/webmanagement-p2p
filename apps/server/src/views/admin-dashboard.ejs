@@ -22,12 +22,12 @@
   </div>
 
   <div class="kpi">
-    <div class="label">Today deposits (cents)</div>
-    <div class="value"><%= m.todayDeposits %></div>
+    <div class="label">Today deposits</div>
+    <div class="value"><%= formatAmount(m.todayDeposits, 'AUD') %></div>
   </div>
 
   <div class="kpi">
-    <div class="label">Today withdrawals (cents)</div>
-    <div class="value"><%= m.todayWithdrawals %></div>
+    <div class="label">Today withdrawals</div>
+    <div class="value"><%= formatAmount(m.todayWithdrawals, 'AUD') %></div>
   </div>
 </div>

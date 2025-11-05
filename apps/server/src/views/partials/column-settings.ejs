@@ -1,13 +1,14 @@
 <%
   const storageKey = (typeof key !== 'undefined' && key) ? key : 'admin.columns';
   const defs = (typeof defaults !== 'undefined' && defaults) ? defaults : {
-    txnId:true, userId:true, currency:true, amount:true, status:true,
-    bank:true, created:true, depositTime:true, processingTime:true, userInfo:true, actions:true
+    txnId:true, userId:true, merchant:true, currency:true, amount:true, status:true,
+    bank:true, created:true, processedAt:true, processingTime:true, userInfo:true,
+    comment:true, admin:true, actions:true
   };
   const localLabelMap = {
-    txnId:'Transaction ID', userId:'User ID', currency:'Currency', amount:'Amount', status:'Status',
-    bank:'Bank name', created:'Date of creation', depositTime:'Time of deposit',
-    payoutTime:'Time of payout', processingTime:'Time of processing', userInfo:'User info', actions:'Actions'
+    txnId:'Transaction ID', userId:'User ID', merchant:'Merchant', currency:'Currency', amount:'Amount', status:'Status',
+    bank:'Bank name', created:'Date of creation', processedAt:'Date processed',
+    processingTime:'Time to process', userInfo:'User info', comment:'Comment', admin:'Admin', actions:'Actions'
   };
   const labels = Object.assign({}, localLabelMap, (typeof labelMap !== 'undefined' && labelMap) ? labelMap : {});
   const heading = (typeof columnHeading !== 'undefined' && columnHeading) ? columnHeading : 'COLUMN SETTINGS';

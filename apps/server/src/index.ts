@@ -120,17 +120,48 @@ app.use((req: any, res: any, next: any) => {
       second: "2-digit",
       hour12: true,
     });
-    res.locals.formatDateTime = (value: Date | string | null | undefined) => {
-      if (!value) return "-";
+    const dateFormatter = new Intl.DateTimeFormat("en-AU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+    const timeFormatter = new Intl.DateTimeFormat("en-AU", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    const ensureDate = (value: Date | string | null | undefined) => {
+      if (!value) return null;
       const date = value instanceof Date ? value : new Date(value);
-      if (Number.isNaN(date.getTime())) return "-";
+      if (Number.isNaN(date.getTime())) return null;
+      return date;
+    };
+    res.locals.formatDateTime = (value: Date | string | null | undefined) => {
+      const date = ensureDate(value);
+      if (!date) return "-";
       return dtFormatter.format(date);
+    };
+    res.locals.formatDateParts = (value: Date | string | null | undefined) => {
+      const date = ensureDate(value);
+      if (!date) return null;
+      return { date: dateFormatter.format(date), time: timeFormatter.format(date) };
+    };
+    res.locals.renderDateTime = (value: Date | string | null | undefined) => {
+      const parts = res.locals.formatDateParts(value);
+      if (!parts) return "-";
+      return `<span class="date-stack"><span>${parts.date}</span><span>${parts.time}</span></span>`;
     };
   }
   if (typeof res.locals.formatAmount === "undefined") {
     res.locals.formatAmount = (cents: number, currency?: string | null) => {
       if (typeof cents !== "number" || !Number.isFinite(cents)) return "-";
-      const value = (cents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const abs = Math.abs(cents);
+      const hasFraction = abs % 100 !== 0;
+      const value = (cents / 100).toLocaleString("en-AU", {
+        minimumFractionDigits: hasFraction ? 2 : 0,
+        maximumFractionDigits: hasFraction ? 2 : 0,
+      });
       return currency ? `${value} ${currency}` : value;
     };
   }

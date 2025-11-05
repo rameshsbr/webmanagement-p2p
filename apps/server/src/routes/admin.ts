@@ -28,9 +28,15 @@ function statusesCSV(s?: string) {
   return arr.length ? arr : undefined;
 }
 
-function formatAmount(cents: number, currency?: string | null) {
-  const value = (cents / 100).toFixed(2);
-  return currency ? `${value} ${currency}` : value;
+function formatAmount(cents: number) {
+  if (typeof cents !== 'number' || !Number.isFinite(cents)) return '-';
+  const absCents = Math.abs(cents);
+  const hasFraction = absCents % 100 !== 0;
+  const value = (cents / 100).toLocaleString('en-AU', {
+    minimumFractionDigits: hasFraction ? 2 : 0,
+    maximumFractionDigits: hasFraction ? 2 : 0,
+  });
+  return value;
 }
 
 function sortSpec(s?: string) {
@@ -47,6 +53,7 @@ function sortSpec(s?: string) {
 const listQuery = z.object({
   q: z.string().optional(),
   reference: z.string().optional(),
+  uniqueReference: z.string().optional(),
   id: z.string().optional(),
   userId: z.string().optional(),
   merchantId: z.string().optional(),
@@ -72,7 +79,15 @@ function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL')
   const and: any[] = [];
   if (q.id) where.id = q.id;
   if (q.reference) where.referenceCode = q.reference;
-  if (q.userId) where.userId = q.userId;
+  if (q.uniqueReference) where.uniqueReference = q.uniqueReference;
+  if (q.userId) {
+    and.push({
+      OR: [
+        { user: { publicId: { equals: q.userId } } },
+        { userId: q.userId }
+      ]
+    });
+  }
   if (q.merchantId) where.merchantId = q.merchantId;
   if (q.merchantName) {
     and.push({ merchant: { name: { contains: q.merchantName, mode: 'insensitive' } } });
@@ -115,6 +130,7 @@ function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL')
   if (q.q) {
     where.OR = [
       { referenceCode: { contains: q.q, mode: 'insensitive' } },
+      { uniqueReference: { contains: q.q, mode: 'insensitive' } },
       { userId: { contains: q.q, mode: 'insensitive' } }
     ];
   }
@@ -141,7 +157,7 @@ async function fetchPayments(
       where,
       include: {
         merchant: { select: { id: true, name: true } },
-        user: { select: { id: true, email: true, phone: true, diditSubject: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true, diditSubject: true } },
         bankAccount: { select: { id: true, bankName: true, holderName: true, accountNo: true, currency: true, method: true } },
         receiptFile: { select: { id: true, path: true, mimeType: true, original: true } },
         processedByAdmin: { select: { id: true, email: true, displayName: true } }
@@ -286,7 +302,7 @@ router.post('/deposits/:id/approve', async (req, res) => {
   });
 
   const suffix = comment ? ` — ${comment}` : '';
-  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${formatAmount(nextAmount, pr.currency)} (merchant ${pr.merchant.name})${suffix}`).catch(() => {});
+  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${formatAmount(nextAmount)} ${pr.currency} (merchant ${pr.merchant.name})${suffix}`).catch(() => {});
   res.json({ ok: true, redirect: redirectTarget });
 });
 
@@ -320,7 +336,7 @@ router.post('/deposits/:id/reject', async (req, res) => {
       processedByAdminId: req.admin?.sub ?? null
     }
   });
-  safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} — ${comment}`).catch(() => {});
+  safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} — ${comment}`).catch(() => {});
   res.json({ ok: true, redirect: redirectTarget });
 });
 
@@ -336,7 +352,7 @@ router.get('/export/deposits.csv', async (req: Request, res: Response) => {
   for (const x of items) {
     const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
     csv.write({
-      id: x.id, referenceCode: x.referenceCode, userId: x.userId,
+      id: x.id, referenceCode: x.referenceCode, userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
       bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
       processedAt: processedDate ? processedDate.toISOString() : '',
@@ -366,7 +382,7 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
     ws.addRow({
       id: x.id,
       referenceCode: x.referenceCode,
-      userId: x.userId,
+      userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '',
       currency: x.currency,
       amount: x.amountCents / 100,
@@ -427,7 +443,7 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
     await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { decrement: pr.amountCents } } });
   });
 
-  safeNotify(`✅ Withdrawal approved: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} (merchant ${m?.name})`).catch(()=>{});
+  safeNotify(`✅ Withdrawal approved: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} (merchant ${m?.name})`).catch(()=>{});
   res.redirect('back');
 });
 
@@ -449,7 +465,7 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
       processedByAdminId: req.admin?.sub ?? null
     }
   });
-  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents, pr.currency)} — ${reason}`).catch(()=>{});
+  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} — ${reason}`).catch(()=>{});
   res.redirect('back');
 });
 
@@ -465,7 +481,7 @@ router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
   for (const x of items) {
     const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
     csv.write({
-      id: x.id, referenceCode: x.referenceCode, userId: x.userId,
+      id: x.id, referenceCode: x.referenceCode, userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
       bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
       processedAt: processedDate ? processedDate.toISOString() : '',
@@ -493,7 +509,7 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
     ws.addRow({
       id: x.id,
       referenceCode: x.referenceCode,
-      userId: x.userId,
+      userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '',
       currency: x.currency,
       amount: x.amountCents / 100,

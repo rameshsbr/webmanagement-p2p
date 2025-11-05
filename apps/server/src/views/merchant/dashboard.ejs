@@ -48,12 +48,12 @@
         <% } else { %>
           <% latest.forEach(x => { %>
             <tr>
-              <td><%= x.referenceCode %></td>
+              <td class="mono"><%= x.referenceCode %></td>
               <td><%= x.type %></td>
               <td><%= x.status %></td>
-              <td><%= formatAmount(x.amountCents, x.currency) %></td>
+              <td><%= formatAmount(x.amountCents) %></td>
               <td><%= x.currency %></td>
-              <td><%= formatDateTime(x.createdAt) %></td>
+              <td><%- renderDateTime(x.createdAt) %></td>
             </tr>
           <% }) %>
         <% } %>

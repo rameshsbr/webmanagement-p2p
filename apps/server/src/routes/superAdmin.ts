@@ -134,7 +134,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         receipts: {
           select: { id: true, original: true, path: true, createdAt: true },
         },
-        user: { select: { id: true, email: true, phone: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true } },
         merchant: { select: { id: true, name: true } },
       },
       orderBy,

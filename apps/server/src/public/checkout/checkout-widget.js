@@ -476,7 +476,7 @@
     header.firstChild.textContent = "Transfer details";
 
     const details = intent.bankDetails || {};
-    const ref = intent.referenceCode;
+    const ref = intent.uniqueReference || intent.referenceCode;
 
     const intro = el("div", { style:"margin:4px 0 8px 0; opacity:.85" },
       "Use the details below to make your transfer. Always include the reference."
@@ -520,7 +520,7 @@
         await call(`/public/deposit/${intent.id}/receipt`, token, { method:"POST", body: fd });
         status.textContent = "Submitted. Thank you!";
         safeCallback("onDepositSubmitted", {
-          id: intent.id, referenceCode: intent.referenceCode,
+        id: intent.id, referenceCode: intent.referenceCode, uniqueReference: intent.uniqueReference,
           amountCents: intent.amountCents, currency: intent.currency || "AUD"
         });
       } catch (e) {
@@ -610,10 +610,10 @@
           headers: { "content-type":"application/json" },
           body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras }),
         });
-        status.innerHTML = `Request submitted. Reference: <b>${resp.referenceCode}</b>`;
+    status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);
         safeCallback("onWithdrawalSubmitted", {
-          id: resp.id, referenceCode: resp.referenceCode, amountCents, currency: "AUD"
+        id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: "AUD"
         });
       } catch (e) {
         status.textContent = (e && e.error) ? String(e.error) : "Error";

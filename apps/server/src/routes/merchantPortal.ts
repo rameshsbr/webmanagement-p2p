@@ -123,7 +123,10 @@ function whereFrom(q: z.infer<typeof listQuery>, merchantId: string, type?: "DEP
     if (q.from) where[df].gte = new Date(q.from);
     if (q.to) where[df].lte = new Date(q.to);
   }
-  if (q.q) where.OR = [{ referenceCode: { contains: q.q, mode: "insensitive" } }];
+  if (q.q) where.OR = [
+    { referenceCode: { contains: q.q, mode: "insensitive" } },
+    { uniqueReference: { contains: q.q, mode: "insensitive" } }
+  ];
   return where;
 }
 
@@ -139,7 +142,7 @@ async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" 
     prisma.paymentRequest.findMany({
       where,
       include: {
-        user: { select: { id: true, email: true, phone: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true } },
         bankAccount: { select: { bankName: true } },
         receiptFile: { select: { path: true, original: true } },
       },
@@ -175,7 +178,16 @@ router.get("/", async (req: any, res) => {
       where: { merchantId },
       orderBy: { createdAt: "desc" },
       take: 10,
-      select: { id: true, referenceCode: true, type: true, status: true, amountCents: true, currency: true, createdAt: true },
+      select: {
+        id: true,
+        referenceCode: true,
+        uniqueReference: true,
+        type: true,
+        status: true,
+        amountCents: true,
+        currency: true,
+        createdAt: true,
+      },
     }),
   ]);
 

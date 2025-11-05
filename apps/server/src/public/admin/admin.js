@@ -109,6 +109,8 @@ function toast(msg) {
   const table = document.querySelector('[data-pending-actions]');
   if (!table) return;
 
+  document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
+
   const postJson = async (url, payload) => {
     const res = await fetch(url, {
       method: 'POST',
@@ -191,15 +193,16 @@ function toast(msg) {
     const currency = btn.getAttribute('data-currency') || '';
     const originalCents = Number(btn.getAttribute('data-amount') || '0');
     const originalAmount = originalCents / 100;
+    const originalDisplay = (originalCents % 100 === 0) ? originalAmount.toFixed(0) : originalAmount.toFixed(2);
 
     const contentBuilder = () => {
       const wrapper = document.createElement('div');
       wrapper.className = 'modal-fields';
       wrapper.innerHTML = `
-        <p>Approve deposit <strong>${reference}</strong> (${currency} ${originalAmount.toFixed(2)})?</p>
+        <p>Approve deposit <strong>${reference}</strong> (${currency} ${originalDisplay})?</p>
         <label class="modal-field">
           <span>Amount (${currency})</span>
-          <input type="number" step="0.01" min="0.01" value="${originalAmount.toFixed(2)}" data-amount-input />
+          <input type="number" step="0.01" min="0.01" value="${originalDisplay}" data-amount-input />
         </label>
         <label class="modal-field">
           <span>Comment <small>(required if amount changes)</small></span>
@@ -247,7 +250,9 @@ function toast(msg) {
     const reference = btn.getAttribute('data-reference') || '';
     const currency = btn.getAttribute('data-currency') || '';
     const amountCents = Number(btn.getAttribute('data-amount') || '0');
-    const amountDisplay = (amountCents / 100).toFixed(2);
+    const amountDisplay = (amountCents % 100 === 0)
+      ? (amountCents / 100).toFixed(0)
+      : (amountCents / 100).toFixed(2);
 
     const contentBuilder = () => {
       const wrapper = document.createElement('div');

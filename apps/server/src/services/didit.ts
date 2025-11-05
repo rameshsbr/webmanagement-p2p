@@ -61,7 +61,7 @@ export async function handleDiditWebhook(
   let user = await p.user.findUnique({ where: { diditSubject } });
   if (!user) {
     user = await p.user.create({
-      data: { id: generateUserId(), diditSubject, verifiedAt: status === "approved" ? new Date() : null },
+      data: { publicId: generateUserId(), diditSubject, verifiedAt: status === "approved" ? new Date() : null },
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });

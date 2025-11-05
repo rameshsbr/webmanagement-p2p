@@ -37,12 +37,17 @@
         <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
       <% table.items.forEach(r=>{ %>
+        <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const payer = (r.detailsJson && r.detailsJson.payer) || {}; %>
+        <% const processedAt = r.processedAt || r.updatedAt || null; %>
+        <% const hasProcessed = !(r.status==='PENDING' || r.status==='SUBMITTED' || !processedAt); %>
         <tr>
-          <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
-          <td data-col="userId"><%= r.userId %></td>
+          <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
           <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
-          <td data-col="amount"><%= formatAmount(r.amountCents, r.currency) %></td>
+          <td data-col="amount"><%= formatAmount(r.amountCents) %></td>
           <td data-col="status">
             <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
             <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
@@ -50,26 +55,25 @@
             <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
           </td>
           <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
-          <td data-col="created"><%= formatDateTime(r.createdAt) %></td>
-          <% const processedAt = r.processedAt || r.updatedAt; %>
-          <td data-col="processedAt"><%= (r.status==='PENDING' || r.status==='SUBMITTED' || !processedAt) ? '-' : formatDateTime(processedAt) %></td>
-          <td data-col="processingTime"><%= (r.status==='PENDING' || r.status==='SUBMITTED' || !processedAt) ? '-' : formatDuration(r.createdAt, processedAt) %></td>
-          <td data-col="userInfo" style="max-width:320px">
-            <% const method = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || '-'; %>
-            <% const payer = r.detailsJson?.payer || {}; %>
-            <div><b>Unique Reference No:</b> <%= r.referenceCode %></div>
-            <div><b>Method:</b> <%= method || '-' %></div>
-            <div><b>Bank name:</b> <%= r.bankAccount?.bankName || '-' %></div>
-            <div><b>Account holder name:</b> <%= payer.holderName || '-' %></div>
-            <% if ((method || '').toUpperCase() === 'OSKO') { %>
-              <div><b>Account number:</b> <%= payer.accountNo || '-' %></div>
-              <div><b>BSB:</b> <%= payer.bsb || '-' %></div>
-            <% } else if ((method || '').toUpperCase() === 'PAYID') { %>
-              <div><b>PayID:</b> <%= payer.payIdValue || '-' %></div>
-            <% } %>
-            <% if (r.receiptFile) { %>
-              <div><b>Receipt:</b> <a href="<%= r.receiptFile.path %>" target="_blank">View receipt</a></div>
-            <% } %>
+          <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
+          <td data-col="processedAt"><%- hasProcessed ? renderDateTime(processedAt) : '-' %></td>
+          <td data-col="processingTime"><%= hasProcessed ? formatDuration(r.createdAt, processedAt) : '-' %></td>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <div class="info-line"><span>Unique Reference No:</span><span><%= r.uniqueReference %></span></div>
+              <div class="info-line"><span>Method:</span><span><%= method || '-' %></span></div>
+              <div class="info-line"><span>Bank name:</span><span><%= r.bankAccount?.bankName || '-' %></span></div>
+              <div class="info-line"><span>Account holder name:</span><span><%= payer.holderName || '-' %></span></div>
+              <% if (method === 'OSKO') { %>
+                <div class="info-line"><span>Account number:</span><span><%= payer.accountNo || '-' %></span></div>
+                <div class="info-line"><span>BSB:</span><span><%= payer.bsb || '-' %></span></div>
+              <% } else if (method === 'PAYID') { %>
+                <div class="info-line"><span>PayID:</span><span><%= payer.payIdValue || '-' %></span></div>
+              <% } %>
+              <% if (r.receiptFile) { %>
+                <div class="info-line"><span>Receipt:</span><span><a href="<%= r.receiptFile.path %>" target="_blank" rel="noopener">View receipt</a></span></div>
+              <% } %>
+            </div>
           </td>
           <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
           <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>

@@ -38,12 +38,15 @@
         <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
       <% table.items.forEach(r=>{ %>
+        <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const dest = (r.detailsJson && r.detailsJson.destination) || {}; %>
         <tr>
-          <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
-          <td data-col="userId"><%= r.userId %></td>
+          <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
           <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
-          <td data-col="amount"><%= formatAmount(r.amountCents, r.currency) %></td>
+          <td data-col="amount"><%= formatAmount(r.amountCents) %></td>
           <td data-col="status">
             <% if (r.status === 'SUBMITTED') { %>
               <span class="badge">Submitted</span>
@@ -51,22 +54,22 @@
               <span class="badge warn">Pending</span>
             <% } %>
           </td>
-          <td data-col="bank"><%= r.bankAccount?.bankName || r.detailsJson?.destination?.bankName || '-' %></td>
-          <td data-col="created"><%= formatDateTime(r.createdAt) %></td>
+          <td data-col="bank"><%= r.bankAccount?.bankName || dest.bankName || '-' %></td>
+          <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
           <td data-col="processedAt">-</td>
           <td data-col="processingTime">-</td>
-          <td data-col="userInfo" style="max-width:320px">
-            <% const method = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || '-'; %>
-            <% const dest = r.detailsJson?.destination || {}; %>
-            <div><b>Method:</b> <%= method || '-' %></div>
-            <div><b>Bank name:</b> <%= r.bankAccount?.bankName || dest.bankName || '-' %></div>
-            <div><b>Account holder name:</b> <%= dest.holderName || '-' %></div>
-            <% if ((method || '').toUpperCase() === 'OSKO') { %>
-              <div><b>Account number:</b> <%= dest.accountNo || '-' %></div>
-              <div><b>BSB:</b> <%= dest.bsb || '-' %></div>
-            <% } else if ((method || '').toUpperCase() === 'PAYID') { %>
-              <div><b>PayID:</b> <%= dest.payIdValue || '-' %></div>
-            <% } %>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <div class="info-line"><span>Method:</span><span><%= method || '-' %></span></div>
+              <div class="info-line"><span>Bank name:</span><span><%= r.bankAccount?.bankName || dest.bankName || '-' %></span></div>
+              <div class="info-line"><span>Account holder name:</span><span><%= dest.holderName || '-' %></span></div>
+              <% if (method === 'OSKO') { %>
+                <div class="info-line"><span>Account number:</span><span><%= dest.accountNo || '-' %></span></div>
+                <div class="info-line"><span>BSB:</span><span><%= dest.bsb || '-' %></span></div>
+              <% } else if (method === 'PAYID') { %>
+                <div class="info-line"><span>PayID:</span><span><%= dest.payIdValue || '-' %></span></div>
+              <% } %>
+            </div>
           </td>
           <td data-col="comment">-</td>
           <td data-col="admin">-</td>

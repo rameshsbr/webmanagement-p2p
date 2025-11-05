@@ -45,14 +45,14 @@
       <% } %>
       <% table.items.forEach(r => { %>
         <tr>
-          <td><%= r.referenceCode %></td>
+          <td class="mono"><%= r.referenceCode %></td>
           <td><%= r.type %></td>
           <td><%= r.status %></td>
           <td><%= r.currency %></td>
-          <td><%= formatAmount(r.amountCents, r.currency) %></td>
+          <td><%= formatAmount(r.amountCents) %></td>
           <td><%= r.bankAccount?.bankName || '-' %></td>
-          <td><%= formatDateTime(r.createdAt) %></td>
-          <td><%= formatDateTime(r.processedAt || r.updatedAt) %></td>
+          <td><%- renderDateTime(r.createdAt) %></td>
+          <td><%- renderDateTime(r.processedAt || r.updatedAt) %></td>
           <td>
             <% if (r.receiptFile) { %>
               <a class="btn small" target="_blank" href="<%= r.receiptFile.path.startsWith('/') ? r.receiptFile.path : ('/uploads/'+r.receiptFile.path) %>">View</a>

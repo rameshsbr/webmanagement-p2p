@@ -60,6 +60,7 @@ model MerchantApiKey {
 
 model User {
   id            String                  @id @default(cuid())
+  publicId      String                  @unique
   email         String?                 @unique
   phone         String?                 @unique
   diditSubject  String                  @unique
@@ -175,6 +176,11 @@ model PaymentRequest {
   amountCents   Int
   currency      String
   referenceCode String        @unique
+  uniqueReference String     @unique
+
+  processedByAdminId String?
+  processedByAdmin   AdminUser? @relation("PaymentProcessedBy", fields: [processedByAdminId], references: [id], onDelete: SetNull)
+  processedAt        DateTime?
 
   processedByAdminId String?
   processedByAdmin   AdminUser? @relation("PaymentProcessedBy", fields: [processedByAdminId], references: [id], onDelete: SetNull)

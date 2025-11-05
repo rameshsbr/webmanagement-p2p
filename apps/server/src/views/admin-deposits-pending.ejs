@@ -102,3 +102,32 @@
     </tbody>
   </table>
 </div>
+
+<div class="modal-backdrop" data-modal-root hidden>
+  <div class="modal-dialog" role="dialog" aria-modal="true">
+    <form method="post" data-modal-form>
+      <h2 class="modal-title" data-modal-title>Confirm action</h2>
+      <p class="modal-ref" data-modal-reference></p>
+      <p class="modal-note" data-modal-note></p>
+
+      <div class="form-field" data-modal-amount-wrap>
+        <label for="modal-amount">Amount (in cents)</label>
+        <input type="number" inputmode="numeric" min="1" step="1" id="modal-amount" name="amountCents" data-modal-amount />
+      </div>
+
+      <div class="form-field">
+        <label for="modal-comment" data-modal-comment-label>Comment</label>
+        <textarea id="modal-comment" rows="3" data-modal-comment></textarea>
+      </div>
+
+      <input type="hidden" name="returnTo" value="<%= returnTo %>" data-modal-return />
+
+      <div class="modal-error" data-modal-error role="alert"></div>
+
+      <div class="modal-actions">
+        <button type="button" class="btn" data-modal-cancel>Cancel</button>
+        <button type="submit" class="btn primary" data-modal-submit>Confirm</button>
+      </div>
+    </form>
+  </div>
+</div>

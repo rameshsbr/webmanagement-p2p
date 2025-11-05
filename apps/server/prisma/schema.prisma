@@ -176,6 +176,10 @@ model PaymentRequest {
   currency      String
   referenceCode String        @unique
 
+  processedByAdminId String?
+  processedByAdmin   AdminUser? @relation("PaymentProcessedBy", fields: [processedByAdminId], references: [id], onDelete: SetNull)
+  processedAt        DateTime?
+
   merchantId String
   merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
@@ -197,6 +201,8 @@ model PaymentRequest {
   notes          String? // ← added so superadmin notes route works
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
+
+  @@index([processedByAdminId])
 }
 
 model WithdrawalDestination {
@@ -247,6 +253,7 @@ model AdminUser {
   auditLogs   AdminAuditLog[]
   loginLogs   AdminLoginLog[]
   resetTokens AdminPasswordReset[]
+  processedPayments PaymentRequest[] @relation("PaymentProcessedBy")
 }
 
 model AdminLoginLog {

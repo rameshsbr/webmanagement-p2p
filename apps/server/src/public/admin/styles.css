@@ -247,3 +247,89 @@ input, select{
   white-space: nowrap;
   overflow: hidden;
 }
+
+/* Modal styles */
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(17, 24, 39, 0.55);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  padding: 1.5rem;
+}
+
+.modal-card {
+  background: var(--surface);
+  color: var(--ink);
+  border-radius: 12px;
+  max-width: 420px;
+  width: 100%;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.18);
+  padding: 1.5rem;
+}
+
+.modal-header h3 {
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.modal-body {
+  margin-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  font-size: 0.95rem;
+}
+
+.modal-fields p {
+  margin: 0;
+  color: var(--ink);
+}
+
+.modal-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.modal-field span {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.modal-card input,
+.modal-card textarea {
+  width: 100%;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface-elevated);
+  padding: 0.5rem 0.65rem;
+  font: inherit;
+  color: inherit;
+  resize: vertical;
+}
+
+.modal-card textarea {
+  min-height: 96px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1.5rem;
+}
+
+.modal-error {
+  color: var(--danger);
+  font-size: 0.8rem;
+  min-height: 1em;
+  display: none;
+}

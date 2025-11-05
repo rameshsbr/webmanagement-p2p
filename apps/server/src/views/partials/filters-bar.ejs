@@ -1,6 +1,7 @@
-<% /* Filters Bar (no duplicate page titles) */ %>
+<% /* Filters Bar aligned with admin/merchant queries */ %>
+<% const statusSelected = new Set(String(query.status||'').split(',').map(s=>s.trim()).filter(Boolean)); %>
 <form class="card filters" method="GET" action="">
-  <div class="filters-grid grid-5">
+  <div class="filters-grid grid-4">
     <!-- Date range -->
     <div class="f-item">
       <label>Date range</label>
@@ -10,7 +11,7 @@
         <span class="range-display">
           <%= (query.from && query.to)
                 ? (new Date(query.from)).toLocaleString() + ' ~ ' + (new Date(query.to)).toLocaleString()
-                : 'dd.mm.yyyy HH:mm ~ dd.mm.yyyy HH:mm' %>
+                : 'dd/mm/yyyy hh:mm ~ dd/mm/yyyy hh:mm' %>
         </span>
         <button class="btn btn-icon" type="button" data-range-open aria-label="Open date range">📅</button>
 
@@ -32,96 +33,98 @@
       </div>
     </div>
 
-    <!-- Filter by -->
+    <!-- Date field -->
     <div class="f-item">
-      <label>Filter by</label>
-      <select name="filter">
-        <option value="created"  <%= (query.filter||'created')==='created'  ? 'selected' : '' %>>date created</option>
-        <option value="credited" <%= (query.filter||'')==='credited'        ? 'selected' : '' %>>date of crediting</option>
-        <option value="updated"  <%= (query.filter||'')==='updated'         ? 'selected' : '' %>>date updated</option>
+      <label>Date field</label>
+      <select name="dateField">
+        <option value="createdAt" <%= (query.dateField||'createdAt')==='createdAt' ? 'selected' : '' %>>Date of creation</option>
+        <option value="processedAt" <%= (query.dateField||'')==='processedAt' ? 'selected' : '' %>>Date processed</option>
       </select>
     </div>
 
-    <!-- ID -->
+    <!-- Transaction ID -->
     <div class="f-item">
-      <label>ID</label>
-      <input type="text" name="id" value="<%= query.id||'' %>" placeholder="ID">
+      <label>Transaction ID</label>
+      <input type="text" name="reference" value="<%= query.reference||'' %>" placeholder="T12345">
     </div>
 
     <!-- User ID -->
     <div class="f-item">
       <label>User ID</label>
-      <input type="text" name="userId" value="<%= query.userId||'' %>" placeholder="User ID">
+      <input type="text" name="userId" value="<%= query.userId||'' %>" placeholder="U123456">
     </div>
 
-    <!-- Admin -->
+    <!-- Merchant ID -->
     <div class="f-item">
-      <label>Admin</label>
-      <input type="text" name="admin" value="<%= query.admin||'' %>" placeholder="Admin">
+      <label>Merchant ID</label>
+      <input type="text" name="merchantId" value="<%= query.merchantId||'' %>" placeholder="Merchant ID">
     </div>
 
-    <!-- Amount -->
+    <!-- Merchant name -->
     <div class="f-item">
-      <label>Amount</label>
-      <input type="text" name="amount" value="<%= query.amount||'' %>" placeholder="Amount">
+      <label>Merchant name</label>
+      <input type="text" name="merchantName" value="<%= query.merchantName||'' %>" placeholder="Merchant name">
     </div>
 
-    <!-- User info -->
+    <!-- Admin ID -->
     <div class="f-item">
-      <label>User info</label>
-      <input type="text" name="userInfo" value="<%= query.userInfo||'' %>" placeholder="Name / Phone / Email">
+      <label>Admin ID</label>
+      <input type="text" name="processedBy" value="<%= query.processedBy||'' %>" placeholder="Admin ID">
     </div>
 
-    <!-- All statuses -->
+    <!-- Admin name -->
     <div class="f-item">
-      <label>All statuses</label>
+      <label>Admin name</label>
+      <input type="text" name="processedByName" value="<%= query.processedByName||'' %>" placeholder="Admin name">
+    </div>
+
+    <!-- Method -->
+    <div class="f-item">
+      <label>Method</label>
+      <select name="method">
+        <option value="" <%= (query.method||'')==='' ? 'selected' : '' %>>All methods</option>
+        <option value="OSKO" <%= (query.method||'')==='OSKO' ? 'selected' : '' %>>OSKO</option>
+        <option value="PAYID" <%= (query.method||'')==='PAYID' ? 'selected' : '' %>>PayID</option>
+      </select>
+    </div>
+
+    <!-- Status -->
+    <div class="f-item">
+      <label>Status</label>
       <select name="status">
-        <option value=""           <%= (query.status||'')===''       ? 'selected' : '' %>>All statuses</option>
-        <option value="PENDING"    <%= query.status==='PENDING'     ? 'selected' : '' %>>Pending</option>
-        <option value="SUBMITTED"  <%= query.status==='SUBMITTED'   ? 'selected' : '' %>>Submitted</option>
-        <option value="APPROVED"   <%= query.status==='APPROVED'    ? 'selected' : '' %>>Approved</option>
-        <option value="REJECTED"   <%= query.status==='REJECTED'    ? 'selected' : '' %>>Rejected</option>
+        <option value=""           <%= statusSelected.size===0 ? 'selected' : '' %>>All statuses</option>
+        <option value="PENDING"    <%= statusSelected.has('PENDING') && statusSelected.size===1 ? 'selected' : '' %>>Pending</option>
+        <option value="SUBMITTED"  <%= statusSelected.has('SUBMITTED') && statusSelected.size===1 ? 'selected' : '' %>>Submitted</option>
+        <option value="APPROVED"   <%= statusSelected.has('APPROVED') && statusSelected.size===1 ? 'selected' : '' %>>Approved</option>
+        <option value="REJECTED"   <%= statusSelected.has('REJECTED') && statusSelected.size===1 ? 'selected' : '' %>>Rejected</option>
       </select>
     </div>
 
-    <!-- All countries -->
+    <!-- Currency -->
     <div class="f-item">
-      <label>All countries</label>
-      <select name="country">
-        <option value="" <%= (query.country||'')==='' ? 'selected' : '' %>>All countries</option>
-      </select>
+      <label>Currency</label>
+      <input type="text" name="currency" value="<%= query.currency||'' %>" placeholder="Currency">
     </div>
 
-    <!-- All currencies (short label prevents visual “bulge”) -->
+    <!-- Bank ID -->
     <div class="f-item">
-      <label>All currencies</label>
-      <select name="currency">
-        <option value="" <%= (query.currency||'')==='' ? 'selected' : '' %>>All currencies</option>
-      </select>
+      <label>Bank ID</label>
+      <input type="text" name="bankId" value="<%= query.bankId||'' %>" placeholder="Bank ID">
     </div>
 
-    <!-- All providers -->
+    <!-- Amount range -->
     <div class="f-item">
-      <label>All providers</label>
-      <select name="provider">
-        <option value="" <%= (query.provider||'')==='' ? 'selected' : '' %>>All providers</option>
-      </select>
+      <label>Amount range</label>
+      <div class="row" style="gap:6px">
+        <input class="input" type="number" step="0.01" name="amountMin" value="<%= query.amountMin || '' %>" placeholder="Min">
+        <input class="input" type="number" step="0.01" name="amountMax" value="<%= query.amountMax || '' %>" placeholder="Max">
+      </div>
     </div>
 
-    <!-- Select referral -->
+    <!-- Keyword search -->
     <div class="f-item">
-      <label>Select referral</label>
-      <select name="referral">
-        <option value="" <%= (query.referral||'')==='' ? 'selected' : '' %>>Select referral</option>
-      </select>
-    </div>
-
-    <!-- All banks -->
-    <div class="f-item">
-      <label>All banks</label>
-      <select name="bank" id="banks-select" data-banks>
-        <option value="" <%= (query.bank||'')==='' ? 'selected' : '' %>>All banks</option>
-      </select>
+      <label>Keyword</label>
+      <input type="text" name="q" value="<%= query.q||'' %>" placeholder="Search ID / user">
     </div>
   </div>
 

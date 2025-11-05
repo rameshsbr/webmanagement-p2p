@@ -48,6 +48,17 @@
     return e;
   }
 
+  const MIN_AMOUNT = 50;
+  const MAX_AMOUNT = 5000;
+
+  function normalizeAmountInput(value) {
+    if (value === null || value === undefined) return null;
+    const num = Number(String(value).replace(/,/g, ""));
+    if (!Number.isFinite(num) || num <= 0) return null;
+    const cents = Math.round(num * 100);
+    return Number.isFinite(cents) ? cents : null;
+  }
+
   // Small UX helpers
   function setEnabled(btn, ok) {
     if (!btn) return;
@@ -186,8 +197,8 @@
   }
 
   function validateDepositInputs(amountCents, methodVal, fields) {
-    if (!Number.isInteger(amountCents) || amountCents < 5000 || amountCents > 500000) {
-      return "Enter an amount between 5000 and 500000 (AUD cents).";
+    if (!Number.isInteger(amountCents) || amountCents < MIN_AMOUNT * 100 || amountCents > MAX_AMOUNT * 100) {
+      return `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
     }
     if (methodVal === "OSKO") {
       if (!/^\d{10,12}$/.test(fields.accountNo || "")) return "Account No must be 10–12 digits.";
@@ -360,7 +371,7 @@
 
     let nextBtn;
 
-    const amount = numberInput({ placeholder:"Amount (AUD cents, min 5000 max 500000)" });
+    const amount = numberInput({ placeholder:"Amount (AUD, min 50 max 5000)" });
     const method = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }, [
       el("option", { value:"OSKO" }, "OSKO"),
       el("option", { value:"PAYID" }, "PayID"),
@@ -371,7 +382,7 @@
     dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
 
     const draft = loadDraft("deposit", claims) || {};
-    if (draft.amountCents) amount.value = String(draft.amountCents);
+    if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
     if (draft.method) method.value = draft.method;
 
     let dyn = { wrap: el("div"), getValues: () => ({}), validate: () => null };
@@ -395,11 +406,18 @@
     nextBtn = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Next");
 
     function updateValidity() {
-      const amountCents = parseInt(amount.value, 10);
+      const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
       const inferred = inferPayerFromExtras(method.value, extras);
-      const err = validateDepositInputs(amountCents, method.value, inferred) || dyn.validate();
+      let err = null;
+      if (amountCents === null) {
+        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+      } else {
+        err = validateDepositInputs(amountCents, method.value, inferred);
+      }
+      err = err || dyn.validate();
       setEnabled(nextBtn, !err);
+      status.textContent = err || "";
     }
 
     method.addEventListener("change", () => { refreshDynForMethod(); });
@@ -407,7 +425,7 @@
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
 
-    box.appendChild(inputRow("Amount (cents)", amount));
+    box.appendChild(inputRow("Amount (AUD)", amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
     box.appendChild(nextBtn);
@@ -416,9 +434,14 @@
     refreshDynForMethod();
 
     nextBtn.addEventListener("click", async () => {
-      const amountCents = parseInt(amount.value, 10);
+      const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
       const payer = inferPayerFromExtras(method.value, extras);
+
+      if (amountCents === null) {
+        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+        return;
+      }
 
       const verr = validateDepositInputs(amountCents, method.value, { ...payer }) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
@@ -529,14 +552,14 @@
 
     let submit;
 
-    const amount = numberInput({ placeholder:"Amount (AUD cents, min 5000 max 500000)" });
+    const amount = numberInput({ placeholder:"Amount (AUD, min 50 max 5000)" });
     const method = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }, [
       el("option", { value:"OSKO" }, "OSKO"),
       el("option", { value:"PAYID" }, "PayID"),
     ]);
 
     const draft = loadDraft("withdrawal", claims) || {};
-    if (draft.amountCents) amount.value = String(draft.amountCents);
+    if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
     if (draft.method) method.value = draft.method;
 
     const dyn = buildDynamic("withdrawal", draft.extras);
@@ -545,11 +568,18 @@
     submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
 
     function updateValidity() {
-      const amountCents = parseInt(amount.value, 10);
+      const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
       const inferred = inferPayerFromExtras(method.value, extras);
-      const err = validateWithdrawalInputs(amountCents, method.value, inferred) || dyn.validate();
+      let err = null;
+      if (amountCents === null) {
+        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+      } else {
+        err = validateWithdrawalInputs(amountCents, method.value, inferred);
+      }
+      err = err || dyn.validate();
       setEnabled(submit, !err);
+      status.textContent = err || "";
     }
     [amount, method].forEach(i => {
       i && i.addEventListener(i.tagName === "SELECT" ? "change" : "input", updateValidity);
@@ -559,9 +589,14 @@
     updateValidity();
 
     submit.addEventListener("click", async () => {
-      const amountCents = parseInt(amount.value, 10);
+      const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
       const destination = inferPayerFromExtras(method.value, extras);
+
+      if (amountCents === null) {
+        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+        return;
+      }
 
       const verr = validateWithdrawalInputs(amountCents, method.value, { ...destination }) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
@@ -586,7 +621,7 @@
       }
     });
 
-    box.appendChild(inputRow("Amount (cents)", amount));
+    box.appendChild(inputRow("Amount (AUD)", amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dyn.wrap);
     box.appendChild(submit);

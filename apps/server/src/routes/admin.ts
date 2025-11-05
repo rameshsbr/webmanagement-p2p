@@ -346,14 +346,15 @@ router.get('/export/deposits.csv', async (req: Request, res: Response) => {
   res.setHeader('Content-Disposition', 'attachment; filename="deposits.csv"');
   const csv = stringify({
     header: true,
-    columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','processedAt','processingSeconds','processedBy','receipt']
+    columns: ['id','referenceCode','uniqueReference','userId','merchant','currency','amount','status','bank','createdAt','processedAt','processingSeconds','processedBy','receipt']
   });
   csv.pipe(res);
   for (const x of items) {
     const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
     csv.write({
-      id: x.id, referenceCode: x.referenceCode, userId: x.user?.publicId ?? x.userId,
-      merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
+      id: x.id, referenceCode: x.referenceCode, uniqueReference: x.uniqueReference,
+      userId: x.user?.publicId ?? x.userId,
+      merchant: x.merchant?.name ?? '', currency: x.currency, amount: formatAmount(x.amountCents), status: x.status,
       bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
       processedAt: processedDate ? processedDate.toISOString() : '',
       processingSeconds: processingSeconds ?? '',
@@ -369,6 +370,7 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
   const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Deposits');
   ws.columns = [
     { header: 'ID', key: 'id', width: 28 },{ header: 'Reference', key: 'referenceCode', width: 16 },
+    { header: 'Unique Reference', key: 'uniqueReference', width: 20 },
     { header: 'User', key: 'userId', width: 16 },{ header: 'Merchant', key: 'merchant', width: 24 },
     { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount', key: 'amount', width: 14 },
     { header: 'Status', key: 'status', width: 12 },{ header: 'Bank', key: 'bank', width: 18 },
@@ -382,10 +384,11 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
     ws.addRow({
       id: x.id,
       referenceCode: x.referenceCode,
+      uniqueReference: x.uniqueReference,
       userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '',
       currency: x.currency,
-      amount: x.amountCents / 100,
+      amount: Number((x.amountCents / 100).toFixed(2)),
       status: x.status,
       bank: x.bankAccount?.bankName ?? '',
       createdAt: x.createdAt,
@@ -423,9 +426,12 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
-  // balance check
+  const redirectTarget = resolveReturnTo((req.body && (req.body.returnTo ?? req.body.redirect)) || undefined, '/admin/report/withdrawals/pending');
+
   const m = await prisma.merchant.findUnique({ where: { id: pr.merchantId }, select: { balanceCents: true, name: true } });
-  if (!m || m.balanceCents < pr.amountCents) return res.status(400).json({ ok: false, error: 'Insufficient merchant balance' });
+  if (!m || m.balanceCents < pr.amountCents) {
+    return res.status(400).json({ ok: false, error: 'Insufficient merchant balance' });
+  }
 
   await prisma.$transaction(async (tx) => {
     await tx.paymentRequest.update({
@@ -444,29 +450,40 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
   });
 
   safeNotify(`✅ Withdrawal approved: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} (merchant ${m?.name})`).catch(()=>{});
-  res.redirect('back');
+  res.json({ ok: true, redirect: redirectTarget });
 });
 
 router.post('/withdrawals/:id/reject', async (req, res) => {
   const id = req.params.id;
-  const reason = (req.body?.reason as string) || 'Rejected by admin';
+  const parsed = rejectBodySchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Invalid payload' });
+  }
+
+  const comment = (parsed.data.comment || parsed.data.reason || '').trim();
+  if (!comment) {
+    return res.status(400).json({ ok: false, error: 'Comment is required' });
+  }
+
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
   if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
+  const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/withdrawals/pending');
+
   await prisma.paymentRequest.update({
     where: { id },
     data: {
       status: 'REJECTED',
-      rejectedReason: reason,
+      rejectedReason: comment,
       updatedAt: new Date(),
       processedAt: new Date(),
       processedByAdminId: req.admin?.sub ?? null
     }
   });
-  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} — ${reason}`).catch(()=>{});
-  res.redirect('back');
+  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} — ${comment}`).catch(()=>{});
+  res.json({ ok: true, redirect: redirectTarget });
 });
 
 router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
@@ -475,14 +492,15 @@ router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
   res.setHeader('Content-Disposition', 'attachment; filename="withdrawals.csv"');
   const csv = stringify({
     header: true,
-    columns: ['id','referenceCode','userId','merchant','currency','amount','status','bank','createdAt','processedAt','processingSeconds','processedBy']
+    columns: ['id','referenceCode','uniqueReference','userId','merchant','currency','amount','status','bank','createdAt','processedAt','processingSeconds','processedBy']
   });
   csv.pipe(res);
   for (const x of items) {
     const { processedDate, processingSeconds, processedBy } = extractProcessingDetails(x);
     csv.write({
-      id: x.id, referenceCode: x.referenceCode, userId: x.user?.publicId ?? x.userId,
-      merchant: x.merchant?.name ?? '', currency: x.currency, amount: (x.amountCents / 100).toFixed(2), status: x.status,
+      id: x.id, referenceCode: x.referenceCode, uniqueReference: x.uniqueReference,
+      userId: x.user?.publicId ?? x.userId,
+      merchant: x.merchant?.name ?? '', currency: x.currency, amount: formatAmount(x.amountCents), status: x.status,
       bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
       processedAt: processedDate ? processedDate.toISOString() : '',
       processingSeconds: processingSeconds ?? '',
@@ -497,6 +515,7 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
   const wb = new ExcelJS.Workbook(); const ws = wb.addWorksheet('Withdrawals');
   ws.columns = [
     { header: 'ID', key: 'id', width: 28 },{ header: 'Reference', key: 'referenceCode', width: 16 },
+    { header: 'Unique Reference', key: 'uniqueReference', width: 20 },
     { header: 'User', key: 'userId', width: 16 },{ header: 'Merchant', key: 'merchant', width: 24 },
     { header: 'Currency', key: 'currency', width: 10 },{ header: 'Amount', key: 'amount', width: 14 },
     { header: 'Status', key: 'status', width: 12 },{ header: 'Bank', key: 'bank', width: 18 },
@@ -509,10 +528,11 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
     ws.addRow({
       id: x.id,
       referenceCode: x.referenceCode,
+      uniqueReference: x.uniqueReference,
       userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '',
       currency: x.currency,
-      amount: x.amountCents / 100,
+      amount: Number((x.amountCents / 100).toFixed(2)),
       status: x.status,
       bank: x.bankAccount?.bankName ?? '',
       createdAt: x.createdAt,

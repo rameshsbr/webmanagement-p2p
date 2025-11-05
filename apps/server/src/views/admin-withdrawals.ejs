@@ -60,14 +60,14 @@
           <td data-col="processingTime"><%= hasProcessed ? formatDuration(r.createdAt, processedAt) : '-' %></td>
           <td data-col="userInfo" class="info-cell">
             <div class="info-block">
-              <div class="info-line"><span>Method:</span><span><%= method || '-' %></span></div>
-              <div class="info-line"><span>Bank name:</span><span><%= r.bankAccount?.bankName || dest.bankName || '-' %></span></div>
-              <div class="info-line"><span>Account holder name:</span><span><%= dest.holderName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || dest.bankName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= dest.holderName || '-' %></span></div>
               <% if (method === 'OSKO') { %>
-                <div class="info-line"><span>Account number:</span><span><%= dest.accountNo || '-' %></span></div>
-                <div class="info-line"><span>BSB:</span><span><%= dest.bsb || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= dest.accountNo || '-' %></span></div>
+                <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= dest.bsb || '-' %></span></div>
               <% } else if (method === 'PAYID') { %>
-                <div class="info-line"><span>PayID:</span><span><%= dest.payIdValue || '-' %></span></div>
+                <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= dest.payIdValue || '-' %></span></div>
               <% } %>
             </div>
           </td>

@@ -60,18 +60,18 @@
           <td data-col="processingTime">-</td>
           <td data-col="userInfo" class="info-cell">
             <div class="info-block">
-              <div class="info-line"><span>Unique Reference No:</span><span><%= r.uniqueReference %></span></div>
-              <div class="info-line"><span>Method:</span><span><%= method || '-' %></span></div>
-              <div class="info-line"><span>Bank name:</span><span><%= r.bankAccount?.bankName || '-' %></span></div>
-              <div class="info-line"><span>Account holder name:</span><span><%= payer.holderName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
+              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || '-' %></span></div>
               <% if (method === 'OSKO') { %>
-                <div class="info-line"><span>Account number:</span><span><%= payer.accountNo || '-' %></span></div>
-                <div class="info-line"><span>BSB:</span><span><%= payer.bsb || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || '-' %></span></div>
+                <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || '-' %></span></div>
               <% } else if (method === 'PAYID') { %>
-                <div class="info-line"><span>PayID:</span><span><%= payer.payIdValue || '-' %></span></div>
+                <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= payer.payIdValue || '-' %></span></div>
               <% } %>
               <% if (r.receiptFile) { %>
-                <div class="info-line"><span>Receipt:</span><span><a href="<%= r.receiptFile.path %>" target="_blank" rel="noopener">View receipt</a></span></div>
+                <div class="info-line"><span class="info-label">Receipt</span><span class="info-value"><a href="<%= r.receiptFile.path %>" target="_blank" rel="noopener">View receipt</a></span></div>
               <% } %>
             </div>
           </td>

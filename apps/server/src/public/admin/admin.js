@@ -104,12 +104,18 @@ function toast(msg) {
   tz.dataset.filled = '1';
 })();
 
+const purgeModals = () => {
+  document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
+};
+purgeModals();
+window.addEventListener('pageshow', purgeModals);
+
 // Pending deposit actions (approve/reject with confirmation dialogs)
 (() => {
   const table = document.querySelector('[data-pending-actions]');
   if (!table) return;
 
-  document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
+  purgeModals();
 
   const postJson = async (url, payload) => {
     const res = await fetch(url, {
@@ -296,6 +302,145 @@ function toast(msg) {
     if (rejectBtn) {
       event.preventDefault();
       openReject(rejectBtn);
+    }
+  });
+})();
+
+// Pending withdrawal actions
+(() => {
+  const table = document.querySelector('[data-withdraw-actions]');
+  if (!table) return;
+
+  purgeModals();
+
+  const postJson = async (url, payload) => {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload || {})
+    });
+    let data = null;
+    try { data = await res.json(); } catch {}
+    if (!res.ok || !data?.ok) {
+      throw new Error((data && data.error) || 'Request failed');
+    }
+    return data;
+  };
+
+  const openModal = ({ title, submitLabel, message, requireComment, onSubmit }) => {
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    overlay.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+        <div class="modal-header">
+          <h3 id="modal-title">${title}</h3>
+        </div>
+        <div class="modal-body">
+          <p>${message}</p>
+          <label class="modal-field">
+            <span>Comment${requireComment ? ' <small>(required)</small>' : ''}</span>
+            <textarea rows="3" data-comment-input placeholder="${requireComment ? 'Enter a comment' : 'Optional comment'}"></textarea>
+          </label>
+          <div class="modal-error" style="display:none"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn small" data-cancel>Cancel</button>
+          <button type="button" class="btn small primary" data-submit>${submitLabel}</button>
+        </div>
+      </div>`;
+
+    const cancelBtn = overlay.querySelector('[data-cancel]');
+    const submitBtn = overlay.querySelector('[data-submit]');
+    const card = overlay.querySelector('.modal-card');
+    const errorBox = overlay.querySelector('.modal-error');
+    const commentInput = overlay.querySelector('[data-comment-input]');
+
+    const close = () => {
+      overlay.remove();
+      document.removeEventListener('keydown', escHandler);
+    };
+    const escHandler = (e) => { if (e.key === 'Escape') close(); };
+    const setError = (msg) => {
+      errorBox.textContent = msg || '';
+      errorBox.style.display = msg ? 'block' : 'none';
+    };
+    const setLoading = (v) => {
+      if (v) submitBtn.dataset.originalLabel = submitBtn.textContent;
+      submitBtn.textContent = v ? 'Processing…' : (submitBtn.dataset.originalLabel || submitBtn.textContent);
+      submitBtn.disabled = cancelBtn.disabled = !!v;
+    };
+
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    cancelBtn.addEventListener('click', close);
+    document.addEventListener('keydown', escHandler);
+
+    submitBtn.addEventListener('click', async () => {
+      const comment = (commentInput?.value || '').trim();
+      if (requireComment && !comment) {
+        setError('Comment is required');
+        return;
+      }
+      setError('');
+      try {
+        setLoading(true);
+        await onSubmit({ comment, setError, setLoading, close });
+      } catch (err) {
+        setLoading(false);
+        setError(err?.message || 'Request failed');
+      }
+    });
+
+    document.body.appendChild(overlay);
+    submitBtn.focus();
+  };
+
+  table.addEventListener('click', (event) => {
+    const approveBtn = event.target.closest('[data-withdraw-approve]');
+    if (approveBtn) {
+      event.preventDefault();
+      const id = approveBtn.getAttribute('data-id');
+      const reference = approveBtn.getAttribute('data-reference') || '';
+      const amountCents = Number(approveBtn.getAttribute('data-amount') || '0');
+      const currency = approveBtn.getAttribute('data-currency') || '';
+      const display = amountCents % 100 === 0 ? (amountCents / 100).toFixed(0) : (amountCents / 100).toFixed(2);
+
+      openModal({
+        title: 'Approve withdrawal',
+        submitLabel: 'Approve',
+        message: `Approve withdrawal <strong>${reference}</strong> (${currency} ${display})?`,
+        requireComment: false,
+        onSubmit: async ({ comment, close }) => {
+          await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/approve`, { comment });
+          close();
+          toast('Withdrawal approved');
+          window.location.reload();
+        }
+      });
+      return;
+    }
+
+    const rejectBtn = event.target.closest('[data-withdraw-reject]');
+    if (rejectBtn) {
+      event.preventDefault();
+      const id = rejectBtn.getAttribute('data-id');
+      const reference = rejectBtn.getAttribute('data-reference') || '';
+      const amountCents = Number(rejectBtn.getAttribute('data-amount') || '0');
+      const currency = rejectBtn.getAttribute('data-currency') || '';
+      const display = amountCents % 100 === 0 ? (amountCents / 100).toFixed(0) : (amountCents / 100).toFixed(2);
+
+      openModal({
+        title: 'Reject withdrawal',
+        submitLabel: 'Reject',
+        message: `Reject withdrawal <strong>${reference}</strong> (${currency} ${display})?`,
+        requireComment: true,
+        onSubmit: async ({ comment, close }) => {
+          await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/reject`, { comment });
+          close();
+          toast('Withdrawal rejected');
+          window.location.reload();
+        }
+      });
     }
   });
 })();

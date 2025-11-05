@@ -1,7 +1,16 @@
 <% layout('admin/layout') -%>
 
 <%- include('partials/filters-bar', { query, type: 'WITHDRAWAL', exportBase: 'withdrawals' }) %>
-<%- include('partials/column-settings', { key: 'admin.columns.withdrawals' }) %>
+<%- include('partials/column-settings', {
+  key: 'admin.columns.withdrawals',
+  labelMap: {
+    processedAt: 'Date of withdrawal',
+    processingTime: 'Time to process',
+    merchant: 'Merchant',
+    comment: 'Comment',
+    admin: 'Admin'
+  }
+}) %>
 
 <div class="table-wrap">
   <table class="table">
@@ -9,50 +18,62 @@
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>
         <th data-col="userId">USER ID</th>
+        <th data-col="merchant">MERCHANT</th>
         <th data-col="currency">CURRENCY</th>
         <th data-col="amount">AMOUNT</th>
         <th data-col="status">STATUS</th>
         <th data-col="bank">BANK NAME</th>
         <th data-col="created">DATE OF CREATION</th>
-        <th data-col="updated">TIME OF PROCESSING</th>
+        <th data-col="processedAt">DATE OF WITHDRAWAL</th>
+        <th data-col="processingTime">TIME TO PROCESS</th>
         <th data-col="userInfo">USER INFO</th>
+        <th data-col="comment">COMMENT</th>
+        <th data-col="admin">ADMIN</th>
         <th data-col="actions">ACTIONS</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="10" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+        <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
       <% table.items.forEach(r=>{ %>
+        <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const dest = (r.detailsJson && r.detailsJson.destination) || {}; %>
+        <% const processedAt = r.processedAt || r.updatedAt || null; %>
+        <% const hasProcessed = !(r.status==='PENDING' || r.status==='SUBMITTED' || !processedAt); %>
         <tr>
-          <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
-          <td data-col="userId"><%= r.userId %></td>
+          <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
+          <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
-          <td data-col="amount"><%= r.amountCents %></td>
+          <td data-col="amount"><%= formatAmount(r.amountCents) %></td>
           <td data-col="status">
             <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
             <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
             <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
             <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
           </td>
-          <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
-          <td data-col="created"><%= r.createdAt.toISOString() %></td>
-          <td data-col="updated"><%= r.updatedAt.toISOString() %></td>
-          <td data-col="userInfo" style="max-width:280px">
-            <div><b>Email:</b> <%= r.user?.email || '-' %></div>
-            <div><b>Phone:</b> <%= r.user?.phone || '-' %></div>
+          <td data-col="bank"><%= r.bankAccount?.bankName || dest.bankName || '-' %></td>
+          <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
+          <td data-col="processedAt"><%- hasProcessed ? renderDateTime(processedAt) : '-' %></td>
+          <td data-col="processingTime"><%= hasProcessed ? formatDuration(r.createdAt, processedAt) : '-' %></td>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <div class="info-line"><span>Method:</span><span><%= method || '-' %></span></div>
+              <div class="info-line"><span>Bank name:</span><span><%= r.bankAccount?.bankName || dest.bankName || '-' %></span></div>
+              <div class="info-line"><span>Account holder name:</span><span><%= dest.holderName || '-' %></span></div>
+              <% if (method === 'OSKO') { %>
+                <div class="info-line"><span>Account number:</span><span><%= dest.accountNo || '-' %></span></div>
+                <div class="info-line"><span>BSB:</span><span><%= dest.bsb || '-' %></span></div>
+              <% } else if (method === 'PAYID') { %>
+                <div class="info-line"><span>PayID:</span><span><%= dest.payIdValue || '-' %></span></div>
+              <% } %>
+            </div>
           </td>
-          <td data-col="actions" class="actions">
-            <% if (r.status==='PENDING') { %>
-              <form method="post" action="/admin/withdrawals/<%= r.id %>/approve" style="display:inline" onsubmit="return confirm('Approve this withdrawal? It will deduct merchant balance.')">
-                <button class="btn small primary" type="submit">Approve</button>
-              </form>
-              <form method="post" action="/admin/withdrawals/<%= r.id %>/reject" style="display:inline" onsubmit="return confirm('Reject this withdrawal?')">
-                <input type="hidden" name="reason" value="Manual reject"/>
-                <button class="btn small danger" type="submit">Reject</button>
-              </form>
-            <% } else { %>&mdash;<% } %>
-          </td>
+          <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
+          <td data-col="actions" class="actions">&mdash;</td>
         </tr>
       <% }) %>
     </tbody>

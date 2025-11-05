@@ -72,7 +72,7 @@ const listQuery = z.object({
   amountMax: z.string().optional(),
   from: z.string().optional(),
   to: z.string().optional(),
-  dateField: z.enum(["createdAt", "updatedAt"]).optional(),
+  dateField: z.enum(["createdAt", "processedAt", "updatedAt"]).optional(),
   sort: z.string().optional(),
   page: z.string().optional(),
   perPage: z.string().optional(),
@@ -90,7 +90,7 @@ function statusesCSV(s?: string) {
   return arr.length ? arr : undefined;
 }
 function sortSpec(s?: string) {
-  const wl = new Set(["createdAt", "updatedAt", "amountCents", "status", "currency", "referenceCode"]);
+  const wl = new Set(["createdAt", "processedAt", "updatedAt", "amountCents", "status", "currency", "referenceCode"]);
   let col = "createdAt", dir: "asc" | "desc" = "desc";
   if (s) {
     const [c, d] = s.split(":");
@@ -108,16 +108,25 @@ function whereFrom(q: z.infer<typeof listQuery>, merchantId: string, type?: "DEP
   if (sts) where.status = { in: sts };
   if (q.amountMin || q.amountMax) {
     where.amountCents = {};
-    if (q.amountMin) where.amountCents.gte = Number(q.amountMin);
-    if (q.amountMax) where.amountCents.lte = Number(q.amountMax);
+    if (q.amountMin) {
+      const v = Number(q.amountMin);
+      if (Number.isFinite(v)) where.amountCents.gte = Math.round(v * 100);
+    }
+    if (q.amountMax) {
+      const v = Number(q.amountMax);
+      if (Number.isFinite(v)) where.amountCents.lte = Math.round(v * 100);
+    }
   }
-  const df = q.dateField || "createdAt";
+  const df = q.dateField === "processedAt" ? "processedAt" : (q.dateField === "updatedAt" ? "updatedAt" : "createdAt");
   if (q.from || q.to) {
     where[df] = {};
     if (q.from) where[df].gte = new Date(q.from);
     if (q.to) where[df].lte = new Date(q.to);
   }
-  if (q.q) where.OR = [{ referenceCode: { contains: q.q, mode: "insensitive" } }];
+  if (q.q) where.OR = [
+    { referenceCode: { contains: q.q, mode: "insensitive" } },
+    { uniqueReference: { contains: q.q, mode: "insensitive" } }
+  ];
   return where;
 }
 
@@ -133,7 +142,7 @@ async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" 
     prisma.paymentRequest.findMany({
       where,
       include: {
-        user: { select: { id: true, email: true, phone: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true } },
         bankAccount: { select: { bankName: true } },
         receiptFile: { select: { path: true, original: true } },
       },
@@ -152,13 +161,14 @@ router.get("/", async (req: any, res) => {
 
   const today = new Date(); today.setHours(0, 0, 0, 0);
 
+  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
   const [merchant, pendingDeposits, pendingWithdrawals, totalsToday, latest] = await Promise.all([
     prisma.merchant.findUnique({
       where: { id: merchantId },
       select: { name: true, balanceCents: true }
     }),
-    prisma.paymentRequest.count({ where: { merchantId, type: "DEPOSIT", status: "PENDING" } }),
-    prisma.paymentRequest.count({ where: { merchantId, type: "WITHDRAWAL", status: "PENDING" } }),
+    prisma.paymentRequest.count({ where: { merchantId, type: "DEPOSIT", status: { in: awaitingStatuses } } }),
+    prisma.paymentRequest.count({ where: { merchantId, type: "WITHDRAWAL", status: { in: awaitingStatuses } } }),
     prisma.paymentRequest.groupBy({
       by: ["type"],
       where: { merchantId, createdAt: { gte: today }, status: "APPROVED" },
@@ -168,7 +178,16 @@ router.get("/", async (req: any, res) => {
       where: { merchantId },
       orderBy: { createdAt: "desc" },
       take: 10,
-      select: { id: true, referenceCode: true, type: true, status: true, amountCents: true, currency: true, createdAt: true },
+      select: {
+        id: true,
+        referenceCode: true,
+        uniqueReference: true,
+        type: true,
+        status: true,
+        amountCents: true,
+        currency: true,
+        createdAt: true,
+      },
     }),
   ]);
 

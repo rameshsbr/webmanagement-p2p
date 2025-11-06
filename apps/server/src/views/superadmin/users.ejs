@@ -22,7 +22,7 @@
   </div>
 </form>
 
-<%- include('partials/column-settings', {
+<%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
   defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
   labelMap: { registered: 'Date registered', lastActivity: 'Last activity', merchants: 'Merchants', didit: 'Didit profile' }

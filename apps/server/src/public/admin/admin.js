@@ -33,7 +33,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   document.querySelectorAll('[data-col-toggle]').forEach((cb) => {
     const container = cb.closest('[data-collapsible]');
     const storageKey = container?.getAttribute('data-storage-key') || 'admin.columns';
-    let saved: Record<string, boolean>;
+    let saved;
     try {
       saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
     } catch {
@@ -46,7 +46,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       document.querySelectorAll(`[data-col="${col}"]`).forEach((el) => {
         el.style.display = cb.checked ? '' : 'none';
       });
-      let next: Record<string, boolean>;
+      let next;
       try {
         next = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
       } catch {
@@ -473,6 +473,7 @@ window.addEventListener('pageshow', purgeModals);
   let audioCtx = null;
   let autoReloadScheduled = false;
   let permissionBanner = null;
+  let primed = false;
 
   const findAutoRefreshContext = () =>
     document.querySelector('[data-auto-refresh="pending-deposits"]') ||
@@ -566,7 +567,7 @@ window.addEventListener('pageshow', purgeModals);
     toast(message);
     if (NotificationAPI && NotificationAPI.permission === 'granted') {
       try {
-        new NotificationAPI('Payments queue update', { body: message, tag: `queue-${label}` });
+        new Notification('Payments queue update', { body: message, tag: `queue-${label}` });
       } catch {}
     }
     playChime();
@@ -574,6 +575,11 @@ window.addEventListener('pageshow', purgeModals);
   };
 
   const poll = async () => {
+    if (!primed) {
+      primed = true;
+      lastStamp = Date.now();
+      return;
+    }
     const qs = new URLSearchParams({ since: String(lastStamp) });
     try {
       const res = await fetch(`/admin/notifications/queue?${qs.toString()}`, {

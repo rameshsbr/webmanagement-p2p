@@ -24,11 +24,14 @@
 
 <%- include('partials/column-settings', {
   key: 'admin.columns.users',
+  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
   labelMap: {
+    registered: 'Date registered',
     lastActivity: 'Last activity',
     merchants: 'Merchants',
     didit: 'Didit profile'
-  }
+  },
+  columnHeading: 'USER COLUMN SETTINGS'
 }) %>
 
 <div class="table-wrap">

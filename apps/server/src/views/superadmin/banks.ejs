@@ -31,6 +31,7 @@
   <table class="table">
     <thead>
       <tr>
+        <th>Bank ID</th>
         <th>Merchant</th>
         <th>Currency</th>
         <th>Method</th>
@@ -47,6 +48,7 @@
     <tbody>
       <% banks.forEach(b => { %>
         <tr>
+          <td class="mono"><%= b.publicId %></td>
           <td><%= b.merchantId ? merchants.find(m => m.id===b.merchantId)?.name : 'GLOBAL' %></td>
           <td><%= b.currency %></td>
           <td><%= b.method %></td>

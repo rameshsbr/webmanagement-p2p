@@ -282,7 +282,33 @@ router.get('/report/deposits/pending', async (req, res) => {
   res.render('admin-deposits-pending', {
     title: 'Pending deposit requests',
     table: { total, items, page, perPage, pages },
-    query
+    query,
+    returnTo: req.originalUrl
+  });
+});
+
+router.get('/notifications/queue', async (req, res) => {
+  const sinceRaw = Number(req.query?.since);
+  let since = new Date(Date.now() - 5 * 60 * 1000);
+  if (Number.isFinite(sinceRaw) && sinceRaw > 0) {
+    const candidate = new Date(sinceRaw);
+    if (!Number.isNaN(candidate.getTime())) since = candidate;
+  }
+  const awaiting: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
+  const [deposits, withdrawals, latest] = await Promise.all([
+    prisma.paymentRequest.count({ where: { type: 'DEPOSIT', status: { in: awaiting }, createdAt: { gt: since } } }),
+    prisma.paymentRequest.count({ where: { type: 'WITHDRAWAL', status: { in: awaiting }, createdAt: { gt: since } } }),
+    prisma.paymentRequest.findFirst({
+      where: { status: { in: awaiting }, type: { in: ['DEPOSIT', 'WITHDRAWAL'] }, createdAt: { gt: since } },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+  ]);
+  res.json({
+    ok: true,
+    deposits,
+    withdrawals,
+    latest: latest?.createdAt ?? null,
   });
 });
 

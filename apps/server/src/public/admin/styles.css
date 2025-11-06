@@ -122,6 +122,19 @@ input, select{
   background:var(--card); color:var(--ink); font:inherit; line-height:1; min-height:40px
 }
 
+textarea{
+  width:100%;
+  padding:9px 10px;
+  border:1px solid var(--muted);
+  border-radius:8px;
+  background:var(--card);
+  color:var(--ink);
+  font:inherit;
+  line-height:1.4;
+  resize:vertical;
+  min-height:80px;
+}
+
 /* Content */
 .content{ padding:18px; min-width:0 }
 .page{ width:100%; max-width:min(1440px, 100%); margin:0 auto; min-width:0; transition:max-width .2s ease }

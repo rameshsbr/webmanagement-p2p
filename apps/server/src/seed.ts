@@ -1,6 +1,8 @@
 // apps/server/src/seed.ts  (clean copy)
 import { prisma } from './lib/prisma.js';
 import { hash } from './services/crypto.js';
+import { seal } from './services/secretBox.js';
+import { generateBankPublicId } from './services/reference.js';
 
 async function main() {
   const adminExists = await prisma.adminUser.findFirst();
@@ -17,9 +19,18 @@ async function main() {
 
   const hasKey = await prisma.merchantApiKey.findFirst({ where: { merchantId: m.id } });
   if (!hasKey) {
+    const prefix = 'demoPub1';
+    const secret = 'demo_secret_token_1234';
     await prisma.merchantApiKey.create({
-      data: { merchantId: m.id, publicKey: 'pub_demo', secretHash: 'sec_demo' }
+      data: {
+        merchantId: m.id,
+        prefix,
+        secretEnc: seal(secret),
+        last4: secret.slice(-4),
+        scopes: ['read:payments'],
+      }
     });
+    console.log(`Merchant API key: ${prefix}.${secret}`);
   }
 
   const bank = await prisma.bankAccount.findFirst({
@@ -28,6 +39,7 @@ async function main() {
   if (!bank) {
     await prisma.bankAccount.create({
       data: {
+        publicId: generateBankPublicId(),
         currency: 'USD',
         holderName: 'ACME Payments Ltd',
         bankName: 'Bank of Nowhere',
@@ -40,7 +52,6 @@ async function main() {
   }
 
   console.log('Seeded. Admin login: admin@example.com / admin123');
-  console.log('Merchant: DemoCasino | API pub=pub_demo secret=sec_demo');
 }
 
 main().finally(() => prisma.$disconnect());

@@ -110,6 +110,79 @@ app.use((req: any, res: any, next: any) => {
   if (typeof res.locals.admin === "undefined") res.locals.admin = null;
   if (typeof res.locals.title === "undefined") res.locals.title = "Admin";
   if (typeof res.locals.isAuthView === "undefined") res.locals.isAuthView = false;
+  if (typeof res.locals.formatDateTime === "undefined") {
+    const dtFormatter = new Intl.DateTimeFormat("en-AU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    const dateFormatter = new Intl.DateTimeFormat("en-AU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    });
+    const timeFormatter = new Intl.DateTimeFormat("en-AU", {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    const ensureDate = (value: Date | string | null | undefined) => {
+      if (!value) return null;
+      const date = value instanceof Date ? value : new Date(value);
+      if (Number.isNaN(date.getTime())) return null;
+      return date;
+    };
+    res.locals.formatDateTime = (value: Date | string | null | undefined) => {
+      const date = ensureDate(value);
+      if (!date) return "-";
+      return dtFormatter.format(date);
+    };
+    res.locals.formatDateParts = (value: Date | string | null | undefined) => {
+      const date = ensureDate(value);
+      if (!date) return null;
+      return { date: dateFormatter.format(date), time: timeFormatter.format(date) };
+    };
+    res.locals.renderDateTime = (value: Date | string | null | undefined) => {
+      const parts = res.locals.formatDateParts(value);
+      if (!parts) return "-";
+      return `<span class="date-stack"><span>${parts.date}</span><span>${parts.time}</span></span>`;
+    };
+  }
+  if (typeof res.locals.formatAmount === "undefined") {
+    res.locals.formatAmount = (cents: number, currency?: string | null) => {
+      if (typeof cents !== "number" || !Number.isFinite(cents)) return "-";
+      const abs = Math.abs(cents);
+      const hasFraction = abs % 100 !== 0;
+      const value = (cents / 100).toLocaleString("en-AU", {
+        minimumFractionDigits: hasFraction ? 2 : 0,
+        maximumFractionDigits: hasFraction ? 2 : 0,
+      });
+      return currency ? `${value} ${currency}` : value;
+    };
+  }
+  if (typeof res.locals.formatDuration === "undefined") {
+    res.locals.formatDuration = (start?: Date | string | null, end?: Date | string | null) => {
+      if (!start || !end) return "-";
+      const s = start instanceof Date ? start : new Date(start);
+      const e = end instanceof Date ? end : new Date(end);
+      if (Number.isNaN(s.getTime()) || Number.isNaN(e.getTime())) return "-";
+      const diff = Math.max(0, e.getTime() - s.getTime());
+      const totalSeconds = Math.floor(diff / 1000);
+      const hours = Math.floor(totalSeconds / 3600);
+      const minutes = Math.floor((totalSeconds % 3600) / 60);
+      const seconds = totalSeconds % 60;
+      const parts = [] as string[];
+      if (hours) parts.push(`${hours}h`);
+      if (minutes) parts.push(`${minutes}m`);
+      if (!parts.length || seconds) parts.push(`${seconds}s`);
+      return parts.join(" ") || "0s";
+    };
+  }
   next();
 });
 

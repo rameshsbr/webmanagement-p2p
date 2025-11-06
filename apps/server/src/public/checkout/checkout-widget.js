@@ -514,15 +514,24 @@
           status.textContent = "Attach a receipt file first.";
           return;
         }
+        if (!intent.intentToken) {
+          status.textContent = "Intent expired. Please restart.";
+          return;
+        }
         const fd = new FormData();
         fd.append("receipt", receipt.files[0]);
+        fd.append("intentToken", intent.intentToken);
         status.textContent = "Submitting…";
         submitBtn.disabled = true;
-        await call(`/public/deposit/${intent.id}/receipt`, token, { method:"POST", body: fd });
-        status.textContent = "Submitted. Thank you!";
+        const resp = await call(`/public/deposit/submit`, token, { method:"POST", body: fd });
+        const refLabel = resp.uniqueReference || intent.uniqueReference || resp.referenceCode || intent.referenceCode;
+        status.innerHTML = refLabel ? `Submitted. Reference: <b>${refLabel}</b>` : "Submitted. Thank you!";
         safeCallback("onDepositSubmitted", {
-        id: intent.id, referenceCode: intent.referenceCode, uniqueReference: intent.uniqueReference,
-          amountCents: intent.amountCents, currency: intent.currency || "AUD"
+          id: resp.id,
+          referenceCode: resp.referenceCode || intent.referenceCode,
+          uniqueReference: resp.uniqueReference || intent.uniqueReference,
+          amountCents: resp.amountCents || intent.amountCents,
+          currency: resp.currency || intent.currency || "AUD",
         });
         setTimeout(() => { submitBtn.disabled = false; }, 1500);
       } catch (e) {

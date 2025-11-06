@@ -108,7 +108,6 @@
               <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
               <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
               <% if (r.type === 'DEPOSIT') { %>
-                <div class="info-line"><span class="info-label">Bank ID</span><span class="info-value"><%= r.bankAccount?.publicId || '-' %></span></div>
                 <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || '-' %></span></div>
                 <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || '-' %></span></div>
                 <% if (method === 'OSKO') { %>

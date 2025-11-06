@@ -474,6 +474,20 @@ window.addEventListener('pageshow', purgeModals);
   let autoReloadScheduled = false;
   let permissionBanner = null;
   let primed = false;
+  let swReadyPromise = null;
+
+  const ensureServiceWorker = () => {
+    if (!('serviceWorker' in navigator)) return null;
+    if (!swReadyPromise) {
+      swReadyPromise = navigator.serviceWorker
+        .register('/static/admin/queue-sw.js')
+        .then(() => navigator.serviceWorker.ready)
+        .catch(() => null);
+    }
+    return swReadyPromise;
+  };
+
+  ensureServiceWorker();
 
   const findAutoRefreshContext = () =>
     document.querySelector('[data-auto-refresh="pending-deposits"]') ||
@@ -560,16 +574,31 @@ window.addEventListener('pageshow', purgeModals);
 
   ensurePermissionPrompt();
 
+  const showBrowserNotification = async (title, message, tag, url) => {
+    if (!NotificationAPI || NotificationAPI.permission !== 'granted') return false;
+    try {
+      const ready = await ensureServiceWorker();
+      if (ready) {
+        await ready.showNotification(title, { body: message, tag, data: { url } });
+        return true;
+      }
+    } catch {}
+    try {
+      new Notification(title, { body: message, tag });
+      return true;
+    } catch {}
+    return false;
+  };
+
   const sendNotification = (label, count) => {
     if (count <= 0) return;
     const plural = count > 1 ? 's' : '';
     const message = count > 1 ? `${count} new ${label}${plural}` : `New ${label}`;
     toast(message);
-    if (NotificationAPI && NotificationAPI.permission === 'granted') {
-      try {
-        new Notification('Payments queue update', { body: message, tag: `queue-${label}` });
-      } catch {}
-    }
+    const targetUrl = label.includes('withdrawal')
+      ? '/admin/report/withdrawals/pending'
+      : '/admin/report/deposits/pending';
+    showBrowserNotification('Payments queue update', message, `queue-${label}`, targetUrl).catch(() => {});
     playChime();
     scheduleReload();
   };

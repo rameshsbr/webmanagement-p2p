@@ -7,4 +7,25 @@
 /* Keep keys & spacing consistent across screens */
 .page { max-width: 1200px; }
 
+.page .kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 16px;
+  margin-bottom: 32px;
+}
+
+.page .kpi {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  text-align: center;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.06);
+}
+
+.page .kpi .label { font-size: 0.85rem; opacity: 0.75; text-transform: uppercase; letter-spacing: 0.05em; }
+.page .kpi .value { font-size: 1.4rem; font-weight: 600; margin-top: 6px; }
+
+.page .card { margin-top: 24px; }
+
 /* Namespace merchant preferences if desired — not required for CSS */

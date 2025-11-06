@@ -4,6 +4,7 @@ import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
 import { stringify } from 'csv-stringify';
 import ExcelJS from 'exceljs';
+import { getUserDirectory, getAllUsers, UserDirectoryItem, renderUserDirectoryPdf } from '../services/userDirectory.js';
 
 async function safeNotify(text: string) {
   try {
@@ -50,6 +51,40 @@ function sortSpec(s?: string) {
   return { [col]: dir } as any;
 }
 
+function bankLabel(bank?: { publicId?: string | null; bankName?: string | null } | null) {
+  if (!bank) return '';
+  const parts: string[] = [];
+  if (bank.publicId) parts.push(bank.publicId);
+  if (bank.bankName) parts.push(bank.bankName);
+  return parts.join(' • ');
+}
+
+const userDirectoryQuery = z.object({
+  q: z.string().optional(),
+  merchantId: z.string().optional(),
+  page: z.string().optional(),
+  perPage: z.string().optional(),
+});
+
+async function resolveUserDirectoryInput(req: Request) {
+  const query = userDirectoryQuery.parse(req.query);
+  const merchants = await prisma.merchant.findMany({
+    where: { userDirectoryEnabled: true },
+    select: { id: true, name: true },
+    orderBy: { name: 'asc' },
+  });
+  const allowedIds = merchants.map((m) => m.id);
+  const selected = query.merchantId && allowedIds.includes(query.merchantId)
+    ? [query.merchantId]
+    : allowedIds;
+  return { query, merchants, merchantIds: selected };
+}
+
+async function collectUsersForExport(merchantIds: string[], search?: string | null) {
+  if (!merchantIds.length) return [] as UserDirectoryItem[];
+  return getAllUsers({ merchantIds, search: search ?? null });
+}
+
 const listQuery = z.object({
   q: z.string().optional(),
   reference: z.string().optional(),
@@ -93,7 +128,14 @@ function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL')
     and.push({ merchant: { name: { contains: q.merchantName, mode: 'insensitive' } } });
   }
   if (q.currency) where.currency = q.currency;
-  if (q.bankId) where.bankAccountId = q.bankId;
+  if (q.bankId) {
+    and.push({
+      OR: [
+        { bankAccountId: q.bankId },
+        { bankAccount: { publicId: q.bankId } }
+      ]
+    });
+  }
   if (q.processedBy) where.processedByAdminId = q.processedBy;
   if (q.processedByName) {
     and.push({
@@ -158,7 +200,17 @@ async function fetchPayments(
       include: {
         merchant: { select: { id: true, name: true } },
         user: { select: { id: true, publicId: true, email: true, phone: true, diditSubject: true } },
-        bankAccount: { select: { id: true, bankName: true, holderName: true, accountNo: true, currency: true, method: true } },
+        bankAccount: {
+          select: {
+            id: true,
+            publicId: true,
+            bankName: true,
+            holderName: true,
+            accountNo: true,
+            currency: true,
+            method: true,
+          }
+        },
         receiptFile: { select: { id: true, path: true, mimeType: true, original: true } },
         processedByAdmin: { select: { id: true, email: true, displayName: true } }
       },
@@ -257,6 +309,55 @@ router.get('/notifications/queue', async (req, res) => {
     deposits,
     withdrawals,
     latest: latest?.createdAt ?? null,
+  });
+});
+
+router.get('/notifications/queue', async (req, res) => {
+  const sinceRaw = Number(req.query?.since);
+  let since = new Date();
+  if (Number.isFinite(sinceRaw) && sinceRaw > 0) {
+    const candidate = new Date(sinceRaw);
+    if (!Number.isNaN(candidate.getTime())) since = candidate;
+  }
+
+  const depositWhere = {
+    type: 'DEPOSIT' as const,
+    status: 'SUBMITTED' as const,
+    updatedAt: { gt: since },
+  };
+
+  const withdrawalWhere = {
+    type: 'WITHDRAWAL' as const,
+    status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
+    createdAt: { gt: since },
+  };
+
+  const [deposits, withdrawals, latestDeposit, latestWithdrawal] = await Promise.all([
+    prisma.paymentRequest.count({ where: depositWhere }),
+    prisma.paymentRequest.count({ where: withdrawalWhere }),
+    prisma.paymentRequest.findFirst({
+      where: depositWhere,
+      orderBy: { updatedAt: 'desc' },
+      select: { updatedAt: true },
+    }),
+    prisma.paymentRequest.findFirst({
+      where: withdrawalWhere,
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    }),
+  ]);
+
+  const latestCandidates = [latestDeposit?.updatedAt, latestWithdrawal?.createdAt]
+    .filter((d): d is Date => !!d);
+  const latest = latestCandidates.length
+    ? new Date(Math.max(...latestCandidates.map((d) => d.getTime())))
+    : null;
+
+  res.json({
+    ok: true,
+    deposits,
+    withdrawals,
+    latest,
   });
 });
 
@@ -380,7 +481,7 @@ router.get('/export/deposits.csv', async (req: Request, res: Response) => {
       id: x.id, referenceCode: x.referenceCode, uniqueReference: x.uniqueReference,
       userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: formatAmount(x.amountCents), status: x.status,
-      bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
+      bank: bankLabel(x.bankAccount), createdAt: x.createdAt.toISOString(),
       processedAt: processedDate ? processedDate.toISOString() : '',
       processingSeconds: processingSeconds ?? '',
       processedBy,
@@ -415,7 +516,7 @@ router.get('/export/deposits.xlsx', async (req: Request, res: Response) => {
       currency: x.currency,
       amount: Number((x.amountCents / 100).toFixed(2)),
       status: x.status,
-      bank: x.bankAccount?.bankName ?? '',
+      bank: bankLabel(x.bankAccount),
       createdAt: x.createdAt,
       processedAt: processedDate,
       processingSeconds,
@@ -526,7 +627,7 @@ router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
       id: x.id, referenceCode: x.referenceCode, uniqueReference: x.uniqueReference,
       userId: x.user?.publicId ?? x.userId,
       merchant: x.merchant?.name ?? '', currency: x.currency, amount: formatAmount(x.amountCents), status: x.status,
-      bank: x.bankAccount?.bankName ?? '', createdAt: x.createdAt.toISOString(),
+      bank: bankLabel(x.bankAccount), createdAt: x.createdAt.toISOString(),
       processedAt: processedDate ? processedDate.toISOString() : '',
       processingSeconds: processingSeconds ?? '',
       processedBy
@@ -559,7 +660,7 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
       currency: x.currency,
       amount: Number((x.amountCents / 100).toFixed(2)),
       status: x.status,
-      bank: x.bankAccount?.bankName ?? '',
+      bank: bankLabel(x.bankAccount),
       createdAt: x.createdAt,
       processedAt: processedDate,
       processingSeconds,
@@ -569,6 +670,87 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition','attachment; filename="withdrawals.xlsx"');
   await wb.xlsx.write(res); res.end();
+});
+
+/* ---------------- Users ---------------- */
+router.get('/users', async (req, res) => {
+  const { query, merchants, merchantIds } = await resolveUserDirectoryInput(req);
+  const table = merchantIds.length
+    ? await getUserDirectory({ merchantIds, search: query.q || null, page: query.page, perPage: query.perPage })
+    : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
+
+  res.render('admin-users', {
+    title: 'Users',
+    table,
+    query,
+    merchants,
+  });
+});
+
+router.get('/export/users.csv', async (req: Request, res: Response) => {
+  const { query, merchantIds } = await resolveUserDirectoryInput(req);
+  const items = await collectUsersForExport(merchantIds, query.q || null);
+  res.setHeader('Content-Type', 'text/csv');
+  res.setHeader('Content-Disposition', 'attachment; filename="users.csv"');
+  const csv = stringify({
+    header: true,
+    columns: ['userId','fullName','email','phone','status','registeredAt','lastActivity','merchants'],
+  });
+  csv.pipe(res);
+  items.forEach((user) => {
+    csv.write({
+      userId: user.publicId,
+      fullName: user.fullName || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt.toISOString(),
+      lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : '',
+      merchants: user.merchants.map((m) => m.name).join(', '),
+    });
+  });
+  csv.end();
+});
+
+router.get('/export/users.xlsx', async (req: Request, res: Response) => {
+  const { query, merchantIds } = await resolveUserDirectoryInput(req);
+  const items = await collectUsersForExport(merchantIds, query.q || null);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('Users');
+  ws.columns = [
+    { header: 'User ID', key: 'userId', width: 16 },
+    { header: 'Full name', key: 'fullName', width: 24 },
+    { header: 'Email', key: 'email', width: 24 },
+    { header: 'Phone', key: 'phone', width: 18 },
+    { header: 'Status', key: 'status', width: 14 },
+    { header: 'Registered', key: 'registeredAt', width: 24 },
+    { header: 'Last activity', key: 'lastActivity', width: 24 },
+    { header: 'Merchants', key: 'merchants', width: 32 },
+  ];
+  items.forEach((user) => {
+    ws.addRow({
+      userId: user.publicId,
+      fullName: user.fullName || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt,
+      lastActivity: user.lastActivityAt,
+      merchants: user.merchants.map((m) => m.name).join(', '),
+    });
+  });
+  res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition','attachment; filename="users.xlsx"');
+  await wb.xlsx.write(res); res.end();
+});
+
+router.get('/export/users.pdf', async (req: Request, res: Response) => {
+  const { query, merchantIds } = await resolveUserDirectoryInput(req);
+  const items = await collectUsersForExport(merchantIds, query.q || null);
+  const pdf = renderUserDirectoryPdf(items);
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'attachment; filename="users.pdf"');
+  res.end(pdf);
 });
 
 /* ---------------- Banks ---------------- */

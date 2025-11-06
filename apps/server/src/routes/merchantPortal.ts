@@ -9,10 +9,25 @@ import { seal } from "../services/secretBox.js";
 import jwt from "jsonwebtoken";
 // ⬇️ NEW: we’ll mint a short-lived checkout token for the merchant demo
 import { signCheckoutToken } from "../services/checkoutToken.js";
+import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
 
 const router = Router();
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+
+const userQuery = z.object({
+  q: z.string().optional(),
+  page: z.string().optional(),
+  perPage: z.string().optional(),
+});
+
+function usersFeatureEnabled(res: any): boolean {
+  return !!res?.locals?.merchantFeatures?.usersEnabled;
+}
+
+async function collectMerchantUsersForExport(merchantId: string, search?: string | null) {
+  return getAllUsers({ merchantIds: [merchantId], search: search ?? null });
+}
 
 // ─────────────────────────────────────────────────────────────
 // Merchant auth guard — tolerant to old/new token shapes
@@ -62,6 +77,20 @@ async function requireMerchant(req: any, res: any, next: any) {
 
 // All routes below require merchant auth
 router.use(requireMerchant);
+
+router.use(async (req: any, res, next) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return next();
+  if (!req.merchantDetails) {
+    req.merchantDetails = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { id: true, name: true, email: true, balanceCents: true, defaultCurrency: true, userDirectoryEnabled: true },
+    });
+  }
+  res.locals.merchant = req.merchantDetails;
+  res.locals.merchantFeatures = { usersEnabled: !!req.merchantDetails?.userDirectoryEnabled };
+  next();
+});
 
 const listQuery = z.object({
   q: z.string().optional(),
@@ -141,9 +170,26 @@ async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" 
     prisma.paymentRequest.count({ where }),
     prisma.paymentRequest.findMany({
       where,
-      include: {
+      select: {
+        id: true,
+        type: true,
+        status: true,
+        amountCents: true,
+        currency: true,
+        referenceCode: true,
+        uniqueReference: true,
+        createdAt: true,
+        updatedAt: true,
+        processedAt: true,
+        notes: true,
+        rejectedReason: true,
+        detailsJson: true,
+        merchantId: true,
+        bankAccountId: true,
+        merchant: { select: { id: true, name: true } },
         user: { select: { id: true, publicId: true, email: true, phone: true } },
-        bankAccount: { select: { bankName: true } },
+        processedByAdmin: { select: { id: true, email: true, displayName: true } },
+        bankAccount: { select: { publicId: true, bankName: true, method: true } },
         receiptFile: { select: { path: true, original: true } },
       },
       orderBy,
@@ -162,11 +208,7 @@ router.get("/", async (req: any, res) => {
   const today = new Date(); today.setHours(0, 0, 0, 0);
 
   const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
-  const [merchant, pendingDeposits, pendingWithdrawals, totalsToday, latest] = await Promise.all([
-    prisma.merchant.findUnique({
-      where: { id: merchantId },
-      select: { name: true, balanceCents: true }
-    }),
+  const [pendingDeposits, pendingWithdrawals, totalsToday, latest] = await Promise.all([
     prisma.paymentRequest.count({ where: { merchantId, type: "DEPOSIT", status: { in: awaitingStatuses } } }),
     prisma.paymentRequest.count({ where: { merchantId, type: "WITHDRAWAL", status: { in: awaitingStatuses } } }),
     prisma.paymentRequest.groupBy({
@@ -190,6 +232,11 @@ router.get("/", async (req: any, res) => {
       },
     }),
   ]);
+
+  const merchant = req.merchantDetails || await prisma.merchant.findUnique({
+    where: { id: merchantId },
+    select: { name: true, balanceCents: true, defaultCurrency: true },
+  });
 
   res.render("merchant/dashboard", {
     title: "Merchant Dashboard",
@@ -246,6 +293,16 @@ router.get("/payments", async (req: any, res) => {
 
 router.get("/payments/deposits", (_req, res) => res.redirect("/merchant/payments?type=DEPOSIT"));
 router.get("/payments/withdrawals", (_req, res) => res.redirect("/merchant/payments?type=WITHDRAWAL"));
+
+router.get("/users", async (req: any, res) => {
+  if (!usersFeatureEnabled(res)) {
+    return res.status(403).render("merchant/users-disabled", { title: "Users" });
+  }
+  const merchantId = req.merchant?.sub as string;
+  const query = userQuery.parse(req.query);
+  const table = await getUserDirectory({ merchantIds: [merchantId], search: query.q || null, page: query.page, perPage: query.perPage });
+  res.render("merchant/users", { title: "Users", table, query });
+});
 
 // Ledger
 router.get("/ledger", async (req: any, res) => {
@@ -357,6 +414,76 @@ router.get("/export/ledger.xlsx", async (req: any, res) => {
   res.setHeader("Content-Disposition",'attachment; filename="ledger.xlsx"');
   await wb.xlsx.write(res);
   res.end();
+});
+
+router.get("/export/users.csv", async (req: any, res) => {
+  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  const merchantId = req.merchant?.sub as string;
+  const query = userQuery.parse(req.query);
+  const items = await collectMerchantUsersForExport(merchantId, query.q || null);
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  const csv = stringify({
+    header: true,
+    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity"],
+  });
+  csv.pipe(res);
+  items.forEach((user) => {
+    csv.write({
+      userId: user.publicId,
+      fullName: user.fullName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt.toISOString(),
+      lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
+    });
+  });
+  csv.end();
+});
+
+router.get("/export/users.xlsx", async (req: any, res) => {
+  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  const merchantId = req.merchant?.sub as string;
+  const query = userQuery.parse(req.query);
+  const items = await collectMerchantUsersForExport(merchantId, query.q || null);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Users");
+  ws.columns = [
+    { header: "User ID", key: "userId", width: 16 },
+    { header: "Full name", key: "fullName", width: 24 },
+    { header: "Email", key: "email", width: 24 },
+    { header: "Phone", key: "phone", width: 18 },
+    { header: "Status", key: "status", width: 14 },
+    { header: "Registered", key: "registeredAt", width: 24 },
+    { header: "Last activity", key: "lastActivity", width: 24 },
+  ];
+  items.forEach((user) => {
+    ws.addRow({
+      userId: user.publicId,
+      fullName: user.fullName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt,
+      lastActivity: user.lastActivityAt || null,
+    });
+  });
+  res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  await wb.xlsx.write(res);
+  res.end();
+});
+
+router.get("/export/users.pdf", async (req: any, res) => {
+  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  const merchantId = req.merchant?.sub as string;
+  const query = userQuery.parse(req.query);
+  const items = await collectMerchantUsersForExport(merchantId, query.q || null);
+  const pdf = renderUserDirectoryPdf(items);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", 'attachment; filename="users.pdf"');
+  res.end(pdf);
 });
 
 // API Keys

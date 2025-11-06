@@ -507,8 +507,8 @@
       openDeposit(token, claims);
     });
 
-    const uploadBtn = el("button", { style:"height:36px; padding:0 12px; cursor:pointer" }, "Upload receipt");
-    uploadBtn.addEventListener("click", async () => {
+    const submitBtn = el("button", { style:"height:36px; padding:0 12px; cursor:pointer" }, "Submit");
+    submitBtn.addEventListener("click", async () => {
       try {
         if (!receipt.files || !receipt.files[0]) {
           status.textContent = "Attach a receipt file first.";
@@ -516,16 +516,19 @@
         }
         const fd = new FormData();
         fd.append("receipt", receipt.files[0]);
-        status.textContent = "Uploading…";
+        status.textContent = "Submitting…";
+        submitBtn.disabled = true;
         await call(`/public/deposit/${intent.id}/receipt`, token, { method:"POST", body: fd });
         status.textContent = "Submitted. Thank you!";
         safeCallback("onDepositSubmitted", {
         id: intent.id, referenceCode: intent.referenceCode, uniqueReference: intent.uniqueReference,
           amountCents: intent.amountCents, currency: intent.currency || "AUD"
         });
+        setTimeout(() => { submitBtn.disabled = false; }, 1500);
       } catch (e) {
         status.textContent = (e && e.error) ? String(e.error) : "Error";
         safeCallback("onError", e);
+        submitBtn.disabled = false;
       }
     });
 
@@ -533,7 +536,7 @@
     doneBtn.addEventListener("click", () => close());
 
     actions.appendChild(backBtn);
-    actions.appendChild(uploadBtn);
+    actions.appendChild(submitBtn);
     actions.appendChild(doneBtn);
 
     box.appendChild(intro);

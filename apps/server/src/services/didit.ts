@@ -74,6 +74,41 @@ export async function handleDiditWebhook(
   return user;
 }
 
+export type DiditProfile = {
+  fullName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  status?: string | null;
+};
+
+export async function fetchDiditProfile(subject: string): Promise<DiditProfile | null> {
+  if (!subject) return null;
+  const token = await getDiditAccessToken();
+  if (!token) return null;
+
+  const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
+  const url = `${base}/users/${encodeURIComponent(subject)}`;
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    return {
+      fullName: json?.name || json?.full_name || json?.fullName || null,
+      email: json?.email || null,
+      phone: json?.phone || json?.phone_number || null,
+      status: json?.status || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ───────────────────────────────────────────────────────────────
 // OAuth helper: fetch access token (Client Credentials)
 // ───────────────────────────────────────────────────────────────

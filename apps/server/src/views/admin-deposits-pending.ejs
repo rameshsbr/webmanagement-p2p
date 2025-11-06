@@ -13,7 +13,7 @@
   }
 }) %>
 
-<div class="table-wrap">
+<div class="table-wrap" data-auto-refresh="pending-deposits">
   <table class="table" data-pending-actions>
     <thead>
       <tr>
@@ -54,7 +54,14 @@
               <span class="badge warn">Pending</span>
             <% } %>
           </td>
-          <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
+          <td data-col="bank">
+            <% if (r.bankAccount) { %>
+              <span class="mono"><%= r.bankAccount.publicId || '-' %></span><br>
+              <%= r.bankAccount.bankName || '-' %>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
           <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
           <td data-col="processedAt">-</td>
           <td data-col="processingTime">-</td>
@@ -62,6 +69,7 @@
             <div class="info-block">
               <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
               <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Bank ID</span><span class="info-value"><%= r.bankAccount?.publicId || '-' %></span></div>
               <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || '-' %></span></div>
               <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || '-' %></span></div>
               <% if (method === 'OSKO') { %>

@@ -16,6 +16,39 @@
   });
 })();
 
+// Column visibility (shared with admin tables)
+(() => {
+  document.querySelectorAll('[data-col-toggle]').forEach((cb) => {
+    const container = cb.closest('[data-collapsible]');
+    const storageKey = container?.getAttribute('data-storage-key') || 'merchant.columns';
+    let saved;
+    try {
+      saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+    } catch {
+      saved = {};
+    }
+    const col = cb.getAttribute('data-col-toggle');
+    if (Object.prototype.hasOwnProperty.call(saved, col)) cb.checked = !!saved[col];
+
+    const apply = () => {
+      document.querySelectorAll(`[data-col="${col}"]`).forEach((el) => {
+        el.style.display = cb.checked ? '' : 'none';
+      });
+      let next;
+      try {
+        next = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+      } catch {
+        next = {};
+      }
+      next[col] = cb.checked;
+      localStorage.setItem(storageKey, JSON.stringify(next));
+    };
+
+    cb.addEventListener('change', apply);
+    apply();
+  });
+})();
+
 // Sidebar section toggle
 (() => {
   const show = section => {

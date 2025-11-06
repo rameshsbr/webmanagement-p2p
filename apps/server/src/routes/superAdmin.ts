@@ -10,6 +10,9 @@ import path from "node:path";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
 import { generateBankPublicId } from "../services/reference.js";
+import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
+import { stringify } from "csv-stringify";
+import ExcelJS from "exceljs";
 
 export const superAdminRouter = Router();
 
@@ -32,6 +35,26 @@ function statusesCSV(s?: string) {
     .filter((x) => STATUS_ALLOWED.has(x));
   return arr.length ? arr : undefined;
 }
+
+const superUserQuery = z.object({
+  q: z.string().optional(),
+  merchantId: z.union([z.string(), z.array(z.string())]).optional(),
+  page: z.string().optional(),
+  perPage: z.string().optional(),
+});
+
+function normalizeMerchantFilter(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((id) => (typeof id === "string" ? id.trim() : ""))
+      .filter((id) => id.length > 0);
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return [];
+}
 function sortSpec(s?: string) {
   // allowlist of sortable columns + default
   const wl = new Set([
@@ -51,6 +74,11 @@ function sortSpec(s?: string) {
     if (d === "asc" || d === "desc") dir = d;
   }
   return { [col]: dir } as any;
+}
+
+async function collectUsersForSuperAdmin(merchantIds: string[], search?: string | null) {
+  if (!merchantIds.length) return [];
+  return getAllUsers({ merchantIds, search: search ?? null });
 }
 
 function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
@@ -550,7 +578,7 @@ superAdminRouter.get("/merchants/new", (_req, res) => {
 });
 
 superAdminRouter.post("/merchants/new", async (req, res) => {
-  const { name, webhookUrl, status, email, defaultCurrency, active } =
+  const { name, webhookUrl, status, email, defaultCurrency, active, userDirectoryEnabled } =
     req.body || {};
 
   const m = await prisma.merchant.create({
@@ -561,6 +589,7 @@ superAdminRouter.post("/merchants/new", async (req, res) => {
       email: (email || "").trim() || null,
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
+      userDirectoryEnabled: userDirectoryEnabled === "on",
     },
   });
 
@@ -641,7 +670,7 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
 });
 
 superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
-  const { name, status, email, defaultCurrency, active } = req.body || {};
+  const { name, status, email, defaultCurrency, active, userDirectoryEnabled } = req.body || {};
   const website = (req.body?.webhookUrl || req.body?.website || "").trim();
 
   const before = await prisma.merchant.findUnique({
@@ -657,6 +686,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       email: (email || "").trim() || null,
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
+      userDirectoryEnabled: userDirectoryEnabled === "on",
     },
   });
 
@@ -668,15 +698,135 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       email: (email || "").trim() || null,
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
+      userDirectoryEnabled: userDirectoryEnabled === "on",
     },
     previous: {
       name: before?.name,
       status: before?.status,
       active: (before as any)?.active,
+      userDirectoryEnabled: (before as any)?.userDirectoryEnabled,
     },
   });
 
   res.redirect(`/superadmin/merchants/${req.params.id}/edit?saved=1`);
+});
+
+superAdminRouter.post("/merchants/:id/user-directory", async (req, res) => {
+  const id = req.params.id;
+  const action = String(req.body?.action || "").toLowerCase();
+  const enable = action !== "disable";
+
+  const updated = await prisma.merchant.update({
+    where: { id },
+    data: { userDirectoryEnabled: enable },
+  });
+
+  await auditAdmin(
+    req,
+    enable ? "merchant.userDirectory.enable" : "merchant.userDirectory.disable",
+    "MERCHANT",
+    id,
+    { userDirectoryEnabled: updated.userDirectoryEnabled }
+  );
+
+  res.redirect("/superadmin/merchants");
+});
+
+superAdminRouter.get("/users", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchants = await prisma.merchant.findMany({
+    select: { id: true, name: true, userDirectoryEnabled: true },
+    orderBy: { name: "asc" },
+  });
+
+  const requested = normalizeMerchantFilter(query.merchantId);
+  const merchantIds = requested.length ? requested : merchants.map((m) => m.id);
+
+  const table = merchantIds.length
+    ? await getUserDirectory({ merchantIds, search: query.q || null, page: query.page, perPage: query.perPage })
+    : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
+
+  res.render("superadmin/users", {
+    title: "Users",
+    table,
+    query,
+    merchants,
+    selectedIds: merchantIds,
+    rawQuery: req.query,
+  });
+});
+
+superAdminRouter.get("/export/users.csv", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchantIds = normalizeMerchantFilter(query.merchantId);
+  const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
+  const items = await collectUsersForSuperAdmin(merchants, query.q || null);
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  const csv = stringify({
+    header: true,
+    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","merchants"],
+  });
+  csv.pipe(res);
+  items.forEach((user) => {
+    csv.write({
+      userId: user.publicId,
+      fullName: user.fullName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt.toISOString(),
+      lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
+      merchants: user.merchants.map((m) => m.name).join(", "),
+    });
+  });
+  csv.end();
+});
+
+superAdminRouter.get("/export/users.xlsx", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchantIds = normalizeMerchantFilter(query.merchantId);
+  const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
+  const items = await collectUsersForSuperAdmin(merchants, query.q || null);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Users");
+  ws.columns = [
+    { header: "User ID", key: "userId", width: 16 },
+    { header: "Full name", key: "fullName", width: 24 },
+    { header: "Email", key: "email", width: 24 },
+    { header: "Phone", key: "phone", width: 18 },
+    { header: "Status", key: "status", width: 14 },
+    { header: "Registered", key: "registeredAt", width: 24 },
+    { header: "Last activity", key: "lastActivity", width: 24 },
+    { header: "Merchants", key: "merchants", width: 30 },
+  ];
+  items.forEach((user) => {
+    ws.addRow({
+      userId: user.publicId,
+      fullName: user.fullName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt,
+      lastActivity: user.lastActivityAt || null,
+      merchants: user.merchants.map((m) => m.name).join(", "),
+    });
+  });
+  res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  await wb.xlsx.write(res);
+  res.end();
+});
+
+superAdminRouter.get("/export/users.pdf", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchantIds = normalizeMerchantFilter(query.merchantId);
+  const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
+  const items = await collectUsersForSuperAdmin(merchants, query.q || null);
+  const pdf = renderUserDirectoryPdf(items);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", 'attachment; filename="users.pdf"');
+  res.end(pdf);
 });
 
 // Merchant limits (rate & IP allow list)

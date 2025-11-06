@@ -14,6 +14,7 @@
         <th>Status</th>
         <th>Currency</th>
         <th>Active</th>
+        <th>User directory</th>
         <th>API limit</th>
         <th></th>
       </tr>
@@ -26,6 +27,13 @@
           <td class="capitalize"><%= m.status || '—' %></td>
           <td><%= (m.defaultCurrency || '—').toUpperCase() %></td>
           <td><%= m.active ? 'yes' : 'no' %></td>
+          <td>
+            <form method="POST" action="/superadmin/merchants/<%= m.id %>/user-directory" style="display:flex; gap:6px; align-items:center; justify-content:center;">
+              <span class="badge <%= m.userDirectoryEnabled ? 'success' : 'warn' %>"><%= m.userDirectoryEnabled ? 'enabled' : 'disabled' %></span>
+              <input type="hidden" name="action" value="<%= m.userDirectoryEnabled ? 'disable' : 'enable' %>">
+              <button type="submit" class="btn small"><%= m.userDirectoryEnabled ? 'Disable' : 'Enable' %></button>
+            </form>
+          </td>
           <td>
             <% if (m.limits && m.limits.maxReqPerMin != null) { %>
               <%= m.limits.maxReqPerMin %>/min
@@ -40,7 +48,7 @@
         </tr>
       <% }) %>
       <% if (!merchants || merchants.length === 0) { %>
-        <tr><td colspan="7" class="mini">No merchants yet.</td></tr>
+        <tr><td colspan="8" class="mini">No merchants yet.</td></tr>
       <% } %>
     </tbody>
   </table>

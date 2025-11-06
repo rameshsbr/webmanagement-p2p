@@ -28,21 +28,34 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 });
 
-// Column visibility
+// Column visibility (per widget key)
 (() => {
-  const KEY = 'admin.columns';
-  const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
   document.querySelectorAll('[data-col-toggle]').forEach((cb) => {
+    const container = cb.closest('[data-collapsible]');
+    const storageKey = container?.getAttribute('data-storage-key') || 'admin.columns';
+    let saved: Record<string, boolean>;
+    try {
+      saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+    } catch {
+      saved = {};
+    }
     const col = cb.getAttribute('data-col-toggle');
     if (Object.prototype.hasOwnProperty.call(saved, col)) cb.checked = !!saved[col];
+
     const apply = () => {
       document.querySelectorAll(`[data-col="${col}"]`).forEach((el) => {
         el.style.display = cb.checked ? '' : 'none';
       });
-      const next = JSON.parse(localStorage.getItem(KEY) || '{}');
+      let next: Record<string, boolean>;
+      try {
+        next = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+      } catch {
+        next = {};
+      }
       next[col] = cb.checked;
-      localStorage.setItem(KEY, JSON.stringify(next));
+      localStorage.setItem(storageKey, JSON.stringify(next));
     };
+
     cb.addEventListener('change', apply);
     apply();
   });
@@ -458,6 +471,20 @@ window.addEventListener('pageshow', purgeModals);
   const NotificationAPI = 'Notification' in window ? window.Notification : null;
   let lastStamp = Date.now();
   let audioCtx = null;
+  let autoReloadScheduled = false;
+  let permissionBanner = null;
+
+  const findAutoRefreshContext = () =>
+    document.querySelector('[data-auto-refresh="pending-deposits"]') ||
+    document.querySelector('[data-auto-refresh="pending-withdrawals"]');
+
+  const scheduleReload = () => {
+    if (autoReloadScheduled) return;
+    const ctx = findAutoRefreshContext();
+    if (!ctx) return;
+    autoReloadScheduled = true;
+    window.setTimeout(() => window.location.reload(), 1500);
+  };
 
   const ensureAudio = () => {
     if (audioCtx) return audioCtx;
@@ -488,7 +515,9 @@ window.addEventListener('pageshow', purgeModals);
   const requestPermission = () => {
     if (!NotificationAPI) return;
     if (NotificationAPI.permission === 'default') {
-      NotificationAPI.requestPermission().catch(() => {});
+      NotificationAPI.requestPermission()
+        .then(() => ensurePermissionPrompt())
+        .catch(() => {});
     }
   };
 
@@ -500,7 +529,35 @@ window.addEventListener('pageshow', purgeModals);
 
   document.addEventListener('pointerdown', () => {
     prime();
+    ensurePermissionPrompt();
   }, { once: true });
+
+  const ensurePermissionPrompt = () => {
+    if (!NotificationAPI || NotificationAPI.permission !== 'default') {
+      if (permissionBanner) {
+        permissionBanner.remove();
+        permissionBanner = null;
+      }
+      return;
+    }
+    if (permissionBanner) return;
+    permissionBanner = document.createElement('div');
+    permissionBanner.className = 'notification-permission-banner';
+    permissionBanner.innerHTML = `
+      <div>
+        <strong>Enable browser alerts?</strong>
+        <span>Allow notifications to get instant deposit/withdrawal updates.</span>
+      </div>
+      <button type="button" class="btn small primary">Enable</button>
+    `;
+    const btn = permissionBanner.querySelector('button');
+    btn?.addEventListener('click', () => {
+      requestPermission();
+    });
+    document.body.appendChild(permissionBanner);
+  };
+
+  ensurePermissionPrompt();
 
   const sendNotification = (label, count) => {
     if (count <= 0) return;
@@ -513,6 +570,7 @@ window.addEventListener('pageshow', purgeModals);
       } catch {}
     }
     playChime();
+    scheduleReload();
   };
 
   const poll = async () => {
@@ -531,6 +589,7 @@ window.addEventListener('pageshow', purgeModals);
       } else {
         lastStamp = Date.now();
       }
+      ensurePermissionPrompt();
       sendNotification('deposit request', Number(data.deposits || 0));
       sendNotification('withdrawal request', Number(data.withdrawals || 0));
     } catch {}
@@ -538,11 +597,11 @@ window.addEventListener('pageshow', purgeModals);
 
   const loop = () => {
     poll().finally(() => {
-      window.setTimeout(loop, 20000);
+      window.setTimeout(loop, 5000);
     });
   };
 
-  window.setTimeout(loop, 10000);
+  window.setTimeout(loop, 5000);
 })();
 
 // Preferences Save / Cancel

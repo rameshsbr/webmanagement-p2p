@@ -232,14 +232,15 @@ textarea{
 .table{ width:100%; min-width:100%; border-collapse:separate; border-spacing:0; table-layout:auto }
 .table th,.table td{ padding:12px 10px; border-bottom:1px solid var(--muted); vertical-align:middle; white-space:normal; text-align:center }
 .mono{ font-family:'SFMono-Regular',Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace; letter-spacing:.2px }
-.info-cell{ min-width:260px }
+.info-cell{ min-width:260px; text-align:left }
 .info-block{ display:flex; flex-direction:column; gap:4px }
-.info-line{ display:flex; justify-content:center; gap:6px; flex-wrap:wrap; font-size:13px }
+.info-line{ display:flex; justify-content:flex-start; gap:6px; flex-wrap:wrap; font-size:13px }
 .info-label{ color:var(--ink); font-weight:600; text-transform:none; white-space:nowrap; position:relative }
 .info-label::after{ content:':'; margin-left:4px }
 .info-value{ word-break:break-word; color:var(--ink-dim) }
 .info-value a{ color:var(--brand); text-decoration:none }
 .info-value a:hover{ text-decoration:underline }
+.list-unstyled{ list-style:none; margin:0; padding:0 }
 .date-stack{ display:inline-flex; flex-direction:column; align-items:center; line-height:1.2; gap:2px }
 .table th{ font-weight:700; background:var(--row); position:sticky; top:0 }
 
@@ -312,7 +313,7 @@ textarea{
 }
 
 .modal-card {
-  background: var(--surface);
+  background: #ffffff;
   color: var(--ink);
   border-radius: 12px;
   max-width: 420px;
@@ -383,4 +384,32 @@ textarea{
   font-size: 0.8rem;
   min-height: 1em;
   display: none;
+}
+
+.notification-permission-banner {
+  position: fixed;
+  bottom: 20px;
+  right: 20px;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  background: rgba(255, 255, 255, 0.97);
+  color: var(--ink);
+  border-radius: 12px;
+  padding: 14px 18px;
+  box-shadow: 0 18px 40px rgba(15, 23, 42, 0.18);
+  border: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.notification-permission-banner strong {
+  display: block;
+  font-size: 0.95rem;
+}
+
+.notification-permission-banner span {
+  display: block;
+  font-size: 0.8rem;
+  opacity: 0.8;
+  margin-top: 2px;
 }

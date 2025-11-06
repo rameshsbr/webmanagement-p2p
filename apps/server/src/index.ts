@@ -32,9 +32,14 @@ import { merchantPortalRouter } from "./routes/merchantPortal.js";
 // import { requireMerchantSession } from "./middleware/auth.js"; // no longer used
 import { superAdminRouter } from './routes/superAdmin.js';
 import { auditHttpWrites } from "./services/audit.js";
+import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 
 
 const app = express();
+
+backfillShortIdentifiers().catch((err) => {
+  console.warn("[BOOT] short-id backfill skipped", err?.message || err);
+});
 
 // Security & logging
 app.use(

@@ -28,6 +28,7 @@ model Merchant {
   email           String? // NEW: optional
   defaultCurrency String  @default("USD") // NEW: required with default
   active          Boolean @default(true)
+  userDirectoryEnabled Boolean @default(false)
 
   // new relations for super-admin features
   users     MerchantUser[]

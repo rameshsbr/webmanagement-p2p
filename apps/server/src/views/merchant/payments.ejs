@@ -2,62 +2,137 @@
 
 <%- include('../partials/filters-bar', { query }) %>
 
+<%- include('../partials/column-settings', {
+  key: 'merchant.columns.payments',
+  defaults: {
+    txnId:true,
+    userId:true,
+    type:true,
+    currency:true,
+    amount:true,
+    status:true,
+    bank:true,
+    created:true,
+    processedAt:true,
+    processingTime:true,
+    userInfo:true,
+    comment:true,
+    admin:true
+  },
+  labelMap: {
+    txnId: 'Transaction ID',
+    type: 'Type',
+    processedAt: 'Date processed',
+    processingTime: 'Time to process',
+    comment: 'Comment',
+    admin: 'Processed by'
+  }
+}) %>
+
 <div class="table-wrap">
-  <!-- Export controls above the table, right-aligned -->
+  <% const qp = new URLSearchParams(query); %>
   <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px;">
-    <% const qp = new URLSearchParams(query); %>
     <a class="btn small" href="/merchant/export/payments.csv?<%= qp.toString() %>">Export CSV</a>
     <a class="btn small" href="/merchant/export/payments.xlsx?<%= qp.toString() %>">Export XLSX</a>
   </div>
 
-  <!-- BEGIN: Checkout demo panel (only appears when server gave us a token) -->
-  <div id="payx-demo" style="display:<%= typeof checkoutToken !== 'undefined' ? 'block' : 'none' %>;
-                              margin: 12px 0 20px 0; padding:12px; border:1px solid var(--ink-2); border-radius:10px;">
-    <div class="row" style="align-items:center; gap:10px;">
-      <div style="font-weight:600;">Test checkout</div>
-      <div style="opacity:.7;">Subject:</div>
-      <code><%= (query.subject || query.diditSubject || '') %></code>
-      <span style="flex:1"></span>
-      <button class="btn small" id="payx-open-dep">Open deposit</button>
-      <button class="btn small" id="payx-open-wdr">Open withdrawal</button>
+  <% if (typeof checkoutToken !== 'undefined') { %>
+    <div id="payx-demo" style="margin: 12px 0 20px 0; padding:12px; border:1px solid var(--muted); border-radius:10px;">
+      <div class="row" style="align-items:center; gap:10px;">
+        <div style="font-weight:600;">Test checkout</div>
+        <div style="opacity:.7;">Subject:</div>
+        <code><%= (query.subject || query.diditSubject || '') %></code>
+        <span style="flex:1"></span>
+        <button class="btn small" id="payx-open-dep">Open deposit</button>
+        <button class="btn small" id="payx-open-wdr">Open withdrawal</button>
+      </div>
+      <div id="payx-demo-log" style="margin-top:8px; font-size:12px; opacity:.8;"></div>
     </div>
-    <div id="payx-demo-log" style="margin-top:8px; font-size:12px; opacity:.8;"></div>
-  </div>
-  <!-- END: Checkout demo panel -->
+  <% } %>
 
   <table class="table">
     <thead>
       <tr>
-        <th>REFERENCE</th>
-        <th>TYPE</th>
-        <th>STATUS</th>
-        <th>CURRENCY</th>
-        <th>AMOUNT</th>
-        <th>BANK</th>
-        <th>CREATED</th>
-        <th>PROCESSED</th>
-        <th>RECEIPT</th>
+        <th data-col="txnId">TRANSACTION ID</th>
+        <th data-col="userId">USER ID</th>
+        <th data-col="type">TYPE</th>
+        <th data-col="currency">CURRENCY</th>
+        <th data-col="amount">AMOUNT</th>
+        <th data-col="status">STATUS</th>
+        <th data-col="bank">BANK</th>
+        <th data-col="created">DATE OF CREATION</th>
+        <th data-col="processedAt">DATE PROCESSED</th>
+        <th data-col="processingTime">TIME TO PROCESS</th>
+        <th data-col="userInfo">USER INFO</th>
+        <th data-col="comment">COMMENT</th>
+        <th data-col="admin">PROCESSED BY</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+        <tr><td colspan="13" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
       <% table.items.forEach(r => { %>
+        <% const details = (r.detailsJson || {}); %>
+        <% const methodRaw = (details.method || (r.bankAccount && r.bankAccount.method) || ''); %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const payer = details.payer || {}; %>
+        <% const destination = details.destination || {}; %>
+        <% const processedAt = r.processedAt || r.updatedAt || null; %>
+        <% const hasProcessed = processedAt && !(r.status === 'PENDING' || r.status === 'SUBMITTED'); %>
         <tr>
-          <td class="mono"><%= r.referenceCode %></td>
-          <td><%= r.type %></td>
-          <td><%= r.status %></td>
-          <td><%= r.currency %></td>
-          <td><%= formatAmount(r.amountCents) %></td>
-          <td><%= r.bankAccount?.bankName || '-' %></td>
-          <td><%- renderDateTime(r.createdAt) %></td>
-          <td><%- renderDateTime(r.processedAt || r.updatedAt) %></td>
-          <td>
-            <% if (r.receiptFile) { %>
-              <a class="btn small" target="_blank" href="<%= r.receiptFile.path.startsWith('/') ? r.receiptFile.path : ('/uploads/'+r.receiptFile.path) %>">View</a>
-            <% } else { %>-<% } %>
+          <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
+          <td data-col="type"><%= r.type %></td>
+          <td data-col="currency"><%= r.currency %></td>
+          <td data-col="amount"><%= formatAmount(r.amountCents) %></td>
+          <td data-col="status">
+            <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
+            <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
+            <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
+            <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
           </td>
+          <td data-col="bank">
+            <% if (r.bankAccount) { %>
+              <span class="mono"><%= r.bankAccount.publicId || '-' %></span><br>
+              <%= r.bankAccount.bankName || '-' %>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+          <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
+          <td data-col="processedAt"><%- hasProcessed ? renderDateTime(processedAt) : '-' %></td>
+          <td data-col="processingTime"><%= hasProcessed ? formatDuration(r.createdAt, processedAt) : '-' %></td>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
+              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <% if (r.type === 'DEPOSIT') { %>
+                <div class="info-line"><span class="info-label">Bank ID</span><span class="info-value"><%= r.bankAccount?.publicId || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || '-' %></span></div>
+                <% if (method === 'OSKO') { %>
+                  <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || '-' %></span></div>
+                  <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || '-' %></span></div>
+                <% } else if (method === 'PAYID') { %>
+                  <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= payer.payIdValue || '-' %></span></div>
+                <% } %>
+                <% if (r.receiptFile) { %>
+                  <div class="info-line"><span class="info-label">Receipt</span><span class="info-value"><a href="<%= r.receiptFile.path %>" target="_blank" rel="noopener">View receipt</a></span></div>
+                <% } %>
+              <% } else { %>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= destination.holderName || '-' %></span></div>
+                <% if (method === 'OSKO') { %>
+                  <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= destination.accountNo || '-' %></span></div>
+                  <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= destination.bsb || '-' %></span></div>
+                <% } else if (method === 'PAYID') { %>
+                  <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= destination.payIdValue || '-' %></span></div>
+                <% } %>
+              <% } %>
+            </div>
+          </td>
+          <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
         </tr>
       <% }) %>
     </tbody>
@@ -75,7 +150,6 @@
   <% } else { %><span>Next</span><% } %>
 </div>
 
-<!-- Widget + merchant glue (only loaded when token exists) -->
 <% if (typeof checkoutToken !== 'undefined') { %>
   <script>
     window.CHECKOUT_TOKEN = "<%- checkoutToken %>";
@@ -83,17 +157,16 @@
   <script src="/public/checkout/checkout-widget.js?v=2"></script>
   <script src="/public/merchant/merchant.js" defer></script>
   <script>
-    // Minimal boot in case merchant.js didn’t run for some reason
     (async () => {
       try {
         if (window.PayX && window.CHECKOUT_TOKEN) {
           await PayX.init({
             token: window.CHECKOUT_TOKEN,
             theme: (document.cookie.match(/merchant_theme=(dark)/)?.[1] || "light"),
-            onKycApproved:  info => document.getElementById('payx-demo-log').textContent = "KYC approved",
-            onKycRejected:  info => document.getElementById('payx-demo-log').textContent = "KYC rejected",
-            onDepositSubmitted:    info => document.getElementById('payx-demo-log').textContent = "Deposit " + info.referenceCode,
-            onWithdrawalSubmitted: info => document.getElementById('payx-demo-log').textContent = "Withdrawal " + info.referenceCode,
+            onKycApproved:  () => document.getElementById('payx-demo-log').textContent = "KYC approved",
+            onKycRejected:  () => document.getElementById('payx-demo-log').textContent = "KYC rejected",
+            onDepositSubmitted:    info => document.getElementById('payx-demo-log').textContent = `Deposit ${info.referenceCode}`,
+            onWithdrawalSubmitted: info => document.getElementById('payx-demo-log').textContent = `Withdrawal ${info.referenceCode}`,
             onError: err => document.getElementById('payx-demo-log').textContent = "Error: " + (err && (err.error || err.message) || String(err)),
           });
           document.getElementById('payx-open-dep')?.addEventListener('click', () => PayX.openDeposit());

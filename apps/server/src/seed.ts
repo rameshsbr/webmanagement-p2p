@@ -14,7 +14,9 @@ async function main() {
 
   let m = await prisma.merchant.findFirst({ where: { name: 'DemoCasino' } });
   if (!m) {
-    m = await prisma.merchant.create({ data: { name: 'DemoCasino', balanceCents: 0 } });
+    m = await prisma.merchant.create({ data: { name: 'DemoCasino', balanceCents: 0, userDirectoryEnabled: true } });
+  } else if (!m.userDirectoryEnabled) {
+    m = await prisma.merchant.update({ where: { id: m.id }, data: { userDirectoryEnabled: true } });
   }
 
   const hasKey = await prisma.merchantApiKey.findFirst({ where: { merchantId: m.id } });

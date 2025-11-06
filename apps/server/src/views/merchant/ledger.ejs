@@ -5,7 +5,7 @@
     <thead>
       <tr>
         <th>ID</th>
-        <th>Amount (cents)</th>
+        <th>Amount</th>
         <th>Reason</th>
         <th>Created</th>
       </tr>
@@ -16,10 +16,10 @@
       <% } else { %>
         <% entries.forEach(e => { %>
           <tr>
-            <td><%= e.id %></td>
-            <td><%= e.amountCents %></td>
+            <td class="mono"><%= e.id %></td>
+            <td><%= formatAmount(e.amountCents, merchant?.defaultCurrency || 'AUD') %></td>
             <td><%= e.reason %></td>
-            <td><%= e.createdAt.toISOString() %></td>
+            <td><%- renderDateTime(e.createdAt) %></td>
           </tr>
         <% }) %>
       <% } %>

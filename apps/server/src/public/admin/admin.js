@@ -158,8 +158,9 @@ window.addEventListener('pageshow', purgeModals);
     const submitBtn = overlay.querySelector('[data-submit]');
 
     const close = () => {
-      overlay.remove();
+      overlay.classList.remove('is-visible');
       document.removeEventListener('keydown', escHandler);
+      window.setTimeout(() => overlay.remove(), 180);
     };
 
     const setError = (msg) => {
@@ -190,6 +191,7 @@ window.addEventListener('pageshow', purgeModals);
     });
 
     document.body.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add('is-visible'));
     submitBtn.focus();
   };
 
@@ -357,8 +359,9 @@ window.addEventListener('pageshow', purgeModals);
     const commentInput = overlay.querySelector('[data-comment-input]');
 
     const close = () => {
-      overlay.remove();
+      overlay.classList.remove('is-visible');
       document.removeEventListener('keydown', escHandler);
+      window.setTimeout(() => overlay.remove(), 180);
     };
     const escHandler = (e) => { if (e.key === 'Escape') close(); };
     const setError = (msg) => {
@@ -392,6 +395,7 @@ window.addEventListener('pageshow', purgeModals);
     });
 
     document.body.appendChild(overlay);
+    requestAnimationFrame(() => overlay.classList.add('is-visible'));
     submitBtn.focus();
   };
 
@@ -443,6 +447,102 @@ window.addEventListener('pageshow', purgeModals);
       });
     }
   });
+})();
+
+// Browser notifications for new queue items
+(() => {
+  if (typeof window.fetch !== 'function') return;
+  const shell = document.querySelector('.shell');
+  if (!shell) return;
+
+  const NotificationAPI = 'Notification' in window ? window.Notification : null;
+  let lastStamp = Date.now();
+  let audioCtx = null;
+
+  const ensureAudio = () => {
+    if (audioCtx) return audioCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    audioCtx = new Ctx();
+    return audioCtx;
+  };
+
+  const playChime = () => {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(880, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 1.2);
+  };
+
+  const requestPermission = () => {
+    if (!NotificationAPI) return;
+    if (NotificationAPI.permission === 'default') {
+      NotificationAPI.requestPermission().catch(() => {});
+    }
+  };
+
+  const prime = () => {
+    requestPermission();
+    const ctx = ensureAudio();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+  };
+
+  document.addEventListener('pointerdown', () => {
+    prime();
+  }, { once: true });
+
+  const sendNotification = (label, count) => {
+    if (count <= 0) return;
+    const plural = count > 1 ? 's' : '';
+    const message = count > 1 ? `${count} new ${label}${plural}` : `New ${label}`;
+    toast(message);
+    if (NotificationAPI && NotificationAPI.permission === 'granted') {
+      try {
+        new NotificationAPI('Payments queue update', { body: message, tag: `queue-${label}` });
+      } catch {}
+    }
+    playChime();
+  };
+
+  const poll = async () => {
+    const qs = new URLSearchParams({ since: String(lastStamp) });
+    try {
+      const res = await fetch(`/admin/notifications/queue?${qs.toString()}`, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data?.ok) return;
+      const latest = typeof data.latest === 'string' ? Date.parse(data.latest) : NaN;
+      if (!Number.isNaN(latest) && latest >= lastStamp) {
+        lastStamp = latest + 1;
+      } else {
+        lastStamp = Date.now();
+      }
+      sendNotification('deposit request', Number(data.deposits || 0));
+      sendNotification('withdrawal request', Number(data.withdrawals || 0));
+    } catch {}
+  };
+
+  const loop = () => {
+    poll().finally(() => {
+      window.setTimeout(loop, 20000);
+    });
+  };
+
+  window.setTimeout(loop, 10000);
 })();
 
 // Preferences Save / Cancel

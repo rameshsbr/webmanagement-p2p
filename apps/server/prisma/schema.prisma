@@ -90,6 +90,7 @@ model BankAccount {
   merchantId String?
   merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
 
+  publicId   String    @unique
   currency     String
   holderName   String
   bankName     String

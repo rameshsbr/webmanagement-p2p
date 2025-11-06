@@ -9,6 +9,7 @@ import multer from "multer";
 import path from "node:path";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
+import { generateBankPublicId } from "../services/reference.js";
 
 export const superAdminRouter = Router();
 
@@ -786,6 +787,7 @@ superAdminRouter.get("/banks", async (req: any, res: any) => {
       ] as any,
       select: {
         id: true,
+        publicId: true,
         merchantId: true,
         currency: true,
         method: true, // NEW
@@ -872,7 +874,14 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
     }
   }
 
-  const created = await prisma.bankAccount.create({ data: { ...data, ...promotedData, fields } as any });
+  const created = await prisma.bankAccount.create({
+    data: {
+      publicId: generateBankPublicId(),
+      ...data,
+      ...promotedData,
+      fields,
+    } as any,
+  });
   try {
     await auditAdmin(req, "super:banks.create", "BANK", created.id, {
       ...data,
@@ -897,7 +906,7 @@ superAdminRouter.get("/banks/:id/edit", async (req: any, res: any) => {
   ]);
   if (!bank) return res.status(404).send("Not found");
   res.render("superadmin/bank-edit", {
-    title: `Edit Bank ${bank.id}`,
+    title: `Edit Bank ${bank.publicId}`,
     bank,
     merchants,
     errors: null,
@@ -935,8 +944,8 @@ superAdminRouter.post("/banks/:id", async (req: any, res: any) => {
       select: { id: true, name: true },
     });
     return res.status(400).render("superadmin/bank-edit", {
-      title: `Edit Bank ${req.params.id}`,
-      bank: { id: req.params.id, ...merged },
+      title: `Edit Bank ${existing.publicId}`,
+      bank: { ...existing, ...merged },
       merchants,
       errors: e?.errors || [{ message: "Invalid input" }],
       promotedCols,
@@ -1018,11 +1027,12 @@ superAdminRouter.get("/banks.csv", async (_req: any, res: any) => {
   res.setHeader("Content-Disposition", 'attachment; filename="banks.csv"');
 
   res.write(
-    "id,merchant,currency,method,label,holderName,bankName,accountNo,iban,active,createdAt\n"
+    "id,publicId,merchant,currency,method,label,holderName,bankName,accountNo,iban,active,createdAt\n"
   );
   for (const r of rows) {
     const line = [
       r.id,
+      r.publicId,
       r.merchant?.name ?? "GLOBAL",
       r.currency,
       r.method,

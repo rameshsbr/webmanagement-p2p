@@ -9,6 +9,10 @@ import multer from "multer";
 import path from "node:path";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
+import { generateBankPublicId } from "../services/reference.js";
+import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
+import { stringify } from "csv-stringify";
+import ExcelJS from "exceljs";
 
 export const superAdminRouter = Router();
 
@@ -31,10 +35,31 @@ function statusesCSV(s?: string) {
     .filter((x) => STATUS_ALLOWED.has(x));
   return arr.length ? arr : undefined;
 }
+
+const superUserQuery = z.object({
+  q: z.string().optional(),
+  merchantId: z.union([z.string(), z.array(z.string())]).optional(),
+  page: z.string().optional(),
+  perPage: z.string().optional(),
+});
+
+function normalizeMerchantFilter(raw: unknown): string[] {
+  if (Array.isArray(raw)) {
+    return raw
+      .map((id) => (typeof id === "string" ? id.trim() : ""))
+      .filter((id) => id.length > 0);
+  }
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    return trimmed ? [trimmed] : [];
+  }
+  return [];
+}
 function sortSpec(s?: string) {
   // allowlist of sortable columns + default
   const wl = new Set([
     "createdAt",
+    "processedAt",
     "updatedAt",
     "amountCents",
     "status",
@@ -49,6 +74,11 @@ function sortSpec(s?: string) {
     if (d === "asc" || d === "desc") dir = d;
   }
   return { [col]: dir } as any;
+}
+
+async function collectUsersForSuperAdmin(merchantIds: string[], search?: string | null) {
+  if (!merchantIds.length) return [];
+  return getAllUsers({ merchantIds, search: search ?? null });
 }
 
 function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
@@ -66,12 +96,22 @@ function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   // Amount range
   if (q.amountMin || q.amountMax) {
     where.amountCents = {};
-    if (q.amountMin) where.amountCents.gte = Number(q.amountMin);
-    if (q.amountMax) where.amountCents.lte = Number(q.amountMax);
+    if (q.amountMin) {
+      const v = Number(q.amountMin);
+      if (Number.isFinite(v)) where.amountCents.gte = Math.round(v * 100);
+    }
+    if (q.amountMax) {
+      const v = Number(q.amountMax);
+      if (Number.isFinite(v)) where.amountCents.lte = Math.round(v * 100);
+    }
   }
 
   // Date window (inclusive, whole-day)
-  const df = q.dateField === "updatedAt" ? "updatedAt" : "createdAt";
+  const df = q.dateField === "processedAt"
+    ? "processedAt"
+    : q.dateField === "updatedAt"
+      ? "updatedAt"
+      : "createdAt";
   if (q.from || q.to) {
     where[df] = {};
     if (q.from) {
@@ -123,7 +163,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         receipts: {
           select: { id: true, original: true, path: true, createdAt: true },
         },
-        user: { select: { id: true, email: true, phone: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true } },
         merchant: { select: { id: true, name: true } },
       },
       orderBy,
@@ -378,10 +418,11 @@ function slug(s: string): string {
 // Dashboard
 // ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/", async (_req, res) => {
+  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ["PENDING", "SUBMITTED"];
   const [admins, merchants, pending, logs] = await Promise.all([
     prisma.adminUser.count(),
     prisma.merchant.count(),
-    prisma.paymentRequest.count({ where: { status: "PENDING" } }),
+    prisma.paymentRequest.count({ where: { status: { in: awaitingStatuses } } }),
     prisma.adminAuditLog.count(),
   ]);
   res.render("superadmin/dashboard", {
@@ -537,7 +578,7 @@ superAdminRouter.get("/merchants/new", (_req, res) => {
 });
 
 superAdminRouter.post("/merchants/new", async (req, res) => {
-  const { name, webhookUrl, status, email, defaultCurrency, active } =
+  const { name, webhookUrl, status, email, defaultCurrency, active, userDirectoryEnabled } =
     req.body || {};
 
   const m = await prisma.merchant.create({
@@ -548,6 +589,7 @@ superAdminRouter.post("/merchants/new", async (req, res) => {
       email: (email || "").trim() || null,
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
+      userDirectoryEnabled: userDirectoryEnabled === "on",
     },
   });
 
@@ -628,7 +670,7 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
 });
 
 superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
-  const { name, status, email, defaultCurrency, active } = req.body || {};
+  const { name, status, email, defaultCurrency, active, userDirectoryEnabled } = req.body || {};
   const website = (req.body?.webhookUrl || req.body?.website || "").trim();
 
   const before = await prisma.merchant.findUnique({
@@ -644,6 +686,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       email: (email || "").trim() || null,
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
+      userDirectoryEnabled: userDirectoryEnabled === "on",
     },
   });
 
@@ -655,15 +698,135 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       email: (email || "").trim() || null,
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
+      userDirectoryEnabled: userDirectoryEnabled === "on",
     },
     previous: {
       name: before?.name,
       status: before?.status,
       active: (before as any)?.active,
+      userDirectoryEnabled: (before as any)?.userDirectoryEnabled,
     },
   });
 
   res.redirect(`/superadmin/merchants/${req.params.id}/edit?saved=1`);
+});
+
+superAdminRouter.post("/merchants/:id/user-directory", async (req, res) => {
+  const id = req.params.id;
+  const action = String(req.body?.action || "").toLowerCase();
+  const enable = action !== "disable";
+
+  const updated = await prisma.merchant.update({
+    where: { id },
+    data: { userDirectoryEnabled: enable },
+  });
+
+  await auditAdmin(
+    req,
+    enable ? "merchant.userDirectory.enable" : "merchant.userDirectory.disable",
+    "MERCHANT",
+    id,
+    { userDirectoryEnabled: updated.userDirectoryEnabled }
+  );
+
+  res.redirect("/superadmin/merchants");
+});
+
+superAdminRouter.get("/users", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchants = await prisma.merchant.findMany({
+    select: { id: true, name: true, userDirectoryEnabled: true },
+    orderBy: { name: "asc" },
+  });
+
+  const requested = normalizeMerchantFilter(query.merchantId);
+  const merchantIds = requested.length ? requested : merchants.map((m) => m.id);
+
+  const table = merchantIds.length
+    ? await getUserDirectory({ merchantIds, search: query.q || null, page: query.page, perPage: query.perPage })
+    : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
+
+  res.render("superadmin/users", {
+    title: "Users",
+    table,
+    query,
+    merchants,
+    selectedIds: merchantIds,
+    rawQuery: req.query,
+  });
+});
+
+superAdminRouter.get("/export/users.csv", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchantIds = normalizeMerchantFilter(query.merchantId);
+  const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
+  const items = await collectUsersForSuperAdmin(merchants, query.q || null);
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  const csv = stringify({
+    header: true,
+    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","merchants"],
+  });
+  csv.pipe(res);
+  items.forEach((user) => {
+    csv.write({
+      userId: user.publicId,
+      fullName: user.fullName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt.toISOString(),
+      lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
+      merchants: user.merchants.map((m) => m.name).join(", "),
+    });
+  });
+  csv.end();
+});
+
+superAdminRouter.get("/export/users.xlsx", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchantIds = normalizeMerchantFilter(query.merchantId);
+  const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
+  const items = await collectUsersForSuperAdmin(merchants, query.q || null);
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet("Users");
+  ws.columns = [
+    { header: "User ID", key: "userId", width: 16 },
+    { header: "Full name", key: "fullName", width: 24 },
+    { header: "Email", key: "email", width: 24 },
+    { header: "Phone", key: "phone", width: 18 },
+    { header: "Status", key: "status", width: 14 },
+    { header: "Registered", key: "registeredAt", width: 24 },
+    { header: "Last activity", key: "lastActivity", width: 24 },
+    { header: "Merchants", key: "merchants", width: 30 },
+  ];
+  items.forEach((user) => {
+    ws.addRow({
+      userId: user.publicId,
+      fullName: user.fullName || "",
+      email: user.email || "",
+      phone: user.phone || "",
+      status: user.verificationStatus,
+      registeredAt: user.registeredAt,
+      lastActivity: user.lastActivityAt || null,
+      merchants: user.merchants.map((m) => m.name).join(", "),
+    });
+  });
+  res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  await wb.xlsx.write(res);
+  res.end();
+});
+
+superAdminRouter.get("/export/users.pdf", async (req, res) => {
+  const query = superUserQuery.parse(req.query);
+  const merchantIds = normalizeMerchantFilter(query.merchantId);
+  const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
+  const items = await collectUsersForSuperAdmin(merchants, query.q || null);
+  const pdf = renderUserDirectoryPdf(items);
+  res.setHeader("Content-Type", "application/pdf");
+  res.setHeader("Content-Disposition", 'attachment; filename="users.pdf"');
+  res.end(pdf);
 });
 
 // Merchant limits (rate & IP allow list)
@@ -774,6 +937,7 @@ superAdminRouter.get("/banks", async (req: any, res: any) => {
       ] as any,
       select: {
         id: true,
+        publicId: true,
         merchantId: true,
         currency: true,
         method: true, // NEW
@@ -860,7 +1024,14 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
     }
   }
 
-  const created = await prisma.bankAccount.create({ data: { ...data, ...promotedData, fields } as any });
+  const created = await prisma.bankAccount.create({
+    data: {
+      publicId: generateBankPublicId(),
+      ...data,
+      ...promotedData,
+      fields,
+    } as any,
+  });
   try {
     await auditAdmin(req, "super:banks.create", "BANK", created.id, {
       ...data,
@@ -885,7 +1056,7 @@ superAdminRouter.get("/banks/:id/edit", async (req: any, res: any) => {
   ]);
   if (!bank) return res.status(404).send("Not found");
   res.render("superadmin/bank-edit", {
-    title: `Edit Bank ${bank.id}`,
+    title: `Edit Bank ${bank.publicId}`,
     bank,
     merchants,
     errors: null,
@@ -923,8 +1094,8 @@ superAdminRouter.post("/banks/:id", async (req: any, res: any) => {
       select: { id: true, name: true },
     });
     return res.status(400).render("superadmin/bank-edit", {
-      title: `Edit Bank ${req.params.id}`,
-      bank: { id: req.params.id, ...merged },
+      title: `Edit Bank ${existing.publicId}`,
+      bank: { ...existing, ...merged },
       merchants,
       errors: e?.errors || [{ message: "Invalid input" }],
       promotedCols,
@@ -1006,11 +1177,12 @@ superAdminRouter.get("/banks.csv", async (_req: any, res: any) => {
   res.setHeader("Content-Disposition", 'attachment; filename="banks.csv"');
 
   res.write(
-    "id,merchant,currency,method,label,holderName,bankName,accountNo,iban,active,createdAt\n"
+    "id,publicId,merchant,currency,method,label,holderName,bankName,accountNo,iban,active,createdAt\n"
   );
   for (const r of rows) {
     const line = [
       r.id,
+      r.publicId,
       r.merchant?.name ?? "GLOBAL",
       r.currency,
       r.method,
@@ -1439,13 +1611,18 @@ superAdminRouter.post("/payments/:id/status", async (req, res) => {
 
 // Edit amount/currency (with reason)
 superAdminRouter.post("/payments/:id/edit-amount", async (req, res) => {
-  const amountCentsRaw = req.body?.amountCents;
+  const amountRaw = typeof req.body?.amount !== "undefined" ? req.body.amount : req.body?.amountCents;
   const currencyRaw = req.body?.currency;
   const reason = String(req.body?.reason || "").trim();
 
-  const amountCents = Number(amountCentsRaw);
-  if (!Number.isFinite(amountCents) || amountCents < 0)
+  const parsedAmount = Number(String(amountRaw ?? "").replace(/,/g, ""));
+  if (!Number.isFinite(parsedAmount) || parsedAmount < 0)
     return res.status(400).send("Invalid amount");
+  const amountCents =
+    typeof req.body?.amount !== "undefined"
+      ? Math.round(parsedAmount * 100)
+      : Math.round(parsedAmount);
+  if (!Number.isFinite(amountCents)) return res.status(400).send("Invalid amount");
   const currency = String(currencyRaw || "").trim().toUpperCase();
   if (!currency || currency.length > 8)
     return res.status(400).send("Invalid currency");
@@ -2125,11 +2302,28 @@ superAdminRouter.post("/forms/:merchantId", async (req, res) => {
     if (!bankOk) return res.status(400).send("Bank does not belong to merchant");
   }
 
-  await prisma.merchantFormConfig.upsert({
-    where: { merchantId_bankAccountId: { merchantId, bankAccountId } },
-    update: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-    create: { merchantId, bankAccountId, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-  });
+  if (bankAccountId) {
+    await prisma.merchantFormConfig.upsert({
+      where: { merchantId_bankAccountId: { merchantId, bankAccountId } },
+      update: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+      create: { merchantId, bankAccountId, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+    });
+  } else {
+    const existing = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId, bankAccountId: null },
+      select: { id: true },
+    });
+    if (existing) {
+      await prisma.merchantFormConfig.update({
+        where: { id: existing.id },
+        data: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+      });
+    } else {
+      await prisma.merchantFormConfig.create({
+        data: { merchantId, bankAccountId: null, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+      });
+    }
+  }
 
   await auditAdmin(req, "merchant.forms.upsert", "MERCHANT", merchantId, {
     bankAccountId: bankAccountId || null,
@@ -2193,11 +2387,28 @@ superAdminRouter.post("/forms/:merchantId/copy-from", async (req: any, res: any)
   const dep = Array.isArray((source as any).deposit) ? (source as any).deposit : [];
   const wdr = Array.isArray((source as any).withdrawal) ? (source as any).withdrawal : [];
 
-  await prisma.merchantFormConfig.upsert({
-    where: { merchantId_bankAccountId: { merchantId: toMerchantId, bankAccountId: toBankAccountId } },
-    update: { deposit: dep as any, withdrawal: wdr as any },
-    create: { merchantId: toMerchantId, bankAccountId: toBankAccountId, deposit: dep as any, withdrawal: wdr as any },
-  });
+  if (toBankAccountId) {
+    await prisma.merchantFormConfig.upsert({
+      where: { merchantId_bankAccountId: { merchantId: toMerchantId, bankAccountId: toBankAccountId } },
+      update: { deposit: dep as any, withdrawal: wdr as any },
+      create: { merchantId: toMerchantId, bankAccountId: toBankAccountId, deposit: dep as any, withdrawal: wdr as any },
+    });
+  } else {
+    const existing = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId: toMerchantId, bankAccountId: null },
+      select: { id: true },
+    });
+    if (existing) {
+      await prisma.merchantFormConfig.update({
+        where: { id: existing.id },
+        data: { deposit: dep as any, withdrawal: wdr as any },
+      });
+    } else {
+      await prisma.merchantFormConfig.create({
+        data: { merchantId: toMerchantId, bankAccountId: null, deposit: dep as any, withdrawal: wdr as any },
+      });
+    }
+  }
 
   // Build a nice label for the success banner
   const [fromMerch, fromBank, toBank] = await Promise.all([

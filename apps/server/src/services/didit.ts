@@ -1,3 +1,5 @@
+import { generateUserId } from "./reference.js";
+
 // apps/server/src/services/didit.ts
 // Placeholder integration for Didit + real Low-Code API helpers.
 // Uses env:
@@ -59,7 +61,7 @@ export async function handleDiditWebhook(
   let user = await p.user.findUnique({ where: { diditSubject } });
   if (!user) {
     user = await p.user.create({
-      data: { diditSubject, verifiedAt: status === "approved" ? new Date() : null },
+      data: { publicId: generateUserId(), diditSubject, verifiedAt: status === "approved" ? new Date() : null },
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
@@ -70,6 +72,41 @@ export async function handleDiditWebhook(
     update: { status, userId: user.id },
   });
   return user;
+}
+
+export type DiditProfile = {
+  fullName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  status?: string | null;
+};
+
+export async function fetchDiditProfile(subject: string): Promise<DiditProfile | null> {
+  if (!subject) return null;
+  const token = await getDiditAccessToken();
+  if (!token) return null;
+
+  const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
+  const url = `${base}/users/${encodeURIComponent(subject)}`;
+
+  try {
+    const res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+    });
+    if (!res.ok) return null;
+    const json: any = await res.json();
+    return {
+      fullName: json?.name || json?.full_name || json?.fullName || null,
+      email: json?.email || null,
+      phone: json?.phone || json?.phone_number || null,
+      status: json?.status || null,
+    };
+  } catch {
+    return null;
+  }
 }
 
 // ───────────────────────────────────────────────────────────────

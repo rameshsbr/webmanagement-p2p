@@ -104,6 +104,11 @@
 
     <!-- Meta row (NOT draggable) -->
     <div class="form-grid">
+      <div class="stack col-2">
+        <label>Bank ID</label>
+        <input value="<%= bank ? bank.publicId : 'Auto-assigned' %>" class="w-sm" readonly tabindex="-1" />
+      </div>
+
       <div class="stack col-4">
         <label>Merchant</label>
         <select name="merchantId" class="w-md">
@@ -119,7 +124,7 @@
         <input name="currency" class="w-xxs" value="<%= bank ? bank.currency : 'AUD' %>" required />
       </div>
 
-      <div class="stack col-3">
+      <div class="stack col-2">
         <label>Method</label>
         <select name="method" class="w-sm">
           <option value="OSKO" <%= !bank || bank.method==='OSKO' ? 'selected' : '' %>>OSKO</option>
@@ -127,7 +132,7 @@
         </select>
       </div>
 
-      <div class="stack col-3">
+      <div class="stack col-2">
         <label class="labelline">
           <span>Active</span>
           <label class="ios-toggle-switch">

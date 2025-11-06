@@ -6,7 +6,7 @@ import multer from "multer";
 import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
-import { generateReference } from "../services/reference.js";
+import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 
@@ -200,7 +200,7 @@ function normalizeField(r: any): UIField | null {
   const digits = Number.isFinite(+r.digits) ? Math.max(0, +r.digits) : 0;
   let options: string[] = [];
   if (Array.isArray(r.options)) options = r.options.map((x: any) => String(x));
-  else if (typeof r.data === "string") options = r.data.split(",").map((s) => s.trim()).filter(Boolean);
+  else if (typeof r.data === "string") options = r.data.split(",").map((s: string) => s.trim()).filter(Boolean);
   return { name, display, field, placeholder, required, digits, options };
 }
 
@@ -354,7 +354,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   // Find or create user; enforce KYC gate
   const user = await prisma.user.upsert({
     where: { diditSubject },
-    create: { diditSubject, verifiedAt: null },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
   if (!user.verifiedAt) {
@@ -435,7 +435,8 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
         status: "PENDING",
         amountCents: base.amountCents,
         currency,
-        referenceCode: generateReference("DEP"),
+        referenceCode: generateTransactionId(),
+        uniqueReference: generateUniqueReference(),
         merchantId,
         userId: user.id,
         bankAccountId: chosenBank.id,
@@ -463,6 +464,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     ok: true,
     id: pr.id,
     referenceCode: pr.referenceCode,
+    uniqueReference: pr.uniqueReference,
     currency: pr.currency,
     amountCents: pr.amountCents,
     bankDetails: {
@@ -574,7 +576,8 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     });
   }
 
-  const referenceCode = generateReference("WDR");
+  const referenceCode = generateTransactionId();
+  const uniqueReference = generateUniqueReference();
   const pr = await prisma.paymentRequest.create({
     data: {
       type: "WITHDRAWAL",
@@ -582,6 +585,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       amountCents: body.amountCents,
       currency,
       referenceCode,
+      uniqueReference,
       merchantId,
       userId: user.id,
       detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: body.extraFields || {} },
@@ -589,7 +593,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   });
 
   await tgNotify(`🟡 WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${currency}`).catch(() => {});
-  res.json({ ok: true, id: pr.id, referenceCode });
+  res.json({ ok: true, id: pr.id, referenceCode, uniqueReference });
 });
 
 // ───────────────────────────────────────────────
@@ -620,7 +624,7 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
 
   const user = await prisma.user.upsert({
     where: { diditSubject },
-    create: { diditSubject, verifiedAt: null },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
 

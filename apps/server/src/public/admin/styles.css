@@ -354,6 +354,11 @@ textarea{
   color: var(--ink-dim);
 }
 
+:root[data-theme="dark"] .modal-body,
+:root[data-theme="dark"] .modal-body * {
+  color: inherit;
+}
+
 .modal-field span {
   display: flex;
   justify-content: space-between;
@@ -375,10 +380,15 @@ textarea{
 }
 
 :root[data-theme="dark"] .modal-card input,
-:root[data-theme="dark"] .modal-card textarea {
+:root[data-theme="dark"] .modal-card textarea,
+:root[data-theme="dark"] .modal-card select {
   background: #243447;
   color: #f8fafc;
   border-color: rgba(248, 250, 252, 0.25);
+}
+
+:root[data-theme="dark"] .modal-card select option {
+  color: #0f172a;
 }
 
 :root[data-theme="dark"] .modal-field,

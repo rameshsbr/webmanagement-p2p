@@ -80,6 +80,25 @@
           </td>
           <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
           <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
+          <td data-col="actions" class="actions">
+            <% if (['APPROVED','REJECTED'].includes(r.status)) { %>
+              <button
+                type="button"
+                class="btn small"
+                data-change-status
+                data-type="WITHDRAWAL"
+                data-id="<%= r.id %>"
+                data-status="<%= r.status %>"
+                data-reference="<%= r.referenceCode %>"
+                data-amount="<%= r.amountCents %>"
+                data-currency="<%= r.currency %>"
+              >Change status</button>
+            <% } else { %>
+              <span class="mini" style="opacity:.6">Pending queue</span>
+            <% } %>
+          </td>
+          <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
           <td data-col="actions" class="actions">&mdash;</td>
         </tr>
       <% }) %>

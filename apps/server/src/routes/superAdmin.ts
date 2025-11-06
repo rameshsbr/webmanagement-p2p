@@ -11,6 +11,7 @@ import { seal } from "../services/secretBox.js";
 import { z } from "zod";
 import { generateBankPublicId } from "../services/reference.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
+import { changePaymentStatus, PaymentStatusError } from "../services/paymentStatus.js";
 import { stringify } from "csv-stringify";
 import ExcelJS from "exceljs";
 
@@ -1582,30 +1583,60 @@ superAdminRouter.get("/payments", (_req, res) =>
 
 // Status change (with reason)
 superAdminRouter.post("/payments/:id/status", async (req, res) => {
-  const { toStatus, reason } = req.body || {};
-  const next = String(toStatus || "").toUpperCase();
-  if (!STATUS_ALLOWED.has(next)) return res.status(400).send("Bad status");
+  const rawStatus = String(req.body?.toStatus ?? req.body?.targetStatus ?? "").toUpperCase();
+  const targetStatus = rawStatus === "REJECTED" ? "REJECTED" : rawStatus === "APPROVED" ? "APPROVED" : null;
+  if (!targetStatus) return res.status(400).send("Bad status");
 
-  const p = await prisma.paymentRequest.findUnique({
+  const payment = await prisma.paymentRequest.findUnique({
     where: { id: req.params.id },
-    select: { id: true, status: true, type: true },
+    select: { id: true, status: true, type: true, amountCents: true },
   });
-  if (!p) return res.status(404).send("Not found");
+  if (!payment) return res.status(404).send("Not found");
 
-  await prisma.paymentRequest.update({
-    where: { id: p.id },
-    data: { status: next as any },
+  const comment = String(req.body?.comment ?? req.body?.reason ?? "").trim();
+  const amountRaw = req.body?.amount ?? req.body?.amountCents ?? null;
+  let amountCents: number | null = null;
+  if (targetStatus === "APPROVED" && amountRaw !== null && String(amountRaw).trim() !== "") {
+    const parsed = Number(String(amountRaw).replace(/,/g, ""));
+    if (!Number.isFinite(parsed) || parsed <= 0) return res.status(400).send("Invalid amount");
+    amountCents = Math.round(parsed * (typeof req.body?.amount !== "undefined" ? 100 : 1));
+    if (!Number.isFinite(amountCents) || amountCents <= 0) return res.status(400).send("Invalid amount");
+  }
+
+  if (targetStatus === "REJECTED" && !comment) {
+    return res.status(400).send("Comment is required");
+  }
+
+  if (targetStatus === "APPROVED" && payment.type === "DEPOSIT" && amountCents !== null) {
+    if (amountCents !== payment.amountCents && !comment) {
+      return res.status(400).send("Comment required when adjusting the amount");
+    }
+  }
+
+  try {
+    await changePaymentStatus(payment.type, {
+      paymentId: payment.id,
+      targetStatus,
+      actorAdminId: null,
+      amountCents: targetStatus === "APPROVED" ? amountCents : null,
+      comment,
+    });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      const message = err.code === "INSUFFICIENT_FUNDS" ? "Insufficient balance" : err.message;
+      return res.status(400).send(message);
+    }
+    console.error(err);
+    return res.status(500).send("Unable to update status");
+  }
+
+  await auditAdmin(req, "payment.status.change", "PAYMENT", payment.id, {
+    fromStatus: payment.status,
+    toStatus: targetStatus,
+    comment: comment || null,
   });
 
-  await auditAdmin(req, "payment.status.change", "PAYMENT", p.id, {
-    fromStatus: p.status,
-    toStatus: next,
-    reason: reason || null,
-  });
-
-  const back = (req.get("referer") || "").includes("/withdrawal")
-    ? "/superadmin/withdrawals"
-    : "/superadmin/deposits";
+  const back = payment.type === "WITHDRAWAL" ? "/superadmin/withdrawals" : "/superadmin/deposits";
   res.redirect(back);
 });
 

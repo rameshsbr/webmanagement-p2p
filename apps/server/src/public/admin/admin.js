@@ -123,90 +123,82 @@ const purgeModals = () => {
 purgeModals();
 window.addEventListener('pageshow', purgeModals);
 
+async function postJson(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(payload || {}),
+  });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok || !data?.ok) {
+    throw new Error((data && data.error) || 'Request failed');
+  }
+  return data;
+}
+
+function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
+  purgeModals();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.innerHTML = `
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h3 id="modal-title">${title}</h3>
+      </div>
+      <div class="modal-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn small" data-cancel>Cancel</button>
+        <button type="button" class="btn small primary" data-submit>${submitLabel}</button>
+      </div>
+    </div>`;
+
+  const body = overlay.querySelector('.modal-body');
+  const submitBtn = overlay.querySelector('[data-submit]');
+  const cancelBtn = overlay.querySelector('[data-cancel]');
+  if (!body || !submitBtn || !cancelBtn) return;
+
+  const ctx = contentBuilder(body) || {};
+
+  const close = () => {
+    overlay.classList.remove('is-visible');
+    setTimeout(() => overlay.remove(), 180);
+  };
+
+  cancelBtn.addEventListener('click', () => close());
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) close();
+  });
+
+  submitBtn.addEventListener('click', async () => {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Working…';
+    try {
+      await onSubmit({ ...ctx, close, overlay });
+      close();
+    } catch (err) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = submitLabel;
+      const msg = (err && err.message) || 'Request failed';
+      let errBox = overlay.querySelector('.modal-error');
+      if (!errBox) {
+        errBox = document.createElement('div');
+        errBox.className = 'modal-error';
+        overlay.querySelector('.modal-card')?.appendChild(errBox);
+      }
+      errBox.textContent = msg;
+    }
+  });
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('is-visible'));
+}
+
 // Pending deposit actions (approve/reject with confirmation dialogs)
 (() => {
   const table = document.querySelector('[data-pending-actions]');
   if (!table) return;
-
-  purgeModals();
-
-  const postJson = async (url, payload) => {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify(payload || {})
-    });
-    let data = null;
-    try { data = await res.json(); } catch {}
-    if (!res.ok || !data?.ok) {
-      throw new Error((data && data.error) || 'Request failed');
-    }
-    return data;
-  };
-
-  const openModal = ({ title, submitLabel, contentBuilder, onSubmit }) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-backdrop';
-    overlay.innerHTML = `
-      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <div class="modal-header">
-          <h3 id="modal-title">${title}</h3>
-        </div>
-        <div class="modal-body"></div>
-        <div class="modal-footer">
-          <button type="button" class="btn small" data-cancel>Cancel</button>
-          <button type="button" class="btn small primary" data-submit>${submitLabel}</button>
-        </div>
-      </div>`;
-    const card = overlay.querySelector('.modal-card');
-    const body = overlay.querySelector('.modal-body');
-    const errorBox = document.createElement('div');
-    errorBox.className = 'modal-error';
-    body.appendChild(errorBox);
-    const content = contentBuilder();
-    if (content) body.appendChild(content);
-
-    const cancelBtn = overlay.querySelector('[data-cancel]');
-    const submitBtn = overlay.querySelector('[data-submit]');
-
-    const close = () => {
-      overlay.classList.remove('is-visible');
-      document.removeEventListener('keydown', escHandler);
-      window.setTimeout(() => overlay.remove(), 180);
-    };
-
-    const setError = (msg) => {
-      errorBox.textContent = msg || '';
-      errorBox.style.display = msg ? 'block' : 'none';
-    };
-
-    const setLoading = (v) => {
-      if (v) submitBtn.dataset.originalLabel = submitBtn.textContent;
-      submitBtn.textContent = v ? 'Processing…' : (submitBtn.dataset.originalLabel || submitBtn.textContent);
-      submitBtn.disabled = cancelBtn.disabled = !!v;
-    };
-
-    const escHandler = (e) => { if (e.key === 'Escape') close(); };
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    cancelBtn.addEventListener('click', close);
-    document.addEventListener('keydown', escHandler);
-
-    submitBtn.addEventListener('click', async () => {
-      setError('');
-      try {
-        setLoading(true);
-        await onSubmit({ close, setError, setLoading, overlay, card });
-      } catch (err) {
-        setError(err?.message || 'Something went wrong');
-        setLoading(false);
-      }
-    });
-
-    document.body.appendChild(overlay);
-    requestAnimationFrame(() => overlay.classList.add('is-visible'));
-    submitBtn.focus();
-  };
 
   const openApprove = (btn) => {
     const id = btn.getAttribute('data-id');
@@ -214,31 +206,29 @@ window.addEventListener('pageshow', purgeModals);
     const currency = btn.getAttribute('data-currency') || '';
     const originalCents = Number(btn.getAttribute('data-amount') || '0');
     const originalAmount = originalCents / 100;
-    const originalDisplay = (originalCents % 100 === 0) ? originalAmount.toFixed(0) : originalAmount.toFixed(2);
+    const originalDisplay = originalCents % 100 === 0 ? originalAmount.toFixed(0) : originalAmount.toFixed(2);
 
-    const contentBuilder = () => {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'modal-fields';
-      wrapper.innerHTML = `
-        <p>Approve deposit <strong>${reference}</strong> (${currency} ${originalDisplay})?</p>
-        <label class="modal-field">
-          <span>Amount (${currency})</span>
-          <input type="number" step="0.01" min="0.01" value="${originalDisplay}" data-amount-input />
-        </label>
-        <label class="modal-field">
-          <span>Comment <small>(required if amount changes)</small></span>
-          <textarea rows="3" data-comment-input placeholder="Optional comment"></textarea>
-        </label>`;
-      return wrapper;
-    };
-
-    openModal({
+    openActionModal({
       title: 'Confirm approval',
       submitLabel: 'Approve',
-      contentBuilder,
-      onSubmit: async ({ close, setError, setLoading, card }) => {
-        const amountInput = card.querySelector('[data-amount-input]');
-        const commentInput = card.querySelector('[data-comment-input]');
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Approve deposit <strong>${reference}</strong> (${currency} ${originalDisplay})?</p>
+          <label class="modal-field">
+            <span>Amount (${currency})</span>
+            <input type="number" step="0.01" min="0.01" value="${originalDisplay}" data-amount-input />
+          </label>
+          <label class="modal-field">
+            <span>Comment <small>(required if amount changes)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Optional comment"></textarea>
+          </label>`;
+        return {
+          amountInput: body.querySelector('[data-amount-input]'),
+          commentInput: body.querySelector('[data-comment-input]'),
+        };
+      },
+      onSubmit: async ({ amountInput, commentInput, close }) => {
         const raw = (amountInput?.value || '').trim();
         const comment = (commentInput?.value || '').trim();
         if (!raw) {
@@ -250,19 +240,18 @@ window.addEventListener('pageshow', purgeModals);
         }
         const roundedCents = Math.round(nextAmount * 100);
         const originalRounded = Math.round(originalAmount * 100);
-        const amountChanged = roundedCents !== originalRounded;
-        if (amountChanged && !comment) {
+        if (roundedCents !== originalRounded && !comment) {
           throw new Error('Comment is required when changing the amount');
         }
 
         await postJson(`/admin/deposits/${encodeURIComponent(id)}/approve`, {
           amount: Number(nextAmount.toFixed(2)),
-          comment
+          comment,
         });
         close();
         toast('Deposit approved');
         window.location.reload();
-      }
+      },
     });
   };
 
@@ -271,28 +260,24 @@ window.addEventListener('pageshow', purgeModals);
     const reference = btn.getAttribute('data-reference') || '';
     const currency = btn.getAttribute('data-currency') || '';
     const amountCents = Number(btn.getAttribute('data-amount') || '0');
-    const amountDisplay = (amountCents % 100 === 0)
-      ? (amountCents / 100).toFixed(0)
-      : (amountCents / 100).toFixed(2);
+    const amountDisplay = amountCents % 100 === 0 ? (amountCents / 100).toFixed(0) : (amountCents / 100).toFixed(2);
 
-    const contentBuilder = () => {
-      const wrapper = document.createElement('div');
-      wrapper.className = 'modal-fields';
-      wrapper.innerHTML = `
-        <p>Reject deposit <strong>${reference}</strong> (${currency} ${amountDisplay})?</p>
-        <label class="modal-field">
-          <span>Comment <small>(required)</small></span>
-          <textarea rows="3" data-comment-input placeholder="Reason for rejection"></textarea>
-        </label>`;
-      return wrapper;
-    };
-
-    openModal({
+    openActionModal({
       title: 'Reject deposit',
       submitLabel: 'Reject',
-      contentBuilder,
-      onSubmit: async ({ close, card }) => {
-        const commentInput = card.querySelector('[data-comment-input]');
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Reject deposit <strong>${reference}</strong> (${currency} ${amountDisplay})?</p>
+          <label class="modal-field">
+            <span>Comment <small>(required)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Reason for rejection"></textarea>
+          </label>`;
+        return {
+          commentInput: body.querySelector('[data-comment-input]'),
+        };
+      },
+      onSubmit: async ({ commentInput, close }) => {
         const comment = (commentInput?.value || '').trim();
         if (!comment) {
           throw new Error('Comment is required');
@@ -302,7 +287,7 @@ window.addEventListener('pageshow', purgeModals);
         close();
         toast('Deposit rejected');
         window.location.reload();
-      }
+      },
     });
   };
 
@@ -326,142 +311,174 @@ window.addEventListener('pageshow', purgeModals);
   const table = document.querySelector('[data-withdraw-actions]');
   if (!table) return;
 
-  purgeModals();
+  const openApprove = (btn) => {
+    const id = btn.getAttribute('data-id');
+    const reference = btn.getAttribute('data-reference') || '';
+    const amountDisplay = btn.getAttribute('data-amount-display') || '';
 
-  const postJson = async (url, payload) => {
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      credentials: 'same-origin',
-      body: JSON.stringify(payload || {})
+    openActionModal({
+      title: 'Approve withdrawal',
+      submitLabel: 'Approve',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `<p>Approve withdrawal <strong>${reference}</strong> (${amountDisplay})?</p>`;
+      },
+      onSubmit: async ({ close }) => {
+        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/approve`, {});
+        close();
+        toast('Withdrawal approved');
+        window.location.reload();
+      },
     });
-    let data = null;
-    try { data = await res.json(); } catch {}
-    if (!res.ok || !data?.ok) {
-      throw new Error((data && data.error) || 'Request failed');
-    }
-    return data;
   };
 
-  const openModal = ({ title, submitLabel, message, requireComment, onSubmit }) => {
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-backdrop';
-    overlay.innerHTML = `
-      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <div class="modal-header">
-          <h3 id="modal-title">${title}</h3>
-        </div>
-        <div class="modal-body">
-          <p>${message}</p>
+  const openReject = (btn) => {
+    const id = btn.getAttribute('data-id');
+    const reference = btn.getAttribute('data-reference') || '';
+    const amountDisplay = btn.getAttribute('data-amount-display') || '';
+
+    openActionModal({
+      title: 'Reject withdrawal',
+      submitLabel: 'Reject',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Reject withdrawal <strong>${reference}</strong> (${amountDisplay})?</p>
           <label class="modal-field">
-            <span>Comment${requireComment ? ' <small>(required)</small>' : ''}</span>
-            <textarea rows="3" data-comment-input placeholder="${requireComment ? 'Enter a comment' : 'Optional comment'}"></textarea>
-          </label>
-          <div class="modal-error" style="display:none"></div>
-        </div>
-        <div class="modal-footer">
-          <button type="button" class="btn small" data-cancel>Cancel</button>
-          <button type="button" class="btn small primary" data-submit>${submitLabel}</button>
-        </div>
-      </div>`;
-
-    const cancelBtn = overlay.querySelector('[data-cancel]');
-    const submitBtn = overlay.querySelector('[data-submit]');
-    const card = overlay.querySelector('.modal-card');
-    const errorBox = overlay.querySelector('.modal-error');
-    const commentInput = overlay.querySelector('[data-comment-input]');
-
-    const close = () => {
-      overlay.classList.remove('is-visible');
-      document.removeEventListener('keydown', escHandler);
-      window.setTimeout(() => overlay.remove(), 180);
-    };
-    const escHandler = (e) => { if (e.key === 'Escape') close(); };
-    const setError = (msg) => {
-      errorBox.textContent = msg || '';
-      errorBox.style.display = msg ? 'block' : 'none';
-    };
-    const setLoading = (v) => {
-      if (v) submitBtn.dataset.originalLabel = submitBtn.textContent;
-      submitBtn.textContent = v ? 'Processing…' : (submitBtn.dataset.originalLabel || submitBtn.textContent);
-      submitBtn.disabled = cancelBtn.disabled = !!v;
-    };
-
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    cancelBtn.addEventListener('click', close);
-    document.addEventListener('keydown', escHandler);
-
-    submitBtn.addEventListener('click', async () => {
-      const comment = (commentInput?.value || '').trim();
-      if (requireComment && !comment) {
-        setError('Comment is required');
-        return;
-      }
-      setError('');
-      try {
-        setLoading(true);
-        await onSubmit({ comment, setError, setLoading, close });
-      } catch (err) {
-        setLoading(false);
-        setError(err?.message || 'Request failed');
-      }
+            <span>Comment <small>(required)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Reason for rejection"></textarea>
+          </label>`;
+        return {
+          commentInput: body.querySelector('[data-comment-input]'),
+        };
+      },
+      onSubmit: async ({ commentInput, close }) => {
+        const comment = (commentInput?.value || '').trim();
+        if (!comment) {
+          throw new Error('Comment is required');
+        }
+        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/reject`, { comment });
+        close();
+        toast('Withdrawal rejected');
+        window.location.reload();
+      },
     });
-
-    document.body.appendChild(overlay);
-    requestAnimationFrame(() => overlay.classList.add('is-visible'));
-    submitBtn.focus();
   };
 
   table.addEventListener('click', (event) => {
-    const approveBtn = event.target.closest('[data-withdraw-approve]');
+    const approveBtn = event.target.closest('[data-approve]');
     if (approveBtn) {
       event.preventDefault();
-      const id = approveBtn.getAttribute('data-id');
-      const reference = approveBtn.getAttribute('data-reference') || '';
-      const amountCents = Number(approveBtn.getAttribute('data-amount') || '0');
-      const currency = approveBtn.getAttribute('data-currency') || '';
-      const display = amountCents % 100 === 0 ? (amountCents / 100).toFixed(0) : (amountCents / 100).toFixed(2);
-
-      openModal({
-        title: 'Approve withdrawal',
-        submitLabel: 'Approve',
-        message: `Approve withdrawal <strong>${reference}</strong> (${currency} ${display})?`,
-        requireComment: false,
-        onSubmit: async ({ comment, close }) => {
-          await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/approve`, { comment });
-          close();
-          toast('Withdrawal approved');
-          window.location.reload();
-        }
-      });
+      openApprove(approveBtn);
       return;
     }
 
-    const rejectBtn = event.target.closest('[data-withdraw-reject]');
+    const rejectBtn = event.target.closest('[data-reject]');
     if (rejectBtn) {
       event.preventDefault();
-      const id = rejectBtn.getAttribute('data-id');
-      const reference = rejectBtn.getAttribute('data-reference') || '';
-      const amountCents = Number(rejectBtn.getAttribute('data-amount') || '0');
-      const currency = rejectBtn.getAttribute('data-currency') || '';
-      const display = amountCents % 100 === 0 ? (amountCents / 100).toFixed(0) : (amountCents / 100).toFixed(2);
-
-      openModal({
-        title: 'Reject withdrawal',
-        submitLabel: 'Reject',
-        message: `Reject withdrawal <strong>${reference}</strong> (${currency} ${display})?`,
-        requireComment: true,
-        onSubmit: async ({ comment, close }) => {
-          await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/reject`, { comment });
-          close();
-          toast('Withdrawal rejected');
-          window.location.reload();
-        }
-      });
+      openReject(rejectBtn);
     }
   });
 })();
 
+// Processed payment status changes (admin tables)
+(() => {
+  const formatDisplayAmount = (cents) => {
+    const num = Number(cents || 0);
+    if (!Number.isFinite(num)) return '0';
+    return num % 100 === 0 ? (num / 100).toFixed(0) : (num / 100).toFixed(2);
+  };
+
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-change-status]');
+    if (!trigger) return;
+    event.preventDefault();
+
+    const id = trigger.getAttribute('data-id');
+    const type = trigger.getAttribute('data-type') || 'DEPOSIT';
+    const currentStatus = trigger.getAttribute('data-status') || '';
+    const reference = trigger.getAttribute('data-reference') || '';
+    const amountCents = Number(trigger.getAttribute('data-amount') || '0');
+    const currency = trigger.getAttribute('data-currency') || '';
+    const amountDisplay = formatDisplayAmount(amountCents);
+
+    const isDeposit = type === 'DEPOSIT';
+
+    openActionModal({
+      title: 'Change status',
+      submitLabel: 'Update',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Update <strong>${reference}</strong> (${currency} ${amountDisplay})?</p>
+          <label class="modal-field">
+            <span>Next status</span>
+            <select data-status-select>
+              <option value="APPROVED">Approve</option>
+              <option value="REJECTED">Reject</option>
+            </select>
+          </label>
+          <div class="modal-field" data-amount-wrapper>
+            <span>Approved amount (${currency})</span>
+            <input type="number" step="0.01" min="0.01" value="${amountDisplay}" data-amount-input />
+          </div>
+          <label class="modal-field">
+            <span>Comment <small>(required for rejection)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Optional comment"></textarea>
+          </label>`;
+        const statusSelect = body.querySelector('[data-status-select]');
+        const amountWrapper = body.querySelector('[data-amount-wrapper]');
+        const amountInput = body.querySelector('[data-amount-input]');
+        const commentInput = body.querySelector('[data-comment-input]');
+
+        statusSelect.value = currentStatus === 'REJECTED' ? 'REJECTED' : 'APPROVED';
+
+        const updateVisibility = () => {
+          const showAmount = statusSelect.value === 'APPROVED' && isDeposit;
+          amountWrapper.style.display = showAmount ? '' : 'none';
+        };
+        updateVisibility();
+        statusSelect.addEventListener('change', updateVisibility);
+
+        return { statusSelect, amountInput, commentInput, amountWrapper };
+      },
+      onSubmit: async ({ statusSelect, amountInput, commentInput, close }) => {
+        const targetStatus = statusSelect?.value === 'REJECTED' ? 'REJECTED' : 'APPROVED';
+        const comment = (commentInput?.value || '').trim();
+        const payload = { targetStatus };
+
+        if (targetStatus === 'REJECTED' && !comment) {
+          throw new Error('Comment is required');
+        }
+
+        if (targetStatus === 'APPROVED' && isDeposit) {
+          const raw = (amountInput?.value || '').trim();
+          if (!raw) throw new Error('Amount is required');
+          const nextAmount = Number(raw);
+          if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
+            throw new Error('Enter a valid amount');
+          }
+          payload.amount = Number(nextAmount.toFixed(2));
+          const originalAmount = amountCents / 100;
+          if (Math.round(nextAmount * 100) !== Math.round(originalAmount * 100) && !comment) {
+            throw new Error('Comment is required when changing the amount');
+          }
+        }
+
+        if (comment) payload.comment = comment;
+
+        const endpoint = type === 'WITHDRAWAL'
+          ? `/admin/withdrawals/${encodeURIComponent(id)}/status`
+          : `/admin/deposits/${encodeURIComponent(id)}/status`;
+
+        await postJson(endpoint, payload);
+        close();
+        toast('Status updated');
+        window.location.reload();
+      },
+    });
+  });
+})();
 // Browser notifications for new queue items
 (() => {
   if (typeof window.fetch !== 'function') return;

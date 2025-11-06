@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { stringify } from 'csv-stringify';
 import ExcelJS from 'exceljs';
 import { getUserDirectory, getAllUsers, UserDirectoryItem, renderUserDirectoryPdf } from '../services/userDirectory.js';
+import { changePaymentStatus, PaymentStatusError } from '../services/paymentStatus.js';
 
 async function safeNotify(text: string) {
   try {
@@ -245,6 +246,46 @@ function extractProcessingDetails(pr: {
   return { processedDate, processingSeconds, processedBy };
 }
 
+function readAmountInput(body: unknown): { cents: number | null; provided: boolean; error?: string } {
+  if (!body || typeof body !== 'object') return { cents: null, provided: false };
+  const payload = body as Record<string, unknown>;
+
+  const normalize = (value: unknown, multiplier: number) => {
+    const raw = String(value ?? '').trim();
+    if (!raw) return { cents: null, provided: false, error: 'Invalid amount' as const };
+    const parsed = Number(raw.replace(/,/g, ''));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return { cents: null, provided: false, error: 'Invalid amount' as const };
+    }
+    const cents = Math.round(parsed * multiplier);
+    if (!Number.isFinite(cents) || cents <= 0) {
+      return { cents: null, provided: false, error: 'Invalid amount' as const };
+    }
+    return { cents, provided: true };
+  };
+
+  if (payload.amount !== undefined && payload.amount !== null) {
+    const result = normalize(payload.amount, 100);
+    return result.error ? { cents: null, provided: false, error: result.error } : result;
+  }
+
+  if (payload.amountCents !== undefined && payload.amountCents !== null) {
+    const raw = String(payload.amountCents ?? '').trim();
+    if (!raw) return { cents: null, provided: false, error: 'Invalid amount' };
+    const parsed = Number(raw.replace(/,/g, ''));
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return { cents: null, provided: false, error: 'Invalid amount' };
+    }
+    const cents = Math.round(parsed);
+    if (!Number.isFinite(cents) || cents <= 0) {
+      return { cents: null, provided: false, error: 'Invalid amount' };
+    }
+    return { cents, provided: true };
+  }
+
+  return { cents: null, provided: false };
+}
+
 // ───────────────────────────────────────────────────────────────────────────────
 // Dashboard
 // ───────────────────────────────────────────────────────────────────────────────
@@ -429,6 +470,13 @@ const rejectBodySchema = z.object({
   returnTo: z.string().optional()
 });
 
+const statusChangeSchema = z.object({
+  targetStatus: z.enum(['APPROVED', 'REJECTED']),
+  comment: z.string().optional(),
+  amount: z.union([z.string(), z.number()]).optional(),
+  amountCents: z.union([z.string(), z.number()]).optional(),
+});
+
 router.post('/deposits/:id/approve', async (req, res) => {
   const id = req.params.id;
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
@@ -442,49 +490,39 @@ router.post('/deposits/:id/approve', async (req, res) => {
   }
 
   const body = parsed.data;
-  const rawAmount = body.amount ?? body.amountCents;
-  let nextAmount = pr.amountCents;
-  if (rawAmount !== undefined && rawAmount !== null && String(rawAmount).trim() !== '') {
-    const num = Number(String(rawAmount).replace(/,/g, ''));
-    if (!Number.isFinite(num) || num <= 0) {
-      return res.status(400).json({ ok: false, error: 'Invalid amount' });
-    }
-    const cents = body.amount !== undefined ? Math.round(num * 100) : Math.round(num);
-    if (!Number.isFinite(cents) || cents <= 0) {
-      return res.status(400).json({ ok: false, error: 'Invalid amount' });
-    }
-    nextAmount = cents;
+  const amountInfo = readAmountInput(body);
+  if (amountInfo.error) {
+    return res.status(400).json({ ok: false, error: amountInfo.error });
   }
 
   const comment = (body.comment || '').trim();
-  const amountChanged = nextAmount !== pr.amountCents;
+  const nextAmount = amountInfo.provided && amountInfo.cents ? amountInfo.cents : pr.amountCents;
+  const amountChanged = amountInfo.provided && amountInfo.cents !== pr.amountCents;
   if (amountChanged && !comment) {
     return res.status(400).json({ ok: false, error: 'Comment required when adjusting the amount' });
   }
 
   const redirectTarget = resolveReturnTo(body.returnTo, '/admin/report/deposits/pending');
-
-  await prisma.$transaction(async (tx) => {
-    await tx.paymentRequest.update({
-      where: { id },
-      data: {
-        status: 'APPROVED',
-        updatedAt: new Date(),
-        processedAt: new Date(),
-        processedByAdminId: req.admin?.sub ?? null,
-        ...(amountChanged ? { amountCents: nextAmount } : {}),
-        ...(comment ? { notes: comment } : {})
-      }
+  try {
+    const result = await changePaymentStatus('DEPOSIT', {
+      paymentId: id,
+      targetStatus: 'APPROVED',
+      actorAdminId: req.admin?.sub ?? null,
+      amountCents: amountInfo.provided ? amountInfo.cents ?? null : null,
+      comment,
     });
-    await tx.ledgerEntry.create({
-      data: { merchantId: pr.merchantId, amountCents: nextAmount, reason: `Deposit ${pr.referenceCode}`, paymentId: pr.id }
-    });
-    await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { increment: nextAmount } } });
-  });
-
-  const suffix = comment ? ` — ${comment}` : '';
-  safeNotify(`✅ Deposit approved: ${pr.referenceCode} ${formatAmount(nextAmount)} ${pr.currency} (merchant ${pr.merchant.name})${suffix}`).catch(() => {});
-  res.json({ ok: true, redirect: redirectTarget });
+    const updated = result.payment;
+    const suffix = comment ? ` — ${comment}` : '';
+    const merchantName = updated.merchant?.name || pr.merchant?.name || updated.merchantId;
+    safeNotify(`✅ Deposit approved: ${updated.referenceCode} ${formatAmount(updated.amountCents)} ${updated.currency} (merchant ${merchantName})${suffix}`).catch(() => {});
+    res.json({ ok: true, redirect: redirectTarget });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      return res.status(400).json({ ok: false, error: err.message });
+    }
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to update status' });
+  }
 });
 
 router.post('/deposits/:id/reject', async (req, res) => {
@@ -505,20 +543,81 @@ router.post('/deposits/:id/reject', async (req, res) => {
   }
 
   const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/deposits/pending');
-
-  await prisma.paymentRequest.update({
-    where: { id },
-    data: {
-      status: 'REJECTED',
-      rejectedReason: comment,
-      notes: comment,
-      updatedAt: new Date(),
-      processedAt: new Date(),
-      processedByAdminId: req.admin?.sub ?? null
+  try {
+    const result = await changePaymentStatus('DEPOSIT', {
+      paymentId: id,
+      targetStatus: 'REJECTED',
+      actorAdminId: req.admin?.sub ?? null,
+      comment,
+    });
+    const updated = result.payment;
+    const merchantName = updated.merchant?.name || pr.merchant?.name || updated.merchantId;
+    safeNotify(`⛔ Deposit rejected: ${updated.referenceCode} ${formatAmount(updated.amountCents)} ${updated.currency} — ${comment}`).catch(() => {});
+    res.json({ ok: true, redirect: redirectTarget });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      return res.status(400).json({ ok: false, error: err.message });
     }
-  });
-  safeNotify(`⛔ Deposit rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} — ${comment}`).catch(() => {});
-  res.json({ ok: true, redirect: redirectTarget });
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to update status' });
+  }
+});
+
+router.post('/deposits/:id/status', async (req, res) => {
+  const id = req.params.id;
+  const parsed = statusChangeSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Invalid payload' });
+  }
+
+  const payload = parsed.data;
+  const payment = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  if (!payment || payment.type !== 'DEPOSIT') {
+    return res.status(404).json({ ok: false, error: 'Payment not found' });
+  }
+
+  const comment = (payload.comment || '').trim();
+  const amountInfo = readAmountInput(payload);
+  if (amountInfo.error) {
+    return res.status(400).json({ ok: false, error: amountInfo.error });
+  }
+
+  if (payload.targetStatus === 'REJECTED' && !comment) {
+    return res.status(400).json({ ok: false, error: 'Comment is required' });
+  }
+
+  if (payload.targetStatus === 'APPROVED') {
+    const amountChanged = amountInfo.provided && amountInfo.cents !== payment.amountCents;
+    if (amountChanged && !comment) {
+      return res.status(400).json({ ok: false, error: 'Comment required when adjusting the amount' });
+    }
+  }
+
+  try {
+    const result = await changePaymentStatus('DEPOSIT', {
+      paymentId: id,
+      targetStatus: payload.targetStatus,
+      actorAdminId: req.admin?.sub ?? null,
+      amountCents: payload.targetStatus === 'APPROVED'
+        ? (amountInfo.provided ? amountInfo.cents ?? null : null)
+        : null,
+      comment,
+    });
+    const updated = result.payment;
+    const merchantName = updated.merchant?.name || payment.merchant?.name || updated.merchantId;
+    const prefix = payload.targetStatus === 'APPROVED' ? '✅' : '⛔';
+    const verb = payload.targetStatus === 'APPROVED' ? 'approved' : 'rejected';
+    const suffix = comment ? ` — ${comment}` : '';
+    safeNotify(`${prefix} Deposit ${verb}: ${updated.referenceCode} ${formatAmount(updated.amountCents)} ${updated.currency} (merchant ${merchantName})${suffix}`).catch(() => {});
+    res.json({ ok: true, status: updated.status, amountCents: updated.amountCents });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      return res.status(400).json({ ok: false, error: message });
+    }
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to update status' });
+  }
 });
 
 router.get('/export/deposits.csv', async (req: Request, res: Response) => {
@@ -608,30 +707,24 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
   }
 
   const redirectTarget = resolveReturnTo((req.body && (req.body.returnTo ?? req.body.redirect)) || undefined, '/admin/report/withdrawals/pending');
-
-  const m = await prisma.merchant.findUnique({ where: { id: pr.merchantId }, select: { balanceCents: true, name: true } });
-  if (!m || m.balanceCents < pr.amountCents) {
-    return res.status(400).json({ ok: false, error: 'Insufficient merchant balance' });
+  try {
+    const result = await changePaymentStatus('WITHDRAWAL', {
+      paymentId: id,
+      targetStatus: 'APPROVED',
+      actorAdminId: req.admin?.sub ?? null,
+    });
+    const updated = result.payment;
+    const merchantName = updated.merchant?.name || pr.merchant?.name || updated.merchantId;
+    safeNotify(`✅ Withdrawal approved: ${updated.referenceCode} ${formatAmount(updated.amountCents)} ${updated.currency} (merchant ${merchantName})`).catch(() => {});
+    res.json({ ok: true, redirect: redirectTarget });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      return res.status(400).json({ ok: false, error: message });
+    }
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to update status' });
   }
-
-  await prisma.$transaction(async (tx) => {
-    await tx.paymentRequest.update({
-      where: { id },
-      data: {
-        status: 'APPROVED',
-        updatedAt: new Date(),
-        processedAt: new Date(),
-        processedByAdminId: req.admin?.sub ?? null
-      }
-    });
-    await tx.ledgerEntry.create({
-      data: { merchantId: pr.merchantId, amountCents: -pr.amountCents, reason: `Withdrawal ${pr.referenceCode}`, paymentId: pr.id }
-    });
-    await tx.merchant.update({ where: { id: pr.merchantId }, data: { balanceCents: { decrement: pr.amountCents } } });
-  });
-
-  safeNotify(`✅ Withdrawal approved: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} (merchant ${m?.name})`).catch(()=>{});
-  res.json({ ok: true, redirect: redirectTarget });
 });
 
 router.post('/withdrawals/:id/reject', async (req, res) => {
@@ -652,19 +745,75 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
   }
 
   const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/withdrawals/pending');
-
-  await prisma.paymentRequest.update({
-    where: { id },
-    data: {
-      status: 'REJECTED',
-      rejectedReason: comment,
-      updatedAt: new Date(),
-      processedAt: new Date(),
-      processedByAdminId: req.admin?.sub ?? null
+  try {
+    const result = await changePaymentStatus('WITHDRAWAL', {
+      paymentId: id,
+      targetStatus: 'REJECTED',
+      actorAdminId: req.admin?.sub ?? null,
+      comment,
+    });
+    const updated = result.payment;
+    const merchantName = updated.merchant?.name || pr.merchant?.name || updated.merchantId;
+    safeNotify(`⛔ Withdrawal rejected: ${updated.referenceCode} ${formatAmount(updated.amountCents)} ${updated.currency} — ${comment}`).catch(() => {});
+    res.json({ ok: true, redirect: redirectTarget });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      return res.status(400).json({ ok: false, error: message });
     }
-  });
-  safeNotify(`⛔ Withdrawal rejected: ${pr.referenceCode} ${formatAmount(pr.amountCents)} ${pr.currency} — ${comment}`).catch(()=>{});
-  res.json({ ok: true, redirect: redirectTarget });
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to update status' });
+  }
+});
+
+router.post('/withdrawals/:id/status', async (req, res) => {
+  const id = req.params.id;
+  const parsed = statusChangeSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Invalid payload' });
+  }
+
+  const payload = parsed.data;
+  const payment = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  if (!payment || payment.type !== 'WITHDRAWAL') {
+    return res.status(404).json({ ok: false, error: 'Payment not found' });
+  }
+
+  const comment = (payload.comment || '').trim();
+  const amountInfo = readAmountInput(payload);
+  if (amountInfo.error) {
+    return res.status(400).json({ ok: false, error: amountInfo.error });
+  }
+
+  if (payload.targetStatus === 'REJECTED' && !comment) {
+    return res.status(400).json({ ok: false, error: 'Comment is required' });
+  }
+
+  try {
+    const result = await changePaymentStatus('WITHDRAWAL', {
+      paymentId: id,
+      targetStatus: payload.targetStatus,
+      actorAdminId: req.admin?.sub ?? null,
+      amountCents: payload.targetStatus === 'APPROVED'
+        ? (amountInfo.provided ? amountInfo.cents ?? null : null)
+        : null,
+      comment,
+    });
+    const updated = result.payment;
+    const merchantName = updated.merchant?.name || payment.merchant?.name || updated.merchantId;
+    const prefix = payload.targetStatus === 'APPROVED' ? '✅' : '⛔';
+    const verb = payload.targetStatus === 'APPROVED' ? 'approved' : 'rejected';
+    const suffix = comment ? ` — ${comment}` : '';
+    safeNotify(`${prefix} Withdrawal ${verb}: ${updated.referenceCode} ${formatAmount(updated.amountCents)} ${updated.currency} (merchant ${merchantName})${suffix}`).catch(() => {});
+    res.json({ ok: true, status: updated.status, amountCents: updated.amountCents });
+  } catch (err) {
+    if (err instanceof PaymentStatusError) {
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      return res.status(400).json({ ok: false, error: message });
+    }
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to update status' });
+  }
 });
 
 router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {

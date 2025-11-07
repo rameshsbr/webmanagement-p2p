@@ -101,6 +101,9 @@
               <span class="mini" style="opacity:.6">Pending queue</span>
             <% } %>
           </td>
+          <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
+          <td data-col="actions" class="actions">&mdash;</td>
         </tr>
       <% }) %>
     </tbody>

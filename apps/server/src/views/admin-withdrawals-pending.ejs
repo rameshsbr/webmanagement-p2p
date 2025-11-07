@@ -34,10 +34,13 @@
       </tr>
     </thead>
     <tbody>
-      <% if (!table.items.length) { %>
+      <% const rows = []; const seenIds = new Set(); %>
+      <% table.items.forEach((row) => { if (!seenIds.has(row.id)) { seenIds.add(row.id); rows.push(row); } }); %>
+      <% const displayCount = rows.length; %>
+      <% if (!rows.length) { %>
         <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
-      <% table.items.forEach(r=>{ %>
+      <% rows.forEach(r=>{ %>
         <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
         <% const method = (methodRaw || '').toUpperCase(); %>
         <% const dest = (r.detailsJson && r.detailsJson.destination) || {}; %>

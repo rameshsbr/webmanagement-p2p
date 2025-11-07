@@ -33,10 +33,13 @@
       </tr>
     </thead>
     <tbody>
-      <% if (!table.items.length) { %>
+      <% const rows = []; const seenIds = new Set(); %>
+      <% table.items.forEach((row) => { if (!seenIds.has(row.id)) { seenIds.add(row.id); rows.push(row); } }); %>
+      <% const displayCount = rows.length; %>
+      <% if (!rows.length) { %>
         <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
-      <% table.items.forEach(r=>{ %>
+      <% rows.forEach(r=>{ %>
         <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
         <% const method = (methodRaw || '').toUpperCase(); %>
         <% const payer = (r.detailsJson && r.detailsJson.payer) || {}; %>
@@ -115,7 +118,7 @@
   <% if (table.page>1) { sp.set('page', String(table.page-1)); %>
     <a href="?<%= sp.toString() %>">&larr; Prev</a>
   <% } else { %><span>Prev</span><% } %>
-  <span>Showing <%= table.items.length %> / <%= table.total %> • Page <%= table.page %> / <%= table.pages %></span>
+    <span>Showing <%= displayCount %> / <%= table.total %> • Page <%= table.page %> / <%= table.pages %></span>
   <% if (table.page<table.pages) { sp.set('page', String(table.page+1)); %>
     <a href="?<%= sp.toString() %>">Next &rarr;</a>
   <% } else { %><span>Next</span><% } %>

@@ -332,7 +332,8 @@ router.get('/report/deposits/pending', async (req, res) => {
   res.render('admin-deposits-pending', {
     title: 'Pending deposit requests',
     table: { total, items, page, perPage, pages },
-    query
+    query,
+    returnTo: req.originalUrl
   });
 });
 

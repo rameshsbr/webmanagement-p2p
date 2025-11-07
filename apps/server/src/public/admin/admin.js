@@ -28,21 +28,34 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 });
 
-// Column visibility
+// Column visibility (per widget key)
 (() => {
-  const KEY = 'admin.columns';
-  const saved = JSON.parse(localStorage.getItem(KEY) || '{}');
   document.querySelectorAll('[data-col-toggle]').forEach((cb) => {
+    const container = cb.closest('[data-collapsible]');
+    const storageKey = container?.getAttribute('data-storage-key') || 'admin.columns';
+    let saved;
+    try {
+      saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+    } catch {
+      saved = {};
+    }
     const col = cb.getAttribute('data-col-toggle');
     if (Object.prototype.hasOwnProperty.call(saved, col)) cb.checked = !!saved[col];
+
     const apply = () => {
       document.querySelectorAll(`[data-col="${col}"]`).forEach((el) => {
         el.style.display = cb.checked ? '' : 'none';
       });
-      const next = JSON.parse(localStorage.getItem(KEY) || '{}');
+      let next;
+      try {
+        next = JSON.parse(localStorage.getItem(storageKey) || '{}') || {};
+      } catch {
+        next = {};
+      }
       next[col] = cb.checked;
-      localStorage.setItem(KEY, JSON.stringify(next));
+      localStorage.setItem(storageKey, JSON.stringify(next));
     };
+
     cb.addEventListener('change', apply);
     apply();
   });
@@ -102,6 +115,545 @@ function toast(msg) {
   zones.forEach(z => { const o=document.createElement('option'); o.value=o.textContent=z; tz.appendChild(o); });
   tz.value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   tz.dataset.filled = '1';
+})();
+
+const purgeModals = () => {
+  document.querySelectorAll('.modal-backdrop').forEach((el) => el.remove());
+};
+purgeModals();
+window.addEventListener('pageshow', purgeModals);
+
+async function postJson(url, payload) {
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    credentials: 'same-origin',
+    body: JSON.stringify(payload || {}),
+  });
+  let data = null;
+  try { data = await res.json(); } catch {}
+  if (!res.ok || !data?.ok) {
+    throw new Error((data && data.error) || 'Request failed');
+  }
+  return data;
+}
+
+function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
+  purgeModals();
+  const overlay = document.createElement('div');
+  overlay.className = 'modal-backdrop';
+  overlay.innerHTML = `
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-header">
+        <h3 id="modal-title">${title}</h3>
+      </div>
+      <div class="modal-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn small" data-cancel>Cancel</button>
+        <button type="button" class="btn small primary" data-submit>${submitLabel}</button>
+      </div>
+    </div>`;
+
+  const body = overlay.querySelector('.modal-body');
+  const submitBtn = overlay.querySelector('[data-submit]');
+  const cancelBtn = overlay.querySelector('[data-cancel]');
+  if (!body || !submitBtn || !cancelBtn) return;
+
+  const ctx = contentBuilder(body) || {};
+
+  const close = () => {
+    overlay.classList.remove('is-visible');
+    setTimeout(() => overlay.remove(), 180);
+  };
+
+  cancelBtn.addEventListener('click', () => close());
+  overlay.addEventListener('click', (ev) => {
+    if (ev.target === overlay) close();
+  });
+
+  submitBtn.addEventListener('click', async () => {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Working…';
+    try {
+      await onSubmit({ ...ctx, close, overlay });
+      close();
+    } catch (err) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = submitLabel;
+      const msg = (err && err.message) || 'Request failed';
+      let errBox = overlay.querySelector('.modal-error');
+      if (!errBox) {
+        errBox = document.createElement('div');
+        errBox.className = 'modal-error';
+        overlay.querySelector('.modal-card')?.appendChild(errBox);
+      }
+      errBox.textContent = msg;
+    }
+  });
+
+  document.body.appendChild(overlay);
+  requestAnimationFrame(() => overlay.classList.add('is-visible'));
+}
+
+// Pending deposit actions (approve/reject with confirmation dialogs)
+(() => {
+  const table = document.querySelector('[data-pending-actions]');
+  if (!table) return;
+
+  const openApprove = (btn) => {
+    const id = btn.getAttribute('data-id');
+    const reference = btn.getAttribute('data-reference') || '';
+    const currency = btn.getAttribute('data-currency') || '';
+    const originalCents = Number(btn.getAttribute('data-amount') || '0');
+    const originalAmount = originalCents / 100;
+    const originalDisplay = originalCents % 100 === 0 ? originalAmount.toFixed(0) : originalAmount.toFixed(2);
+
+    openActionModal({
+      title: 'Confirm approval',
+      submitLabel: 'Approve',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Approve deposit <strong>${reference}</strong> (${currency} ${originalDisplay})?</p>
+          <label class="modal-field">
+            <span>Amount (${currency})</span>
+            <input type="number" step="0.01" min="0.01" value="${originalDisplay}" data-amount-input />
+          </label>
+          <label class="modal-field">
+            <span>Comment <small>(required if amount changes)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Optional comment"></textarea>
+          </label>`;
+        return {
+          amountInput: body.querySelector('[data-amount-input]'),
+          commentInput: body.querySelector('[data-comment-input]'),
+        };
+      },
+      onSubmit: async ({ amountInput, commentInput, close }) => {
+        const raw = (amountInput?.value || '').trim();
+        const comment = (commentInput?.value || '').trim();
+        if (!raw) {
+          throw new Error('Amount is required');
+        }
+        const nextAmount = Number(raw);
+        if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
+          throw new Error('Enter a valid amount');
+        }
+        const roundedCents = Math.round(nextAmount * 100);
+        const originalRounded = Math.round(originalAmount * 100);
+        if (roundedCents !== originalRounded && !comment) {
+          throw new Error('Comment is required when changing the amount');
+        }
+
+        await postJson(`/admin/deposits/${encodeURIComponent(id)}/approve`, {
+          amount: Number(nextAmount.toFixed(2)),
+          comment,
+        });
+        close();
+        toast('Deposit approved');
+        window.location.reload();
+      },
+    });
+  };
+
+  const openReject = (btn) => {
+    const id = btn.getAttribute('data-id');
+    const reference = btn.getAttribute('data-reference') || '';
+    const currency = btn.getAttribute('data-currency') || '';
+    const amountCents = Number(btn.getAttribute('data-amount') || '0');
+    const amountDisplay = amountCents % 100 === 0 ? (amountCents / 100).toFixed(0) : (amountCents / 100).toFixed(2);
+
+    openActionModal({
+      title: 'Reject deposit',
+      submitLabel: 'Reject',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Reject deposit <strong>${reference}</strong> (${currency} ${amountDisplay})?</p>
+          <label class="modal-field">
+            <span>Comment <small>(required)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Reason for rejection"></textarea>
+          </label>`;
+        return {
+          commentInput: body.querySelector('[data-comment-input]'),
+        };
+      },
+      onSubmit: async ({ commentInput, close }) => {
+        const comment = (commentInput?.value || '').trim();
+        if (!comment) {
+          throw new Error('Comment is required');
+        }
+
+        await postJson(`/admin/deposits/${encodeURIComponent(id)}/reject`, { comment });
+        close();
+        toast('Deposit rejected');
+        window.location.reload();
+      },
+    });
+  };
+
+  table.addEventListener('click', (event) => {
+    const approveBtn = event.target.closest('[data-approve]');
+    if (approveBtn) {
+      event.preventDefault();
+      openApprove(approveBtn);
+      return;
+    }
+    const rejectBtn = event.target.closest('[data-reject]');
+    if (rejectBtn) {
+      event.preventDefault();
+      openReject(rejectBtn);
+    }
+  });
+})();
+
+// Pending withdrawal actions
+(() => {
+  const table = document.querySelector('[data-withdraw-actions]');
+  if (!table) return;
+
+  const openApprove = (btn) => {
+    const id = btn.getAttribute('data-id');
+    const reference = btn.getAttribute('data-reference') || '';
+    const amountDisplay = btn.getAttribute('data-amount-display') || '';
+
+    openActionModal({
+      title: 'Approve withdrawal',
+      submitLabel: 'Approve',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `<p>Approve withdrawal <strong>${reference}</strong> (${amountDisplay})?</p>`;
+      },
+      onSubmit: async ({ close }) => {
+        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/approve`, {});
+        close();
+        toast('Withdrawal approved');
+        window.location.reload();
+      },
+    });
+  };
+
+  const openReject = (btn) => {
+    const id = btn.getAttribute('data-id');
+    const reference = btn.getAttribute('data-reference') || '';
+    const amountDisplay = btn.getAttribute('data-amount-display') || '';
+
+    openActionModal({
+      title: 'Reject withdrawal',
+      submitLabel: 'Reject',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Reject withdrawal <strong>${reference}</strong> (${amountDisplay})?</p>
+          <label class="modal-field">
+            <span>Comment <small>(required)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Reason for rejection"></textarea>
+          </label>`;
+        return {
+          commentInput: body.querySelector('[data-comment-input]'),
+        };
+      },
+      onSubmit: async ({ commentInput, close }) => {
+        const comment = (commentInput?.value || '').trim();
+        if (!comment) {
+          throw new Error('Comment is required');
+        }
+        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/reject`, { comment });
+        close();
+        toast('Withdrawal rejected');
+        window.location.reload();
+      },
+    });
+  };
+
+  table.addEventListener('click', (event) => {
+    const approveBtn = event.target.closest('[data-approve]');
+    if (approveBtn) {
+      event.preventDefault();
+      openApprove(approveBtn);
+      return;
+    }
+
+    const rejectBtn = event.target.closest('[data-reject]');
+    if (rejectBtn) {
+      event.preventDefault();
+      openReject(rejectBtn);
+    }
+  });
+})();
+
+// Processed payment status changes (admin tables)
+(() => {
+  const formatDisplayAmount = (cents) => {
+    const num = Number(cents || 0);
+    if (!Number.isFinite(num)) return '0';
+    return num % 100 === 0 ? (num / 100).toFixed(0) : (num / 100).toFixed(2);
+  };
+
+  document.addEventListener('click', (event) => {
+    const trigger = event.target.closest('[data-change-status]');
+    if (!trigger) return;
+    event.preventDefault();
+
+    const id = trigger.getAttribute('data-id');
+    const type = trigger.getAttribute('data-type') || 'DEPOSIT';
+    const currentStatus = trigger.getAttribute('data-status') || '';
+    const reference = trigger.getAttribute('data-reference') || '';
+    const amountCents = Number(trigger.getAttribute('data-amount') || '0');
+    const currency = trigger.getAttribute('data-currency') || '';
+    const amountDisplay = formatDisplayAmount(amountCents);
+
+    const isDeposit = type === 'DEPOSIT';
+
+    openActionModal({
+      title: 'Change status',
+      submitLabel: 'Update',
+      contentBuilder: (body) => {
+        body.classList.add('modal-fields');
+        body.innerHTML = `
+          <p>Update <strong>${reference}</strong> (${currency} ${amountDisplay})?</p>
+          <label class="modal-field">
+            <span>Next status</span>
+            <select data-status-select>
+              <option value="APPROVED">Approve</option>
+              <option value="REJECTED">Reject</option>
+            </select>
+          </label>
+          <div class="modal-field" data-amount-wrapper>
+            <span>Approved amount (${currency})</span>
+            <input type="number" step="0.01" min="0.01" value="${amountDisplay}" data-amount-input />
+          </div>
+          <label class="modal-field">
+            <span>Comment <small>(required for rejection)</small></span>
+            <textarea rows="3" data-comment-input placeholder="Optional comment"></textarea>
+          </label>`;
+        const statusSelect = body.querySelector('[data-status-select]');
+        const amountWrapper = body.querySelector('[data-amount-wrapper]');
+        const amountInput = body.querySelector('[data-amount-input]');
+        const commentInput = body.querySelector('[data-comment-input]');
+
+        statusSelect.value = currentStatus === 'REJECTED' ? 'REJECTED' : 'APPROVED';
+
+        const updateVisibility = () => {
+          const showAmount = statusSelect.value === 'APPROVED' && isDeposit;
+          amountWrapper.style.display = showAmount ? '' : 'none';
+        };
+        updateVisibility();
+        statusSelect.addEventListener('change', updateVisibility);
+
+        return { statusSelect, amountInput, commentInput, amountWrapper };
+      },
+      onSubmit: async ({ statusSelect, amountInput, commentInput, close }) => {
+        const targetStatus = statusSelect?.value === 'REJECTED' ? 'REJECTED' : 'APPROVED';
+        const comment = (commentInput?.value || '').trim();
+        const payload = { targetStatus };
+
+        if (targetStatus === 'REJECTED' && !comment) {
+          throw new Error('Comment is required');
+        }
+
+        if (targetStatus === 'APPROVED' && isDeposit) {
+          const raw = (amountInput?.value || '').trim();
+          if (!raw) throw new Error('Amount is required');
+          const nextAmount = Number(raw);
+          if (!Number.isFinite(nextAmount) || nextAmount <= 0) {
+            throw new Error('Enter a valid amount');
+          }
+          payload.amount = Number(nextAmount.toFixed(2));
+          const originalAmount = amountCents / 100;
+          if (Math.round(nextAmount * 100) !== Math.round(originalAmount * 100) && !comment) {
+            throw new Error('Comment is required when changing the amount');
+          }
+        }
+
+        if (comment) payload.comment = comment;
+
+        const endpoint = type === 'WITHDRAWAL'
+          ? `/admin/withdrawals/${encodeURIComponent(id)}/status`
+          : `/admin/deposits/${encodeURIComponent(id)}/status`;
+
+        await postJson(endpoint, payload);
+        close();
+        toast('Status updated');
+        window.location.reload();
+      },
+    });
+  });
+})();
+// Browser notifications for new queue items
+(() => {
+  if (typeof window.fetch !== 'function') return;
+  const shell = document.querySelector('.shell');
+  if (!shell) return;
+
+  const NotificationAPI = 'Notification' in window ? window.Notification : null;
+  let lastStamp = Date.now();
+  let audioCtx = null;
+  let autoReloadScheduled = false;
+  let permissionBanner = null;
+  let primed = false;
+  let swReadyPromise = null;
+
+  const ensureServiceWorker = () => {
+    if (!('serviceWorker' in navigator)) return null;
+    if (!swReadyPromise) {
+      swReadyPromise = navigator.serviceWorker
+        .register('/static/admin/queue-sw.js')
+        .then(() => navigator.serviceWorker.ready)
+        .catch(() => null);
+    }
+    return swReadyPromise;
+  };
+
+  ensureServiceWorker();
+
+  const findAutoRefreshContext = () =>
+    document.querySelector('[data-auto-refresh="pending-deposits"]') ||
+    document.querySelector('[data-auto-refresh="pending-withdrawals"]');
+
+  const scheduleReload = () => {
+    if (autoReloadScheduled) return;
+    const ctx = findAutoRefreshContext();
+    if (!ctx) return;
+    autoReloadScheduled = true;
+    window.setTimeout(() => window.location.reload(), 1500);
+  };
+
+  const ensureAudio = () => {
+    if (audioCtx) return audioCtx;
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) return null;
+    audioCtx = new Ctx();
+    return audioCtx;
+  };
+
+  const playChime = () => {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+    const now = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(880, now);
+    gain.gain.setValueAtTime(0.0001, now);
+    gain.gain.exponentialRampToValueAtTime(0.25, now + 0.02);
+    gain.gain.exponentialRampToValueAtTime(0.0001, now + 1.1);
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.start(now);
+    osc.stop(now + 1.2);
+  };
+
+  const requestPermission = () => {
+    if (!NotificationAPI) return;
+    if (NotificationAPI.permission === 'default') {
+      NotificationAPI.requestPermission()
+        .then(() => ensurePermissionPrompt())
+        .catch(() => {});
+    }
+  };
+
+  const prime = () => {
+    requestPermission();
+    const ctx = ensureAudio();
+    if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {});
+  };
+
+  document.addEventListener('pointerdown', () => {
+    prime();
+    ensurePermissionPrompt();
+  }, { once: true });
+
+  const ensurePermissionPrompt = () => {
+    if (!NotificationAPI || NotificationAPI.permission !== 'default') {
+      if (permissionBanner) {
+        permissionBanner.remove();
+        permissionBanner = null;
+      }
+      return;
+    }
+    if (permissionBanner) return;
+    permissionBanner = document.createElement('div');
+    permissionBanner.className = 'notification-permission-banner';
+    permissionBanner.innerHTML = `
+      <div>
+        <strong>Enable browser alerts?</strong>
+        <span>Allow notifications to get instant deposit/withdrawal updates.</span>
+      </div>
+      <button type="button" class="btn small primary">Enable</button>
+    `;
+    const btn = permissionBanner.querySelector('button');
+    btn?.addEventListener('click', () => {
+      requestPermission();
+    });
+    document.body.appendChild(permissionBanner);
+  };
+
+  ensurePermissionPrompt();
+
+  const showBrowserNotification = async (title, message, tag, url) => {
+    if (!NotificationAPI || NotificationAPI.permission !== 'granted') return false;
+    try {
+      const ready = await ensureServiceWorker();
+      if (ready) {
+        await ready.showNotification(title, { body: message, tag, data: { url } });
+        return true;
+      }
+    } catch {}
+    try {
+      new Notification(title, { body: message, tag });
+      return true;
+    } catch {}
+    return false;
+  };
+
+  const sendNotification = (label, count) => {
+    if (count <= 0) return;
+    const plural = count > 1 ? 's' : '';
+    const message = count > 1 ? `${count} new ${label}${plural}` : `New ${label}`;
+    toast(message);
+    const targetUrl = label.includes('withdrawal')
+      ? '/admin/report/withdrawals/pending'
+      : '/admin/report/deposits/pending';
+    showBrowserNotification('Payments queue update', message, `queue-${label}`, targetUrl).catch(() => {});
+    playChime();
+    scheduleReload();
+  };
+
+  const poll = async () => {
+    if (!primed) {
+      primed = true;
+      lastStamp = Date.now();
+      return;
+    }
+    const qs = new URLSearchParams({ since: String(lastStamp) });
+    try {
+      const res = await fetch(`/admin/notifications/queue?${qs.toString()}`, {
+        credentials: 'same-origin',
+        headers: { Accept: 'application/json' },
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (!data?.ok) return;
+      const latest = typeof data.latest === 'string' ? Date.parse(data.latest) : NaN;
+      if (!Number.isNaN(latest) && latest >= lastStamp) {
+        lastStamp = latest + 1;
+      } else {
+        lastStamp = Date.now();
+      }
+      ensurePermissionPrompt();
+      sendNotification('deposit request', Number(data.deposits || 0));
+      sendNotification('withdrawal request', Number(data.withdrawals || 0));
+    } catch {}
+  };
+
+  const loop = () => {
+    poll().finally(() => {
+      window.setTimeout(loop, 5000);
+    });
+  };
+
+  window.setTimeout(loop, 5000);
 })();
 
 // Preferences Save / Cancel

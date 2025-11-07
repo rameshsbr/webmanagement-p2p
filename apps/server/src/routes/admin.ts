@@ -198,6 +198,7 @@ async function fetchPayments(
     prisma.paymentRequest.count({ where }),
     prisma.paymentRequest.findMany({
       where,
+      distinct: ['id'],
       include: {
         merchant: { select: { id: true, name: true } },
         user: { select: { id: true, publicId: true, email: true, phone: true, diditSubject: true } },

@@ -4,9 +4,9 @@ import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
 import { prisma } from "../lib/prisma.js";
-import { open as sbOpen, tscmp } from "../services/secretBox.js";
+import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
-import { generateReference } from "../services/reference.js";
+import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 
@@ -200,7 +200,7 @@ function normalizeField(r: any): UIField | null {
   const digits = Number.isFinite(+r.digits) ? Math.max(0, +r.digits) : 0;
   let options: string[] = [];
   if (Array.isArray(r.options)) options = r.options.map((x: any) => String(x));
-  else if (typeof r.data === "string") options = r.data.split(",").map((s) => s.trim()).filter(Boolean);
+  else if (typeof r.data === "string") options = r.data.split(",").map((s: string) => s.trim()).filter(Boolean);
   return { name, display, field, placeholder, required, digits, options };
 }
 
@@ -354,7 +354,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   // Find or create user; enforce KYC gate
   const user = await prisma.user.upsert({
     where: { diditSubject },
-    create: { diditSubject, verifiedAt: null },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
   if (!user.verifiedAt) {
@@ -379,20 +379,6 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     }
   }
 
-  // Reuse a draft if exists (PENDING, no receipts)
-  let pr = await prisma.paymentRequest.findFirst({
-    where: {
-      type: "DEPOSIT",
-      merchantId,
-      userId: user.id,
-      currency,
-      status: "PENDING",
-      receipts: { none: {} },
-    },
-    orderBy: { createdAt: "desc" },
-    include: { bankAccount: true },
-  });
-
   // If no explicit choice, pick newest active rail for this method (merchant-first, then global)
   if (!chosenBank) {
     chosenBank =
@@ -412,42 +398,9 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   const v = validateExtras(forms.deposit, base.extraFields || {});
   if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
 
-  // If reusing a draft but rail/method changed, update it
-  if (pr) {
-    const mustSwapRail =
-      !pr.bankAccount ||
-      pr.bankAccount.method !== base.method ||
-      (base.bankAccountId && pr.bankAccount.id !== base.bankAccountId);
-
-    pr = await prisma.paymentRequest.update({
-      where: { id: pr.id },
-      data: {
-        amountCents: base.amountCents,
-        bankAccountId: mustSwapRail ? chosenBank.id : pr.bankAccountId,
-        detailsJson: { method: base.method, payer: base.payer, extras: base.extraFields || {} },
-      },
-      include: { bankAccount: true },
-    });
-  } else {
-    pr = await prisma.paymentRequest.create({
-      data: {
-        type: "DEPOSIT",
-        status: "PENDING",
-        amountCents: base.amountCents,
-        currency,
-        referenceCode: generateReference("DEP"),
-        merchantId,
-        userId: user.id,
-        bankAccountId: chosenBank.id,
-        detailsJson: { method: base.method, payer: base.payer, extras: base.extraFields || {} },
-      },
-      include: { bankAccount: true },
-    });
-  }
-
   // include bank.fields for display
   const bankFull = await prisma.bankAccount.findUnique({
-    where: { id: pr.bankAccountId || "" },
+    where: { id: chosenBank.id },
     select: {
       holderName: true, bankName: true, accountNo: true, iban: true, instructions: true, method: true, label: true, fields: true
     }
@@ -455,16 +408,38 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
 
   const display = computeDisplayFields({ ...bankFull, fields: bankFull?.fields });
 
-  await tgNotify(
-    `🟢 DEPOSIT intent\nRef: <b>${pr.referenceCode}</b>\nAmount: ${base.amountCents} ${currency}\nRail: ${bankFull?.method || "-"} / ${bankFull?.bankName || "-"}`
-  ).catch(() => {});
+  const referenceCode = generateTransactionId();
+  const uniqueReference = generateUniqueReference();
+
+  const intentPayload = {
+    merchantId,
+    userId: user.id,
+    currency,
+    amountCents: base.amountCents,
+    bankAccountId: chosenBank.id,
+    method: base.method,
+    payer: base.payer,
+    extras: base.extraFields || {},
+    referenceCode,
+    uniqueReference,
+    createdAt: nowIso(),
+  } as const;
+
+  let intentToken: string;
+  try {
+    intentToken = seal(JSON.stringify(intentPayload));
+  } catch (err) {
+    console.error("[deposit-intent] failed to seal payload", err);
+    return res.status(500).json({ ok: false, error: "INTENT_ENCRYPTION_FAILED" });
+  }
 
   res.json({
     ok: true,
-    id: pr.id,
-    referenceCode: pr.referenceCode,
-    currency: pr.currency,
-    amountCents: pr.amountCents,
+    referenceCode,
+    uniqueReference,
+    currency,
+    amountCents: base.amountCents,
+    intentToken,
     bankDetails: {
       holderName: bankFull?.holderName || null,
       bankName: bankFull?.bankName || null,
@@ -480,42 +455,115 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
 });
 
 // ───────────────────────────────────────────────
-// 3) Public: deposit receipt upload (append)
-checkoutPublicRouter.post("/public/deposit/:id/receipt", checkoutAuth, applyMerchantLimits, upload.single("receipt"), async (req: any, res) => {
+// 3) Public: deposit submission (create payment + attach receipt)
+checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantLimits, upload.single("receipt"), async (req: any, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Missing file" });
-  const { merchantId, diditSubject } = req.checkout;
-  const id = req.params.id;
 
-  const pr = await prisma.paymentRequest.findUnique({
-    where: { id },
-    select: { id: true, merchantId: true, user: { select: { diditSubject: true } }, receiptFileId: true, referenceCode: true },
-  });
-  if (!pr || pr.merchantId !== merchantId || pr.user?.diditSubject !== diditSubject) {
-    return res.status(404).json({ ok: false, error: "Not found" });
+  const { merchantId, diditSubject } = req.checkout;
+  const tokenRaw = String(req.body?.intentToken || "").trim();
+  if (!tokenRaw) return res.status(400).json({ ok: false, error: "Missing intent" });
+
+  let payload: any;
+  try {
+    payload = JSON.parse(sbOpen(tokenRaw));
+  } catch (err) {
+    console.warn("[deposit-submit] invalid token", err);
+    return res.status(400).json({ ok: false, error: "Invalid intent" });
   }
+
+  if (!payload || payload.merchantId !== merchantId) {
+    return res.status(400).json({ ok: false, error: "Intent mismatch" });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+  if (!user || user.diditSubject !== diditSubject) {
+    return res.status(403).json({ ok: false, error: "USER_MISMATCH" });
+  }
+  if (!user.verifiedAt) {
+    return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
+  }
+
+  const bank = await prisma.bankAccount.findFirst({
+    where: {
+      id: payload.bankAccountId,
+      active: true,
+      currency: payload.currency,
+      method: payload.method,
+      OR: [{ merchantId }, { merchantId: null }],
+    },
+    select: {
+      id: true,
+      method: true,
+      bankName: true,
+    },
+  });
+  if (!bank) return res.status(400).json({ ok: false, error: "BANK_INACTIVE" });
+
+  const forms = await getFormConfig(merchantId, bank.id);
+  const v = validateExtras(forms.deposit, payload.extras || {});
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
 
   const relPath = "/uploads/" + req.file.filename;
 
-  const file = await prisma.receiptFile.create({
-    data: {
-      path: relPath,
-      mimeType: req.file.mimetype,
-      size: req.file.size,
-      original: req.file.originalname,
-      paymentId: pr.id,
-    },
-  });
+  try {
+    const { payment } = await prisma.$transaction(async (tx) => {
+      const duplicate = await tx.paymentRequest.findUnique({ where: { referenceCode: payload.referenceCode } });
+      if (duplicate) {
+        throw new Error("ALREADY_SUBMITTED");
+      }
 
-  await prisma.paymentRequest.update({
-    where: { id: pr.id },
-    data: {
-      status: "SUBMITTED",
-      ...(pr.receiptFileId ? {} : { receiptFileId: file.id }),
-    },
-  });
+      const created = await tx.paymentRequest.create({
+        data: {
+          type: "DEPOSIT",
+          status: "PENDING",
+          amountCents: payload.amountCents,
+          currency: payload.currency,
+          referenceCode: payload.referenceCode,
+          uniqueReference: payload.uniqueReference,
+          merchantId,
+          userId: payload.userId,
+          bankAccountId: bank.id,
+          detailsJson: { method: payload.method, payer: payload.payer, extras: payload.extras || {} },
+        },
+      });
 
-  await tgNotify(`📄 Deposit SUBMITTED\nRef: <b>${pr.referenceCode}</b>`).catch(() => {});
-  res.json({ ok: true, fileId: file.id });
+      const file = await tx.receiptFile.create({
+        data: {
+          path: relPath,
+          mimeType: req.file.mimetype,
+          size: req.file.size,
+          original: req.file.originalname,
+          paymentId: created.id,
+        },
+      });
+
+      await tx.paymentRequest.update({
+        where: { id: created.id },
+        data: { receiptFileId: file.id },
+      });
+
+      return { payment: created };
+    });
+
+    await tgNotify(
+      `🟢 Deposit submitted\nRef: <b>${payload.referenceCode}</b>\nAmount: ${payload.amountCents} ${payload.currency}\nRail: ${payload.method} / ${bank.bankName || '-'}`
+    ).catch(() => {});
+
+    res.json({
+      ok: true,
+      id: payment.id,
+      referenceCode: payload.referenceCode,
+      uniqueReference: payload.uniqueReference,
+      currency: payload.currency,
+      amountCents: payload.amountCents,
+    });
+  } catch (err) {
+    if ((err as Error)?.message === "ALREADY_SUBMITTED") {
+      return res.status(409).json({ ok: false, error: "Already submitted" });
+    }
+    console.error("[deposit-submit] failed", err);
+    return res.status(500).json({ ok: false, error: "SUBMIT_FAILED" });
+  }
 });
 
 // ───────────────────────────────────────────────
@@ -574,7 +622,8 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     });
   }
 
-  const referenceCode = generateReference("WDR");
+  const referenceCode = generateTransactionId();
+  const uniqueReference = generateUniqueReference();
   const pr = await prisma.paymentRequest.create({
     data: {
       type: "WITHDRAWAL",
@@ -582,6 +631,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       amountCents: body.amountCents,
       currency,
       referenceCode,
+      uniqueReference,
       merchantId,
       userId: user.id,
       detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: body.extraFields || {} },
@@ -589,7 +639,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   });
 
   await tgNotify(`🟡 WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${currency}`).catch(() => {});
-  res.json({ ok: true, id: pr.id, referenceCode });
+  res.json({ ok: true, id: pr.id, referenceCode, uniqueReference });
 });
 
 // ───────────────────────────────────────────────
@@ -620,7 +670,7 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
 
   const user = await prisma.user.upsert({
     where: { diditSubject },
-    create: { diditSubject, verifiedAt: null },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
 

@@ -39,6 +39,10 @@
     <input type="checkbox" name="active" <%= merchant?.active?'checked':'' %>/> Active
   </label>
 
+  <label class="chk" style="margin-top:6px">
+    <input type="checkbox" name="userDirectoryEnabled" <%= merchant?.userDirectoryEnabled?'checked':'' %>/> User directory enabled
+  </label>
+
   <div class="row" style="margin-top:12px"><button class="btn primary">Save</button></div>
 </form>
 

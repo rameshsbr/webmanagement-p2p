@@ -62,6 +62,10 @@
           <a class="nav-link" href="/merchant/payments/withdrawals">Withdrawals</a>
           <a class="nav-link" href="/merchant/ledger">Ledger</a>
           <a class="nav-link" href="/merchant/keys">API Keys</a>
+          <% if (merchantFeatures && merchantFeatures.usersEnabled) { %>
+            <div class="nav-group">USERS</div>
+            <a class="nav-link" href="/merchant/users">Users</a>
+          <% } %>
         </nav>
       </div>
 

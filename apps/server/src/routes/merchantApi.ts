@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import { prisma } from '../lib/prisma.js';
 import { merchantHmacAuth } from '../middleware/hmac.js';
 import { withIdempotency } from '../services/idempotency.js';
-import { generateReference } from '../services/reference.js';
+import { generateTransactionId, generateUniqueReference, generateUserId } from '../services/reference.js';
 import { tgNotify } from '../services/telegram.js';
 import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
@@ -128,7 +128,7 @@ merchantApiRouter.post(
     const result = await withIdempotency(scope, idemKey, async () => {
       const user = await prisma.user.upsert({
         where: { diditSubject: body.user.diditSubject },
-        create: { diditSubject: body.user.diditSubject, verifiedAt: new Date() },
+        create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
         update: {},
       });
 
@@ -146,7 +146,8 @@ merchantApiRouter.post(
       });
       if (!bank) throw new Error('No active bank account for currency');
 
-      const referenceCode = generateReference('DEP');
+      const referenceCode = generateTransactionId();
+      const uniqueReference = generateUniqueReference();
       const pr = await prisma.paymentRequest.create({
         data: {
           type: 'DEPOSIT',
@@ -154,6 +155,7 @@ merchantApiRouter.post(
           amountCents: body.amountCents,
           currency: body.currency,
           referenceCode,
+          uniqueReference,
           merchantId,
           userId: user.id,
           bankAccountId: bank.id,
@@ -268,7 +270,8 @@ merchantApiRouter.post(
       data: { userId: user.id, currency: body.currency, ...body.destination },
     });
 
-    const referenceCode = generateReference('WDR');
+    const referenceCode = generateTransactionId();
+    const uniqueReference = generateUniqueReference();
     const pr = await prisma.paymentRequest.create({
       data: {
         type: 'WITHDRAWAL',
@@ -276,6 +279,7 @@ merchantApiRouter.post(
         amountCents: body.amountCents,
         currency: body.currency,
         referenceCode,
+        uniqueReference,
         merchantId,
         userId: user.id,
         detailsJson: { destinationId: dest.id },
@@ -284,7 +288,7 @@ merchantApiRouter.post(
     await tgNotify(
       `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
     );
-    res.ok({ id: pr.id, referenceCode });
+    res.ok({ id: pr.id, referenceCode, uniqueReference });
   }
 );
 
@@ -305,6 +309,7 @@ merchantApiRouter.get(
       select: {
         id: true,
         referenceCode: true,
+        uniqueReference: true,
         type: true,
         status: true,
         amountCents: true,

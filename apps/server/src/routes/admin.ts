@@ -194,7 +194,7 @@ async function fetchPayments(
   const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
-  const [total, items] = await Promise.all([
+  const [total, itemsRaw] = await Promise.all([
     prisma.paymentRequest.count({ where }),
     prisma.paymentRequest.findMany({
       where,
@@ -220,6 +220,14 @@ async function fetchPayments(
       take: perPage
     })
   ]);
+
+  const items: typeof itemsRaw = [];
+  const seen = new Set<string>();
+  for (const item of itemsRaw) {
+    if (seen.has(item.id)) continue;
+    seen.add(item.id);
+    items.push(item);
+  }
 
   return { total, items, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
 }
@@ -325,80 +333,6 @@ router.get('/report/deposits/pending', async (req, res) => {
     table: { total, items, page, perPage, pages },
     query,
     returnTo: req.originalUrl
-  });
-});
-
-router.get('/notifications/queue', async (req, res) => {
-  const sinceRaw = Number(req.query?.since);
-  let since = new Date(Date.now() - 5 * 60 * 1000);
-  if (Number.isFinite(sinceRaw) && sinceRaw > 0) {
-    const candidate = new Date(sinceRaw);
-    if (!Number.isNaN(candidate.getTime())) since = candidate;
-  }
-  const awaiting: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
-  const [deposits, withdrawals, latest] = await Promise.all([
-    prisma.paymentRequest.count({ where: { type: 'DEPOSIT', status: { in: awaiting }, createdAt: { gt: since } } }),
-    prisma.paymentRequest.count({ where: { type: 'WITHDRAWAL', status: { in: awaiting }, createdAt: { gt: since } } }),
-    prisma.paymentRequest.findFirst({
-      where: { status: { in: awaiting }, type: { in: ['DEPOSIT', 'WITHDRAWAL'] }, createdAt: { gt: since } },
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
-    }),
-  ]);
-  res.json({
-    ok: true,
-    deposits,
-    withdrawals,
-    latest: latest?.createdAt ?? null,
-  });
-});
-
-router.get('/notifications/queue', async (req, res) => {
-  const sinceRaw = Number(req.query?.since);
-  let since = new Date();
-  if (Number.isFinite(sinceRaw) && sinceRaw > 0) {
-    const candidate = new Date(sinceRaw);
-    if (!Number.isNaN(candidate.getTime())) since = candidate;
-  }
-
-  const depositWhere = {
-    type: 'DEPOSIT' as const,
-    status: 'SUBMITTED' as const,
-    updatedAt: { gt: since },
-  };
-
-  const withdrawalWhere = {
-    type: 'WITHDRAWAL' as const,
-    status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
-    createdAt: { gt: since },
-  };
-
-  const [deposits, withdrawals, latestDeposit, latestWithdrawal] = await Promise.all([
-    prisma.paymentRequest.count({ where: depositWhere }),
-    prisma.paymentRequest.count({ where: withdrawalWhere }),
-    prisma.paymentRequest.findFirst({
-      where: depositWhere,
-      orderBy: { updatedAt: 'desc' },
-      select: { updatedAt: true },
-    }),
-    prisma.paymentRequest.findFirst({
-      where: withdrawalWhere,
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
-    }),
-  ]);
-
-  const latestCandidates = [latestDeposit?.updatedAt, latestWithdrawal?.createdAt]
-    .filter((d): d is Date => !!d);
-  const latest = latestCandidates.length
-    ? new Date(Math.max(...latestCandidates.map((d) => d.getTime())))
-    : null;
-
-  res.json({
-    ok: true,
-    deposits,
-    withdrawals,
-    latest,
   });
 });
 

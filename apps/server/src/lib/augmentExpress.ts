@@ -9,5 +9,11 @@ declare global {
       forbidden: (msg?: string) => void;
       notFound: (msg?: string) => void;
     }
+    interface Request {
+      rawBody?: string;
+      merchantId?: string;
+      apiKeyScopes?: string[];
+      admin?: { sub?: string; role?: string; [key: string]: unknown } | null;
+    }
   }
 }

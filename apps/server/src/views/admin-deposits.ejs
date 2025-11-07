@@ -1,7 +1,16 @@
 <% layout('admin/layout') -%>
 
 <%- include('partials/filters-bar', { query, type: 'DEPOSIT', exportBase: 'deposits' }) %>
-<%- include('partials/column-settings', { key: 'admin.columns.deposits' }) %>
+<%- include('partials/column-settings', {
+  key: 'admin.columns.deposits',
+  labelMap: {
+    processedAt: 'Date of deposit',
+    processingTime: 'Time to process',
+    merchant: 'Merchant',
+    comment: 'Comment',
+    admin: 'Admin'
+  }
+}) %>
 
 <div class="table-wrap">
   <table class="table">
@@ -9,52 +18,88 @@
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>
         <th data-col="userId">USER ID</th>
+        <th data-col="merchant">MERCHANT</th>
         <th data-col="currency">CURRENCY</th>
         <th data-col="amount">AMOUNT</th>
         <th data-col="status">STATUS</th>
         <th data-col="bank">BANK NAME</th>
         <th data-col="created">DATE OF CREATION</th>
-        <th data-col="updated">TIME OF PROCESSING</th>
+        <th data-col="processedAt">DATE OF DEPOSIT</th>
+        <th data-col="processingTime">TIME TO PROCESS</th>
         <th data-col="userInfo">USER INFO</th>
+        <th data-col="comment">COMMENT</th>
+        <th data-col="admin">ADMIN</th>
         <th data-col="actions">ACTIONS</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="10" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+        <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
       <% } %>
       <% table.items.forEach(r=>{ %>
+        <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const payer = (r.detailsJson && r.detailsJson.payer) || {}; %>
+        <% const processedAt = r.processedAt || r.updatedAt || null; %>
+        <% const hasProcessed = !(r.status==='PENDING' || r.status==='SUBMITTED' || !processedAt); %>
         <tr>
-          <td data-col="txnId"><div><%= r.referenceCode %></div><small style="color:var(--ink-dim)"><%= r.id %></small></td>
-          <td data-col="userId"><%= r.userId %></td>
+          <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
+          <td data-col="merchant"><%= r.merchant?.name || '-' %></td>
           <td data-col="currency"><%= r.currency %></td>
-          <td data-col="amount"><%= r.amountCents %></td>
+          <td data-col="amount"><%= formatAmount(r.amountCents) %></td>
           <td data-col="status">
             <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
             <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
             <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
             <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
           </td>
-          <td data-col="bank"><%= r.bankAccount?.bankName || '-' %></td>
-          <td data-col="created"><%= r.createdAt.toISOString() %></td>
-          <td data-col="updated"><%= r.updatedAt.toISOString() %></td>
-          <td data-col="userInfo" style="max-width:280px">
-            <div><b>Email:</b> <%= r.user?.email || '-' %></div>
-            <div><b>Phone:</b> <%= r.user?.phone || '-' %></div>
-            <% if (r.receiptFile) { %>
-              <div><a href="<%= r.receiptFile.path %>" target="_blank" class="btn small">Receipt</a></div>
+          <td data-col="bank">
+            <% if (r.bankAccount) { %>
+              <span class="mono"><%= r.bankAccount.publicId || '-' %></span><br>
+              <%= r.bankAccount.bankName || '-' %>
+            <% } else { %>
+              -
             <% } %>
           </td>
+          <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
+          <td data-col="processedAt"><%- hasProcessed ? renderDateTime(processedAt) : '-' %></td>
+          <td data-col="processingTime"><%= hasProcessed ? formatDuration(r.createdAt, processedAt) : '-' %></td>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
+              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || '-' %></span></div>
+              <% if (method === 'OSKO') { %>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || '-' %></span></div>
+                <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || '-' %></span></div>
+              <% } else if (method === 'PAYID') { %>
+                <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= payer.payIdValue || '-' %></span></div>
+              <% } %>
+              <% if (r.receiptFile) { %>
+                <div class="info-line"><span class="info-label">Receipt</span><span class="info-value"><a href="<%= r.receiptFile.path %>" target="_blank" rel="noopener">View receipt</a></span></div>
+              <% } %>
+            </div>
+          </td>
+          <td data-col="comment"><%= r.notes || r.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (r.processedByAdmin && (r.processedByAdmin.displayName || r.processedByAdmin.email)) || '-' %></td>
           <td data-col="actions" class="actions">
-            <% if (r.status==='PENDING') { %>
-              <form method="post" action="/admin/deposits/<%= r.id %>/approve" style="display:inline">
-                <button class="btn small primary" type="submit">Approve</button>
-              </form>
-              <form method="post" action="/admin/deposits/<%= r.id %>/reject" style="display:inline" onsubmit="return confirm('Reject this deposit?')">
-                <input type="hidden" name="reason" value="Manual reject"/>
-                <button class="btn small danger" type="submit">Reject</button>
-              </form>
-            <% } else { %>&mdash;<% } %>
+            <% if (['APPROVED','REJECTED'].includes(r.status)) { %>
+              <button
+                type="button"
+                class="btn small"
+                data-change-status
+                data-type="DEPOSIT"
+                data-id="<%= r.id %>"
+                data-status="<%= r.status %>"
+                data-reference="<%= r.referenceCode %>"
+                data-amount="<%= r.amountCents %>"
+                data-currency="<%= r.currency %>"
+              >Change status</button>
+            <% } else { %>
+              <span class="mini" style="opacity:.6">Pending queue</span>
+            <% } %>
           </td>
         </tr>
       <% }) %>

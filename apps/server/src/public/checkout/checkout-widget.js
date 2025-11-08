@@ -18,6 +18,7 @@
 
   // Merchant-level forms (loaded at init). We will still use these for withdrawals.
   let _forms = { ok: true, deposit: [], withdrawal: [] };
+  const _withdrawalFormCache = {};
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -333,8 +334,10 @@
     return key;
   }
 
-  function mergeWithdrawalFields(methodVal) {
-    const base = Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : [];
+  function mergeWithdrawalFields(methodVal, baseFields) {
+    const base = Array.isArray(baseFields)
+      ? baseFields
+      : (Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : []);
     const defaults = WITHDRAWAL_FALLBACK_FIELDS[methodVal] || [];
     const seen = new Set();
     const merged = [];
@@ -366,11 +369,19 @@
 
     if (first && first.id) {
       const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(first.id)}`, token, { method: "GET" });
-      return { bankId: first.id, depositFields: cfg.deposit || [] };
+      return {
+        bankId: first.id,
+        depositFields: cfg.deposit || [],
+        withdrawalFields: cfg.withdrawal || [],
+      };
     }
 
     const cfg = await call(`/public/forms`, token, { method: "GET" });
-    return { bankId: null, depositFields: cfg.deposit || [] };
+    return {
+      bankId: null,
+      depositFields: cfg.deposit || [],
+      withdrawalFields: cfg.withdrawal || [],
+    };
   }
 
   // Infer payer/destination from dynamic form values
@@ -622,11 +633,13 @@
     if (draft.method) method.value = draft.method;
 
     const dynMount = el("div");
-    let dyn = buildDynamicFrom(mergeWithdrawalFields(method.value), draft.extras);
-    dynMount.appendChild(dyn.wrap);
+    const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
+    dynMount.appendChild(loadingNotice);
+    let dyn = buildDynamicFrom([], draft.extras);
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
 
     submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
+    setEnabled(submit, false);
 
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
@@ -642,8 +655,34 @@
       setEnabled(submit, !err);
       status.textContent = err || "";
     }
-    function refreshDynamicFields() {
-      const next = buildDynamicFrom(mergeWithdrawalFields(method.value), dyn.getValues());
+
+    let refreshSeq = 0;
+    async function refreshDynamicFields() {
+      const seq = ++refreshSeq;
+      const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
+      let baseFields = null;
+
+      if (Object.prototype.hasOwnProperty.call(_withdrawalFormCache, method.value)) {
+        baseFields = _withdrawalFormCache[method.value];
+      } else {
+        try {
+          const { withdrawalFields } = await getBankAndFormsForMethod(token, method.value);
+          if (Array.isArray(withdrawalFields)) {
+            _withdrawalFormCache[method.value] = withdrawalFields;
+            baseFields = withdrawalFields;
+          }
+        } catch (err) {
+          // ignore
+        }
+      }
+
+      if (!Array.isArray(baseFields) || baseFields.length === 0) {
+        baseFields = Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : [];
+      }
+
+      const next = buildDynamicFrom(mergeWithdrawalFields(method.value, baseFields), prev);
+      if (seq !== refreshSeq) return;
+
       dyn = next;
       dynMount.innerHTML = "";
       dynMount.appendChild(dyn.wrap);
@@ -654,7 +693,7 @@
     method.addEventListener("change", () => { refreshDynamicFields(); });
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
-    updateValidity();
+    refreshDynamicFields().then(() => updateValidity());
 
     submit.addEventListener("click", async () => {
       const amountCents = normalizeAmountInput(amount.value);

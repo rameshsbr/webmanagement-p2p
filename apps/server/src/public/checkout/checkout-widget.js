@@ -330,6 +330,7 @@
     if (["account number", "account no", "account", "acct number"].includes(key)) return "account-number";
     if (["account holder name", "holder name", "account name", "name"].includes(key)) return "account-holder";
     if (["bsb"].includes(key)) return "bsb";
+    if (["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"].includes(key)) return "bank-name";
     if (["payid value", "payid", "email", "payid (email)", "payid (mobile)", "mobile", "phone"].includes(key)) return "payid-value";
     return key;
   }
@@ -398,11 +399,19 @@
   }
   function inferPayerFromExtras(methodVal, extras) {
     const ex = extras || {};
+    const bankNameRaw = findValue(ex, ["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"]);
+    const bankName = bankNameRaw != null ? String(bankNameRaw).trim() : "";
+
     if (methodVal === "OSKO") {
       const holderName = findValue(ex, ["account holder name", "holder name", "account name", "name"]);
       const accountNo = findValue(ex, ["account number", "account no", "account #", "acct number"]);
       const bsb = findValue(ex, ["bsb"]);
-      return { holderName: String(holderName || ""), accountNo: String(accountNo || ""), bsb: String(bsb || "") };
+      return {
+        holderName: String(holderName || ""),
+        accountNo: String(accountNo || ""),
+        bsb: String(bsb || ""),
+        bankName: bankName || undefined,
+      };
     }
     const email = findValue(ex, ["email", "payid (email)"]);
     let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
@@ -417,7 +426,12 @@
       if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pv)) { type = "email"; value = pv; }
       else if (looksMobile(pv)) { type = "mobile"; value = pv; }
     }
-    return { holderName: String(holderName || ""), payIdType: type, payIdValue: value };
+    return {
+      holderName: String(holderName || ""),
+      payIdType: type,
+      payIdValue: value,
+      bankName: bankName || undefined,
+    };
   }
 
   // ─────────────────────────────────────────────────────────

@@ -311,20 +311,94 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   const table = document.querySelector('[data-withdraw-actions]');
   if (!table) return;
 
+  let bankOptions = [];
+  const banksScript = document.getElementById('withdraw-bank-options');
+  if (banksScript) {
+    try {
+      bankOptions = JSON.parse(banksScript.textContent || '[]') || [];
+    } catch {
+      bankOptions = [];
+    }
+  }
+
+  const tableWrap = table.closest('[data-auto-refresh="pending-withdrawals"]');
+  const returnTo = tableWrap?.getAttribute('data-return-to') || '';
+
+  const getBankOptions = (methodRaw) => {
+    const method = (methodRaw || '').toUpperCase();
+    if (!Array.isArray(bankOptions)) return { list: [], matched: false };
+    const matched = bankOptions.filter((bank) => !method || bank.method === method);
+    if (matched.length) return { list: matched, matched: true };
+    return { list: bankOptions, matched: false };
+  };
+
+  const buildBankSelect = (select, banks, preselect) => {
+    if (!select) return;
+    select.innerHTML = '';
+    const placeholder = document.createElement('option');
+    placeholder.value = '';
+    placeholder.textContent = banks.length ? 'Select bank' : 'No banks available';
+    placeholder.disabled = true;
+    placeholder.selected = true;
+    placeholder.hidden = true;
+    select.appendChild(placeholder);
+
+    banks.forEach((bank) => {
+      if (!bank || !bank.id) return;
+      const opt = document.createElement('option');
+      opt.value = bank.id;
+      const method = bank.method ? ` (${bank.method})` : '';
+      opt.textContent = `${bank.label || 'Unnamed bank'}${method}`;
+      if (preselect && preselect === bank.id) opt.selected = true;
+      select.appendChild(opt);
+    });
+  };
+
   const openApprove = (btn) => {
     const id = btn.getAttribute('data-id');
     const reference = btn.getAttribute('data-reference') || '';
     const amountDisplay = btn.getAttribute('data-amount-display') || '';
+    const method = btn.getAttribute('data-method') || '';
+    const existingBankId = btn.getAttribute('data-bank-id') || '';
+
+    const { list: banks, matched } = getBankOptions(method);
 
     openActionModal({
       title: 'Approve withdrawal',
       submitLabel: 'Approve',
       contentBuilder: (body) => {
         body.classList.add('modal-fields');
-        body.innerHTML = `<p>Approve withdrawal <strong>${reference}</strong> (${amountDisplay})?</p>`;
+        body.innerHTML = `
+          <p>Approve withdrawal <strong>${reference}</strong> (${amountDisplay})?</p>
+          <label class="modal-field">
+            <span>Bank name <small>(required)</small></span>
+            <select data-bank-select></select>
+          </label>
+          <p class="modal-note" data-bank-note></p>`;
+        const bankSelect = body.querySelector('[data-bank-select]');
+        const note = body.querySelector('[data-bank-note]');
+        buildBankSelect(bankSelect, banks, existingBankId);
+
+        if (note) {
+          if (!banks.length) {
+            note.textContent = 'No active bank accounts available. Add one in Bank Transfer → Banks before approving.';
+          } else if (!matched && method) {
+            note.textContent = `No banks configured for ${method}. Showing all active banks.`;
+          } else {
+            note.textContent = '';
+          }
+        }
+
+        return { bankSelect };
       },
-      onSubmit: async ({ close }) => {
-        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/approve`, {});
+      onSubmit: async ({ bankSelect, close }) => {
+        const bankAccountId = (bankSelect?.value || '').trim();
+        if (!bankAccountId) {
+          throw new Error('Select a bank before approving');
+        }
+        const payload = { bankAccountId };
+        if (returnTo) payload.returnTo = returnTo;
+        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/approve`, payload);
         close();
         toast('Withdrawal approved');
         window.location.reload();
@@ -357,7 +431,9 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
         if (!comment) {
           throw new Error('Comment is required');
         }
-        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/reject`, { comment });
+        const payload = { comment };
+        if (returnTo) payload.returnTo = returnTo;
+        await postJson(`/admin/withdrawals/${encodeURIComponent(id)}/reject`, payload);
         close();
         toast('Withdrawal rejected');
         window.location.reload();
@@ -491,17 +567,51 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   let autoReloadScheduled = false;
   let permissionBanner = null;
   let primed = false;
-  let swReadyPromise = null;
+  let swRegistrationPromise = null;
+
+  const normalizeUrl = (value) => {
+    if (!value) return '';
+    try {
+      return new URL(value, window.location.href).toString();
+    } catch {
+      return String(value);
+    }
+  };
+
+  const focusUrl = (value) => {
+    const target = normalizeUrl(value);
+    if (!target) return;
+    const popup = window.open(target, '_blank', 'noopener');
+    if (popup && typeof popup.focus === 'function') {
+      popup.focus();
+      return;
+    }
+    try {
+      window.location.assign(target);
+    } catch {
+      window.location.href = target;
+    }
+  };
 
   const ensureServiceWorker = () => {
     if (!('serviceWorker' in navigator)) return null;
-    if (!swReadyPromise) {
-      swReadyPromise = navigator.serviceWorker
-        .register('/static/admin/queue-sw.js')
-        .then(() => navigator.serviceWorker.ready)
-        .catch(() => null);
+    if (!swRegistrationPromise) {
+      swRegistrationPromise = (async () => {
+        try {
+          const legacy = await navigator.serviceWorker.getRegistration('/static/admin/');
+          if (legacy) await legacy.unregister().catch(() => {});
+        } catch {}
+        let registration = null;
+        try {
+          registration = await navigator.serviceWorker.getRegistration('/admin/');
+        } catch {}
+        if (!registration) {
+          registration = await navigator.serviceWorker.register('/admin/queue-sw.js', { scope: '/admin/' });
+        }
+        return registration;
+      })().catch(() => null);
     }
-    return swReadyPromise;
+    return swRegistrationPromise;
   };
 
   ensureServiceWorker();
@@ -593,15 +703,22 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   const showBrowserNotification = async (title, message, tag, url) => {
     if (!NotificationAPI || NotificationAPI.permission !== 'granted') return false;
+    const targetUrl = normalizeUrl(url);
     try {
-      const ready = await ensureServiceWorker();
-      if (ready) {
-        await ready.showNotification(title, { body: message, tag, data: { url } });
+      const registration = await ensureServiceWorker();
+      if (registration && typeof registration.showNotification === 'function') {
+        await registration.showNotification(title, { body: message, tag, data: { url: targetUrl } });
         return true;
       }
     } catch {}
     try {
-      new Notification(title, { body: message, tag });
+      const note = new Notification(title, { body: message, tag, data: { url: targetUrl } });
+      if (targetUrl) {
+        note.addEventListener('click', () => {
+          try { note.close(); } catch {}
+          focusUrl(targetUrl);
+        });
+      }
       return true;
     } catch {}
     return false;

@@ -547,7 +547,7 @@ router.post('/deposits/:id/status', async (req, res) => {
     res.json({ ok: true, status: updated.status, amountCents: updated.amountCents });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -654,7 +654,7 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
     res.json({ ok: true, redirect: redirectTarget });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -693,7 +693,7 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
     res.json({ ok: true, redirect: redirectTarget });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -743,7 +743,7 @@ router.post('/withdrawals/:id/status', async (req, res) => {
     res.json({ ok: true, status: updated.status, amountCents: updated.amountCents });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);

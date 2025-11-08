@@ -1,5 +1,7 @@
 // apps/server/src/routes/admin.ts
 import { Router, Request, Response } from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
 import { stringify } from 'csv-stringify';
@@ -39,6 +41,15 @@ function adminCanViewUsers(req: Request): boolean {
 }
 
 const router = Router();
+
+const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ADMIN_PUBLIC_DIR = path.join(CURRENT_DIR, '../public/admin');
+
+router.get('/queue-sw.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Service-Worker-Allowed', '/admin/');
+  res.sendFile(path.join(ADMIN_PUBLIC_DIR, 'queue-sw.js'));
+});
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Helpers

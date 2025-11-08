@@ -567,17 +567,51 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   let autoReloadScheduled = false;
   let permissionBanner = null;
   let primed = false;
-  let swReadyPromise = null;
+  let swRegistrationPromise = null;
+
+  const normalizeUrl = (value) => {
+    if (!value) return '';
+    try {
+      return new URL(value, window.location.href).toString();
+    } catch {
+      return String(value);
+    }
+  };
+
+  const focusUrl = (value) => {
+    const target = normalizeUrl(value);
+    if (!target) return;
+    const popup = window.open(target, '_blank', 'noopener');
+    if (popup && typeof popup.focus === 'function') {
+      popup.focus();
+      return;
+    }
+    try {
+      window.location.assign(target);
+    } catch {
+      window.location.href = target;
+    }
+  };
 
   const ensureServiceWorker = () => {
     if (!('serviceWorker' in navigator)) return null;
-    if (!swReadyPromise) {
-      swReadyPromise = navigator.serviceWorker
-        .register('/static/admin/queue-sw.js')
-        .then(() => navigator.serviceWorker.ready)
-        .catch(() => null);
+    if (!swRegistrationPromise) {
+      swRegistrationPromise = (async () => {
+        try {
+          const legacy = await navigator.serviceWorker.getRegistration('/static/admin/');
+          if (legacy) await legacy.unregister().catch(() => {});
+        } catch {}
+        let registration = null;
+        try {
+          registration = await navigator.serviceWorker.getRegistration('/admin/');
+        } catch {}
+        if (!registration) {
+          registration = await navigator.serviceWorker.register('/admin/queue-sw.js', { scope: '/admin/' });
+        }
+        return registration;
+      })().catch(() => null);
     }
-    return swReadyPromise;
+    return swRegistrationPromise;
   };
 
   ensureServiceWorker();
@@ -669,15 +703,22 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   const showBrowserNotification = async (title, message, tag, url) => {
     if (!NotificationAPI || NotificationAPI.permission !== 'granted') return false;
+    const targetUrl = normalizeUrl(url);
     try {
-      const ready = await ensureServiceWorker();
-      if (ready) {
-        await ready.showNotification(title, { body: message, tag, data: { url } });
+      const registration = await ensureServiceWorker();
+      if (registration && typeof registration.showNotification === 'function') {
+        await registration.showNotification(title, { body: message, tag, data: { url: targetUrl } });
         return true;
       }
     } catch {}
     try {
-      new Notification(title, { body: message, tag });
+      const note = new Notification(title, { body: message, tag, data: { url: targetUrl } });
+      if (targetUrl) {
+        note.addEventListener('click', () => {
+          try { note.close(); } catch {}
+          focusUrl(targetUrl);
+        });
+      }
       return true;
     } catch {}
     return false;

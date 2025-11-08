@@ -427,6 +427,11 @@ const rejectBodySchema = z.object({
   returnTo: z.string().optional()
 });
 
+const withdrawApproveSchema = z.object({
+  bankAccountId: z.string().trim().min(1),
+  returnTo: z.string().optional(),
+});
+
 const statusChangeSchema = z.object({
   targetStatus: z.enum(['APPROVED', 'REJECTED']),
   comment: z.string().optional(),
@@ -648,27 +653,72 @@ router.get('/report/withdrawals', async (req, res) => {
 
 // DB-level filtering for PENDING so new items appear immediately
 router.get('/report/withdrawals/pending', async (req, res) => {
-  const { total, items, page, perPage, pages, query } = await fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' });
+  const [{ total, items, page, perPage, pages, query }, bankRows] = await Promise.all([
+    fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' }),
+    prisma.bankAccount.findMany({
+      where: { active: true },
+      orderBy: [{ method: 'asc' }, { bankName: 'asc' }, { createdAt: 'desc' }],
+      select: { id: true, publicId: true, bankName: true, label: true, method: true },
+    }),
+  ]);
+
+  const banks = bankRows.map((bank) => {
+    const parts: string[] = [];
+    if (bank.label) parts.push(bank.label);
+    else if (bank.bankName) parts.push(bank.bankName);
+    if (bank.publicId) parts.push(bank.publicId);
+    const label = parts.length ? parts.join(' • ') : 'Unnamed bank';
+    return {
+      id: bank.id,
+      label,
+      method: (bank.method || '').toUpperCase(),
+    };
+  });
+
   res.render('admin-withdrawals-pending', {
     title: 'Pending withdrawal requests',
     table: { total, items, page, perPage, pages },
-    query
+    query,
+    banks,
+    returnTo: req.originalUrl,
   });
 });
 
 router.post('/withdrawals/:id/approve', async (req, res) => {
   const id = req.params.id;
+  const parsed = withdrawApproveSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Select a bank before approving' });
+  }
+
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
   if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
-  const redirectTarget = resolveReturnTo((req.body && (req.body.returnTo ?? req.body.redirect)) || undefined, '/admin/report/withdrawals/pending');
+  const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/withdrawals/pending');
+
+  const method = ((pr.detailsJson as any)?.method || '').toString().toUpperCase();
+  const bankAccount = await prisma.bankAccount.findFirst({
+    where: { id: parsed.data.bankAccountId, active: true },
+    select: { id: true, bankName: true, method: true },
+  });
+
+  if (!bankAccount) {
+    return res.status(400).json({ ok: false, error: 'Selected bank is no longer available' });
+  }
+
+  const bankMethod = (bankAccount.method || '').toUpperCase();
+  if (method && bankMethod && bankMethod !== method) {
+    return res.status(400).json({ ok: false, error: 'Selected bank does not support this method' });
+  }
+
   try {
     const result = await changePaymentStatus('WITHDRAWAL', {
       paymentId: id,
       targetStatus: 'APPROVED',
       actorAdminId: req.admin?.sub ?? null,
+      bankAccountId: bankAccount.id,
     });
     const updated = result.payment;
     const merchantName = updated.merchant?.name || pr.merchant?.name || updated.merchantId;

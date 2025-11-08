@@ -16,6 +16,7 @@ export type StatusChangeOptions = {
   actorAdminId?: string | null;
   amountCents?: number | null;
   comment?: string | null;
+  bankAccountId?: string | null;
 };
 
 type LoadedPayment = NonNullable<Awaited<ReturnType<typeof loadPaymentForResult>>>;
@@ -160,6 +161,7 @@ async function changeWithdrawalStatus({
   actorAdminId,
   amountCents,
   comment,
+  bankAccountId,
 }: StatusChangeOptions): Promise<ChangeResult> {
   const normalizedAmount = assertAmount(amountCents);
 
@@ -213,16 +215,22 @@ async function changeWithdrawalStatus({
         });
       }
 
+      const updateData: any = {
+        status: "APPROVED",
+        amountCents: nextAmount,
+        notes: comment?.trim() ? comment.trim() : payment.notes,
+        rejectedReason: null,
+        processedAt: now,
+        processedByAdminId: actorAdminId ?? null,
+      };
+
+      if (bankAccountId !== undefined) {
+        updateData.bankAccountId = bankAccountId ?? null;
+      }
+
       await tx.paymentRequest.update({
         where: { id: payment.id },
-        data: {
-          status: "APPROVED",
-          amountCents: nextAmount,
-          notes: comment?.trim() ? comment.trim() : payment.notes,
-          rejectedReason: null,
-          processedAt: now,
-          processedByAdminId: actorAdminId ?? null,
-        },
+        data: updateData,
       });
     } else {
       if (ledger) {

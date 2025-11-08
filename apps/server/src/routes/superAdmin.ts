@@ -1623,7 +1623,7 @@ superAdminRouter.post("/payments/:id/status", async (req, res) => {
     });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === "INSUFFICIENT_FUNDS" ? "Insufficient balance" : err.message;
+      const message = err.code === "INSUFFICIENT_FUNDS" ? "Insufficient Balance" : err.message;
       return res.status(400).send(message);
     }
     console.error(err);

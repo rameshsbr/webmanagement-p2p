@@ -42,6 +42,13 @@
     </label>
   </div>
 
+  <div class="f-item">
+    <label class="row" style="gap:8px; align-items:center;">
+      <input type="checkbox" name="canViewUsers" <%= admin ? (admin.canViewUserDirectory !== false ? 'checked' : '') : 'checked' %> />
+      <span>May view Users directory</span>
+    </label>
+  </div>
+
   <div class="row"><button class="btn primary">Save</button></div>
 </form>
 

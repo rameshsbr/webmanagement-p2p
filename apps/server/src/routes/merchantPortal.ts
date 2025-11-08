@@ -87,8 +87,36 @@ router.use(async (req: any, res, next) => {
       select: { id: true, name: true, email: true, balanceCents: true, defaultCurrency: true, userDirectoryEnabled: true },
     });
   }
+  const authPayload = req.merchantAuth || {};
+  const tokenSub = typeof authPayload?.sub === "string" ? authPayload.sub : null;
+  const merchantUserId = typeof authPayload?.merchantUserId === "string"
+    ? authPayload.merchantUserId
+    : tokenSub && tokenSub !== merchantId
+      ? tokenSub
+      : null;
+
+  if (!req.merchantUser && merchantUserId) {
+    req.merchantUser = await prisma.merchantUser.findUnique({
+      where: { id: merchantUserId },
+      select: { id: true, email: true, role: true, canViewUserDirectory: true },
+    });
+  }
+
+  const merchantUser = req.merchantUser || null;
+  const merchantEnabled = !!req.merchantDetails?.userDirectoryEnabled;
+  const tokenFlag = typeof authPayload?.canViewUsers === "boolean" ? authPayload.canViewUsers : null;
+  const userAllowed = merchantUser ? merchantUser.canViewUserDirectory !== false : true;
+  const canViewUsers = merchantEnabled && (tokenFlag !== null ? tokenFlag : userAllowed);
+
+  req.merchantCanViewUsers = canViewUsers;
+  if (authPayload && typeof authPayload === "object") {
+    authPayload.canViewUsers = canViewUsers;
+    if (merchantUserId) authPayload.merchantUserId = merchantUserId;
+  }
   res.locals.merchant = req.merchantDetails;
-  res.locals.merchantFeatures = { usersEnabled: !!req.merchantDetails?.userDirectoryEnabled };
+  res.locals.merchantUser = merchantUser;
+  res.locals.merchantAuth = authPayload;
+  res.locals.merchantFeatures = { usersEnabled: canViewUsers };
   next();
 });
 

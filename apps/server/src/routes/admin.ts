@@ -16,6 +16,28 @@ async function safeNotify(text: string) {
   } catch {}
 }
 
+function adminCanViewUsers(req: Request): boolean {
+  const session: any = (req as any).admin || null;
+  if (session && typeof session.canViewUsers === 'boolean') {
+    return session.canViewUsers;
+  }
+
+  if (typeof (req as any).adminCanViewUsers === 'boolean') {
+    return !!(req as any).adminCanViewUsers;
+  }
+
+  const details: any = (req as any).adminDetails || null;
+  if (details && typeof details.canViewUserDirectory === 'boolean') {
+    const allowed = details.canViewUserDirectory !== false;
+    if (session && typeof session.canViewUsers !== 'boolean') {
+      session.canViewUsers = allowed;
+    }
+    return allowed;
+  }
+
+  return true;
+}
+
 const router = Router();
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -813,6 +835,9 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
 
 /* ---------------- Users ---------------- */
 router.get('/users', async (req, res) => {
+  if (!adminCanViewUsers(req)) {
+    return res.status(403).render('admin-users-disabled', { title: 'Users' });
+  }
   const { query, merchants, merchantIds } = await resolveUserDirectoryInput(req);
   const table = merchantIds.length
     ? await getUserDirectory({ merchantIds, search: query.q || null, page: query.page, perPage: query.perPage })
@@ -827,6 +852,9 @@ router.get('/users', async (req, res) => {
 });
 
 router.get('/export/users.csv', async (req: Request, res: Response) => {
+  if (!adminCanViewUsers(req)) {
+    return res.sendStatus(403);
+  }
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   res.setHeader('Content-Type', 'text/csv');
@@ -852,6 +880,9 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
 });
 
 router.get('/export/users.xlsx', async (req: Request, res: Response) => {
+  if (!adminCanViewUsers(req)) {
+    return res.sendStatus(403);
+  }
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const wb = new ExcelJS.Workbook();
@@ -884,6 +915,9 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
 });
 
 router.get('/export/users.pdf', async (req: Request, res: Response) => {
+  if (!adminCanViewUsers(req)) {
+    return res.sendStatus(403);
+  }
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const pdf = renderUserDirectoryPdf(items);

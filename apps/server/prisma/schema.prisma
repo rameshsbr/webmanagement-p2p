@@ -253,6 +253,7 @@ model AdminUser {
   twoFactorEnabled Boolean   @default(false)
   totpSecret       String?
   lastLoginAt      DateTime?
+  canViewUserDirectory Boolean @default(true)
 
   auditLogs   AdminAuditLog[]
   loginLogs   AdminLoginLog[]
@@ -308,6 +309,7 @@ model MerchantUser {
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   lastLoginAt      DateTime?
+  canViewUserDirectory Boolean @default(true)
 
   loginLogs   MerchantLoginLog[]
   resetTokens MerchantPasswordReset[]

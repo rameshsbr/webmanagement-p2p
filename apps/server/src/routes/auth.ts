@@ -55,10 +55,14 @@ async function recordLogin(opts: { adminId?: string | null; email?: string | nul
 /** ADMIN cookies */
 function finalizeLogin(
   res: express.Response,
-  admin: { id: string; role?: string }
+  admin: { id: string; role?: string; canViewUsers?: boolean }
 ) {
   const role = String(admin.role || 'ADMIN').toUpperCase();
-  const token = jwt.sign({ sub: admin.id, role }, JWT_SECRET, { expiresIn: '8h' });
+  const tokenPayload: any = { sub: admin.id, role };
+  if (typeof admin.canViewUsers === 'boolean') {
+    tokenPayload.canViewUsers = admin.canViewUsers;
+  }
+  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' });
   const base = {
     httpOnly: true,
     sameSite: 'lax' as const,
@@ -75,9 +79,18 @@ function finalizeLogin(
 /** MERCHANT cookies (separate name; includes merchantId for portal) */
 function setMerchantCookie(
   res: express.Response,
-  payload: { sub: string; merchantId: string; email?: string }
+  payload: { sub: string; merchantId: string; email?: string | null; canViewUsers?: boolean }
 ) {
-  const token = jwt.sign(payload, JWT_SECRET, { expiresIn: '8h' });
+  const tokenPayload: any = {
+    sub: payload.sub,
+    merchantId: payload.merchantId,
+    email: payload.email,
+    merchantUserId: payload.sub,
+  };
+  if (typeof payload.canViewUsers === 'boolean') {
+    tokenPayload.canViewUsers = payload.canViewUsers;
+  }
+  const token = jwt.sign(tokenPayload, JWT_SECRET, { expiresIn: '8h' });
   const base = { httpOnly: true, sameSite: 'lax' as const, path: '/', maxAge: 8 * 60 * 60 * 1000, secure: !IS_LOCAL };
   // back-compat: set both names
   res.cookie('merchant_jwt', token, base);
@@ -132,7 +145,7 @@ router.post('/admin/login', enforceTurnstile, async (req, res) => {
   }
 
   if (ADMIN_DEBUG && email === DEMO_EMAIL && password === DEMO_PASSWORD) {
-    finalizeLogin(res, { id: 'dev-admin', role: 'ADMIN' });
+    finalizeLogin(res, { id: 'dev-admin', role: 'ADMIN', canViewUsers: true });
     await recordLogin({ adminId: null, email, success: true, req });
     return res.redirect('/admin');
   }
@@ -208,8 +221,17 @@ router.post('/2fa/setup', async (req, res) => {
       data: { twoFactorEnabled: true, totpSecret: payload.secretBase32, lastLoginAt: new Date() }
     });
 
-    const fresh = await prisma.adminUser.findUnique({ where: { id: payload.adminId }, select: { id: true, role: true } });
-    if (fresh) finalizeLogin(res, fresh);
+    const fresh = await prisma.adminUser.findUnique({
+      where: { id: payload.adminId },
+      select: { id: true, role: true, canViewUserDirectory: true },
+    });
+    if (fresh) {
+      finalizeLogin(res, {
+        id: fresh.id,
+        role: fresh.role,
+        canViewUsers: fresh.canViewUserDirectory !== false,
+      });
+    }
     await recordLogin({ adminId: payload.adminId, email: null, success: true, req });
     res.clearCookie('pre2fa', { path: '/auth' });
     return res.redirect(payload.redirectTo || '/admin');
@@ -243,7 +265,11 @@ router.post('/2fa/verify', async (req, res) => {
     }
 
     await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
-    finalizeLogin(res, { id: admin.id, role: admin.role });
+    finalizeLogin(res, {
+      id: admin.id,
+      role: admin.role,
+      canViewUsers: admin.canViewUserDirectory !== false,
+    });
     await recordLogin({ adminId: admin.id, email: admin.email, success: true, req });
     res.clearCookie('pre2fa', { path: '/auth' });
     return res.redirect(302, payload.redirectTo || '/admin');
@@ -401,7 +427,17 @@ router.post('/merchant/2fa/setup', async (req, res) => {
       return res.status(400).render('auth-2fa-setup', { token: rawToken, qrDataUrl, secretBase32: payload.secretBase32, accountLabel: payload.accountLabel, error: 'Invalid or expired code.', mode: 'merchant' });
     }
     await prisma.merchantUser.update({ where: { id: payload.userId }, data: { twoFactorEnabled: true, totpSecret: payload.secretBase32 } });
-    setMerchantCookie(res, { sub: payload.userId, merchantId: payload.merchantId, email: payload.accountLabel });
+    const fresh = await prisma.merchantUser.findUnique({
+      where: { id: payload.userId },
+      select: { id: true, merchantId: true, email: true, canViewUserDirectory: true },
+    });
+    const canViewUsers = fresh ? fresh.canViewUserDirectory !== false : true;
+    setMerchantCookie(res, {
+      sub: payload.userId,
+      merchantId: payload.merchantId,
+      email: payload.accountLabel,
+      canViewUsers,
+    });
     res.clearCookie('m_pre2fa', { path: '/auth/merchant' });
     return res.redirect('/merchant');
   } catch {
@@ -422,7 +458,12 @@ router.post('/merchant/2fa/verify', async (req, res) => {
     if (!user || !user.totpSecret) return res.status(400).render('auth-2fa-verify', { token: rawToken, error: '2FA not set up.', mode: 'merchant' });
     const ok = speakeasy.totp.verify({ secret: user.totpSecret, encoding: 'base32', token: code, window: 2 });
     if (!ok) return res.status(400).render('auth-2fa-verify', { token: rawToken, error: 'Invalid or expired code.', mode: 'merchant' });
-    setMerchantCookie(res, { sub: user.id, merchantId: user.merchantId, email: user.email });
+    setMerchantCookie(res, {
+      sub: user.id,
+      merchantId: user.merchantId,
+      email: user.email,
+      canViewUsers: user.canViewUserDirectory !== false,
+    });
     res.clearCookie('m_pre2fa', { path: '/auth/merchant' });
     return res.redirect('/merchant');
   } catch {

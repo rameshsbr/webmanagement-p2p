@@ -416,6 +416,7 @@ textarea{
   display:flex;
   flex-direction:column;
   z-index:1200;
+  color:var(--ink);
 }
 .export-menu[hidden]{
   display:none;
@@ -427,6 +428,7 @@ textarea{
   text-align:left;
   font-size:13px;
   cursor:pointer;
+  color:inherit;
 }
 .export-menu button:hover{
   background:var(--panel);

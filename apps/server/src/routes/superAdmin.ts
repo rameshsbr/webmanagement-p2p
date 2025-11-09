@@ -234,51 +234,41 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
           ? (extras as Record<string, any>)
           : {};
 
-      let orderedExtras: Array<{ label: string; value: any }> = [];
+      const seenExtras = new Set<string>();
+      const orderedExtras: Array<{ label: string; value: any }> = [];
+
+      const pushExtra = (label: any, value: any) => {
+        const norm = typeof label === "string" ? label.trim() : "";
+        if (!norm) return;
+        const key = norm.toLowerCase();
+        if (seenExtras.has(key)) return;
+        seenExtras.add(key);
+        orderedExtras.push({ label: norm, value });
+      };
 
       if (type === "DEPOSIT") {
         const cfg = await ensureFormConfig(x.merchantId, x.bankAccountId || null);
         const defined = Array.isArray(cfg.deposit) ? cfg.deposit : [];
-        if (defined.length) {
-          orderedExtras = defined.map((field: any) => ({
-            label: field.name,
-            value: extrasObj[field.name],
-          }));
-
-          const remainingKeys = Object.keys(extrasObj).filter(
-            (key) => !defined.some((field: any) => field.name === key)
-          );
-          remainingKeys.forEach((key) => {
-            orderedExtras.push({ label: key, value: extrasObj[key] });
-          });
-        } else {
-          orderedExtras = Object.keys(extrasObj).map((key) => ({
-            label: key,
-            value: extrasObj[key],
-          }));
-        }
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
       } else {
         const cfg = await ensureFormConfig(x.merchantId, null);
         const defined = Array.isArray(cfg.withdrawal) ? cfg.withdrawal : [];
-        if (defined.length) {
-          orderedExtras = defined.map((field: any) => ({
-            label: field.name,
-            value: extrasObj[field.name],
-          }));
-
-          const remainingKeys = Object.keys(extrasObj).filter(
-            (key) => !defined.some((field: any) => field.name === key)
-          );
-          remainingKeys.forEach((key) => {
-            orderedExtras.push({ label: key, value: extrasObj[key] });
-          });
-        } else {
-          orderedExtras = Object.keys(extrasObj).map((key) => ({
-            label: key,
-            value: extrasObj[key],
-          }));
-        }
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
       }
+
+      Object.keys(extrasObj).forEach((key) => {
+        pushExtra(key, extrasObj[key]);
+      });
+
+      const extrasLookup: Record<string, true> = {};
+      orderedExtras.forEach((extra) => {
+        const key = typeof extra.label === "string" ? extra.label.trim().toLowerCase() : "";
+        if (key) extrasLookup[key] = true;
+      });
 
       return {
         ...x,
@@ -286,6 +276,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
         _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
         _extrasList: orderedExtras,
+        _extrasLookup: extrasLookup,
       };
     })
   );

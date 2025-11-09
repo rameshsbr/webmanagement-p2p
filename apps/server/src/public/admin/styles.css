@@ -266,28 +266,26 @@ textarea{
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.5);
 }
 
-.table tbody td.actions{
-  display:flex;
-  flex-direction:column;
-  align-items:stretch;
-  gap:8px;
+.table tbody td.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 136px;
+  text-align: center;
 }
 
-.table tbody td.actions .btn{
-  width:100%;
-  justify-content:center;
+.table tbody td.actions .btn {
+  width: auto;
+  min-width: 120px;
+  justify-content: center;
+  align-self: center;
 }
 
-.table tbody td.actions{
-  display:flex;
-  flex-direction:column;
-  align-items:stretch;
-  gap:8px;
-}
-
-.table tbody td.actions .btn{
-  width:100%;
-  justify-content:center;
+.table tbody td.actions .mini {
+  width: 100%;
+  text-align: center;
 }
 
 /* Filters */
@@ -371,6 +369,10 @@ textarea{
   text-transform: uppercase;
   background: color-mix(in oklab, var(--surface) 88%, transparent);
   color: var(--ink);
+}
+
+.table thead th[data-col="actions"] {
+  min-width: 136px;
 }
 
 .table tbody td {

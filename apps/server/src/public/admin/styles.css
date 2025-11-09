@@ -1,5 +1,5 @@
 :root {
-  --font-sans: ui-sans-serif, system-ui, Segoe UI, Roboto, Helvetica, Arial, Apple Color Emoji, Segoe UI Emoji;
+  --font-sans: "Inter", "Segoe UI", Roboto, "Helvetica Neue", Arial, ui-sans-serif, system-ui, Apple Color Emoji, Segoe UI Emoji;
   --fs-12: 12px;
   --fs-13: 13px;
   --fs-14: 14px;
@@ -17,6 +17,7 @@
   --brand-ink: #f2fbfc;
   --ghost: #e6f3f3;
   --row: #f8fbfc;
+  --panel: #f6f9fc;
   --danger: #ef4444;
   --tone-success: #22c55e;
   --tone-info: #3b82f6;
@@ -45,6 +46,7 @@
   --brand-ink: #041115;
   --ghost: #0e2a2d;
   --row: #0f1a21;
+  --panel: #263646;
   --danger: #f87171;
   --callout-success-bg: color-mix(in oklab, var(--tone-success) 22%, var(--surface));
   --callout-success-border: color-mix(in oklab, var(--tone-success) 55%, var(--border));
@@ -63,6 +65,11 @@ body {
   background: var(--bg);
   color: var(--ink);
   font: var(--fs-14)/1.5 var(--font-sans)
+}
+
+code,
+pre {
+  font-family: var(--font-sans);
 }
 
 .muted { color: var(--ink-dim); }
@@ -259,28 +266,26 @@ textarea{
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.5);
 }
 
-.table tbody td.actions{
-  display:flex;
-  flex-direction:column;
-  align-items:stretch;
-  gap:8px;
+.table tbody td.actions {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-width: 136px;
+  text-align: center;
+  height: 100%;
 }
 
-.table tbody td.actions .btn{
-  width:100%;
-  justify-content:center;
+.table tbody td.actions .btn {
+  width: auto;
+  min-width: 0;
+  justify-content: center;
 }
 
-.table tbody td.actions{
-  display:flex;
-  flex-direction:column;
-  align-items:stretch;
-  gap:8px;
-}
-
-.table tbody td.actions .btn{
-  width:100%;
-  justify-content:center;
+.table tbody td.actions .mini {
+  width: auto;
+  text-align: center;
 }
 
 /* Filters */
@@ -347,8 +352,39 @@ textarea{
 /* Table */
 .table-wrap{ overflow:auto }
 .table{ width:100%; min-width:100%; border-collapse:separate; border-spacing:0; table-layout:auto }
-.table th,.table td{ padding:12px 10px; border-bottom:1px solid var(--muted); vertical-align:middle; white-space:normal; text-align:center }
-.mono{ font-family:'SFMono-Regular',Menlo,Monaco,Consolas,'Liberation Mono','Courier New',monospace; letter-spacing:.2px }
+.table th,
+.table td {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--muted);
+  vertical-align: middle;
+  white-space: normal;
+  text-align: center;
+  font-size: var(--fs-14);
+  color: var(--ink);
+}
+
+.table thead th {
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  color: var(--ink);
+}
+
+.table thead th[data-col="actions"] {
+  min-width: 136px;
+}
+
+.table tbody td {
+  font-weight: 500;
+}
+
+.mono {
+  font-family: var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  letter-spacing: 0.01em;
+}
 .info-cell{ min-width:260px; text-align:left }
 .info-block{ display:flex; flex-direction:column; gap:4px }
 .info-line{ display:flex; justify-content:flex-start; gap:6px; flex-wrap:wrap; font-size:13px }

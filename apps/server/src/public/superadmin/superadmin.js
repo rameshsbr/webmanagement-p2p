@@ -13,6 +13,77 @@ function toast(msg) {
   }, 2000);
 }
 
+function confirmDialog({
+  title = 'Confirm',
+  message = 'Are you sure?',
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    overlay.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="sa-confirm-title" aria-describedby="sa-confirm-message">
+        <div class="modal-header">
+          <h3 id="sa-confirm-title" class="modal-title"></h3>
+        </div>
+        <div class="modal-body">
+          <p class="modal-message" id="sa-confirm-message"></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn small" data-cancel></button>
+          <button type="button" class="btn small primary" data-confirm></button>
+        </div>
+      </div>`;
+
+    const card = overlay.querySelector('.modal-card');
+    const titleEl = overlay.querySelector('.modal-title');
+    const messageEl = overlay.querySelector('.modal-message');
+    const cancelBtn = overlay.querySelector('[data-cancel]');
+    const confirmBtn = overlay.querySelector('[data-confirm]');
+
+    if (!card || !titleEl || !messageEl || !cancelBtn || !confirmBtn) {
+      resolve(false);
+      return;
+    }
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    cancelBtn.textContent = cancelLabel;
+    confirmBtn.textContent = confirmLabel;
+
+    const close = (result) => {
+      if (settled) return;
+      settled = true;
+      overlay.classList.remove('is-visible');
+      document.removeEventListener('keydown', onKeyDown, true);
+      setTimeout(() => overlay.remove(), 180);
+      resolve(!!result);
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close(false);
+      }
+    };
+
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close(false);
+    });
+
+    document.addEventListener('keydown', onKeyDown, true);
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => {
+      overlay.classList.add('is-visible');
+      confirmBtn.focus();
+    });
+  });
+}
+
 // Sidebar collapse/expand
 (function () {
   const shell = document.querySelector('[data-shell]');
@@ -262,9 +333,13 @@ const RECEIPT_TOAST_KEY = 'sa.receipt.uploaded';
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       const label = btn.getAttribute('data-receipt-label') || 'this receipt';
-      if (confirm(`Remove ${label}?`)) {
-        btn.closest('form')?.submit();
-      }
+      confirmDialog({
+        title: 'Remove receipt',
+        message: `Are you sure you want to remove ${label}?`,
+        confirmLabel: 'Remove',
+      }).then((ok) => {
+        if (ok) btn.closest('form')?.submit();
+      });
     });
   });
 

@@ -166,6 +166,9 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         },
         user: { select: { id: true, publicId: true, email: true, phone: true } },
         merchant: { select: { id: true, name: true } },
+        processedByAdmin: {
+          select: { id: true, email: true, displayName: true },
+        },
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -173,15 +176,110 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
     }),
   ]);
 
-  const items = rawItems.map((x: any) => {
-    const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
-    return {
-      ...x,
-      receiptFile: first,
-      _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
-      _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+  const formCache = new Map<string, { deposit: any[]; withdrawal: any[] }>();
+
+  async function ensureFormConfig(
+    merchantId: string,
+    bankAccountId: string | null
+  ) {
+    const key = `${merchantId}::${bankAccountId || "null"}`;
+    if (formCache.has(key)) return formCache.get(key)!;
+
+    let row: any = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId, bankAccountId },
+    });
+
+    if (!row && bankAccountId) {
+      row = await prisma.merchantFormConfig.findFirst({
+        where: { merchantId, bankAccountId: null },
+      });
+    }
+
+    const entry = {
+      deposit: cleanRows(((row as any)?.deposit as any[]) || []),
+      withdrawal: cleanRows(((row as any)?.withdrawal as any[]) || []),
     };
+    formCache.set(key, entry);
+    return entry;
+  }
+
+  const comboList: Array<{ merchantId: string; bankAccountId: string | null }> = [];
+  const comboSeen = new Set<string>();
+
+  rawItems.forEach((x: any) => {
+    const bankKey = type === "DEPOSIT" ? x.bankAccountId || null : null;
+    const key = `${x.merchantId}::${bankKey || "null"}`;
+    if (!comboSeen.has(key)) {
+      comboSeen.add(key);
+      comboList.push({ merchantId: x.merchantId, bankAccountId: bankKey });
+    }
   });
+
+  await Promise.all(
+    comboList.map(({ merchantId, bankAccountId }) =>
+      ensureFormConfig(merchantId, bankAccountId)
+    )
+  );
+
+  const items = await Promise.all(
+    rawItems.map(async (x: any) => {
+      const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
+      const extras =
+        x?.detailsJson && typeof x.detailsJson === "object" && !Array.isArray(x.detailsJson)
+          ? (x.detailsJson as any)?.extras || {}
+          : {};
+
+      const extrasObj =
+        extras && typeof extras === "object" && !Array.isArray(extras)
+          ? (extras as Record<string, any>)
+          : {};
+
+      const seenExtras = new Set<string>();
+      const orderedExtras: Array<{ label: string; value: any }> = [];
+
+      const pushExtra = (label: any, value: any) => {
+        const norm = typeof label === "string" ? label.trim() : "";
+        if (!norm) return;
+        const key = norm.toLowerCase();
+        if (seenExtras.has(key)) return;
+        seenExtras.add(key);
+        orderedExtras.push({ label: norm, value });
+      };
+
+      if (type === "DEPOSIT") {
+        const cfg = await ensureFormConfig(x.merchantId, x.bankAccountId || null);
+        const defined = Array.isArray(cfg.deposit) ? cfg.deposit : [];
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
+      } else {
+        const cfg = await ensureFormConfig(x.merchantId, null);
+        const defined = Array.isArray(cfg.withdrawal) ? cfg.withdrawal : [];
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
+      }
+
+      Object.keys(extrasObj).forEach((key) => {
+        pushExtra(key, extrasObj[key]);
+      });
+
+      const extrasLookup: Record<string, true> = {};
+      orderedExtras.forEach((extra) => {
+        const key = typeof extra.label === "string" ? extra.label.trim().toLowerCase() : "";
+        if (key) extrasLookup[key] = true;
+      });
+
+      return {
+        ...x,
+        receiptFile: first,
+        _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
+        _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+        _extrasList: orderedExtras,
+        _extrasLookup: extrasLookup,
+      };
+    })
+  );
 
   return {
     total,

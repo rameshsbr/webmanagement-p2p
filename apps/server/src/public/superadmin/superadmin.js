@@ -1,11 +1,75 @@
 // apps/server/src/public/superadmin/superadmin.js
 
+function toast(msg) {
+  if (!msg) return;
+  const t = document.createElement('div');
+  t.className = 'toast toast-top-right';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  requestAnimationFrame(() => t.classList.add('show'));
+  setTimeout(() => {
+    t.classList.remove('show');
+    setTimeout(() => t.remove(), 250);
+  }, 2000);
+}
+
 // Sidebar collapse/expand
 (function () {
   const shell = document.querySelector('[data-shell]');
   const btn = document.querySelector('.sb-toggle');
   if (shell && btn) btn.addEventListener('click', () => {
     shell.setAttribute('data-collapsed', shell.getAttribute('data-collapsed') === '1' ? '0' : '1');
+  });
+})();
+
+// Shared collapsible cards (persisted locally)
+document.querySelectorAll('[data-collapsible]').forEach((box) => {
+  const btn = box.querySelector('[data-toggle-collapse]');
+  if (!btn) return;
+
+  const storageKey = (box.getAttribute('data-storage-key') || 'sa.collapsible') + '::collapsed';
+  const setCollapsed = (v) => box.classList.toggle('is-collapsed', !!v);
+
+  const saved = (() => {
+    try { return localStorage.getItem(storageKey); } catch { return null; }
+  })();
+  if (saved !== null) setCollapsed(saved === '1');
+
+  btn.addEventListener('click', () => {
+    const next = !box.classList.contains('is-collapsed');
+    setCollapsed(next);
+    try { localStorage.setItem(storageKey, next ? '1' : '0'); } catch {}
+  });
+});
+
+// Column visibility toggles (persisted per storage key)
+(() => {
+  const toggles = document.querySelectorAll('[data-col-toggle]');
+  if (!toggles.length) return;
+
+  toggles.forEach((cb) => {
+    const container = cb.closest('[data-collapsible]');
+    const storageKey = container?.getAttribute('data-storage-key') || 'sa.columns';
+
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
+
+    const col = cb.getAttribute('data-col-toggle');
+    if (Object.prototype.hasOwnProperty.call(saved, col)) cb.checked = !!saved[col];
+
+    const apply = () => {
+      document.querySelectorAll(`[data-col="${col}"]`).forEach((el) => {
+        el.style.display = cb.checked ? '' : 'none';
+      });
+
+      let next = {};
+      try { next = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
+      next[col] = cb.checked;
+      try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
+    };
+
+    cb.addEventListener('change', apply);
+    apply();
   });
 })();
 
@@ -171,4 +235,44 @@
 
   // Initial render
   apply();
+})();
+
+const RECEIPT_TOAST_KEY = 'sa.receipt.uploaded';
+
+(() => {
+  const uploadForms = document.querySelectorAll('[data-receipt-upload-form]');
+  uploadForms.forEach((form) => {
+    const trigger = form.querySelector('[data-receipt-trigger]');
+    const input = form.querySelector('[data-receipt-input]');
+    if (!trigger || !input) return;
+
+    trigger.addEventListener('click', (e) => {
+      e.preventDefault();
+      input.click();
+    });
+
+    input.addEventListener('change', () => {
+      if (!input.files || !input.files.length) return;
+      try { sessionStorage.setItem(RECEIPT_TOAST_KEY, '1'); } catch {}
+      form.submit();
+    });
+  });
+
+  document.querySelectorAll('[data-receipt-remove]').forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
+      const label = btn.getAttribute('data-receipt-label') || 'this receipt';
+      if (confirm(`Remove ${label}?`)) {
+        btn.closest('form')?.submit();
+      }
+    });
+  });
+
+  let shouldToast = false;
+  try {
+    shouldToast = sessionStorage.getItem(RECEIPT_TOAST_KEY) === '1';
+    if (shouldToast) sessionStorage.removeItem(RECEIPT_TOAST_KEY);
+  } catch {}
+
+  if (shouldToast) toast('Receipt uploaded successfully.');
 })();

@@ -36,12 +36,20 @@
     perPageOptions = [...perPageOptions, perPageValue].sort((a, b) => a - b);
   }
   const perPageSelectId = 'perPage-merchant-payments';
-  const qp = new URLSearchParams(query);
+  const tableId = 'merchant-payments-table';
+  const columnsSelector = "[data-storage-key='merchant.columns.payments']";
 %>
 <div class="table-toolbar">
-  <div class="row" style="gap:8px;">
-    <a class="btn small" href="/merchant/export/payments.csv?<%= qp.toString() %>">Export CSV</a>
-    <a class="btn small" href="/merchant/export/payments.xlsx?<%= qp.toString() %>">Export XLSX</a>
+  <div class="export-control" data-export-control data-export-endpoint="/merchant/export/payments" data-export-table="#<%= tableId %>" data-export-columns-root="<%= columnsSelector %>" data-export-storage="merchant.export.payments">
+    <button type="button" class="btn small" data-export-main>
+      <span data-export-label>Export</span>
+    </button>
+    <button type="button" class="btn small btn-icon" data-export-toggle aria-label="Select export format">▾</button>
+    <div class="export-menu" data-export-menu hidden>
+      <button type="button" data-export-option="csv">CSV</button>
+      <button type="button" data-export-option="xlsx">XLSX</button>
+      <button type="button" data-export-option="pdf">PDF</button>
+    </div>
   </div>
   <form method="get">
     <% Object.entries(query || {}).forEach(([key, value]) => {
@@ -75,7 +83,7 @@
     </div>
   <% } %>
 
-  <table class="table">
+  <table id="<%= tableId %>" class="table">
     <thead>
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>

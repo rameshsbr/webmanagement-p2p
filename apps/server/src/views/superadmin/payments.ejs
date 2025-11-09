@@ -24,7 +24,6 @@
   }
 
   var basePath = (type === 'DEPOSIT' ? '/superadmin/deposits' : '/superadmin/withdrawals');
-  var qs = qsString(query || {});
 %>
 
 <style>
@@ -90,10 +89,6 @@
     <a class="tab <%= type==='DEPOSIT' ? 'active' : '' %>" href="/superadmin/deposits">Deposits</a>
     <a class="tab <%= type==='WITHDRAWAL' ? 'active' : '' %>" href="/superadmin/withdrawals">Withdrawals</a>
   </nav>
-  <div class="row" style="gap:8px">
-    <a class="btn" href="<%= (type==='DEPOSIT'?'/superadmin/deposits/export.csv':'/superadmin/withdrawals/export.csv') + (qs ? ('?'+qs) : '') %>">Export CSV</a>
-    <a class="btn" href="<%= (type==='DEPOSIT'?'/superadmin/deposits/export.xlsx':'/superadmin/withdrawals/export.xlsx') + (qs ? ('?'+qs) : '') %>">Export XLSX</a>
-  </div>
 </div>
 
 <!-- Filters (12 cells: 4 rows × 3 cols on desktop) -->
@@ -160,6 +155,9 @@
     perPageOptions.sort(function(a, b){ return a - b; });
   }
   var perPageSelectId = type === 'DEPOSIT' ? 'perPage-superadmin-deposits' : 'perPage-superadmin-withdrawals';
+  var tableId = type === 'DEPOSIT' ? 'superadmin-deposits-table' : 'superadmin-withdrawals-table';
+  var exportEndpoint = type === 'DEPOSIT' ? '/superadmin/deposits/export' : '/superadmin/withdrawals/export';
+  var exportStorage = type === 'DEPOSIT' ? 'superadmin.export.deposits' : 'superadmin.export.withdrawals';
 %>
 
 <details class="cols" data-cols>
@@ -202,6 +200,17 @@
 
 <div class="panel table-toolbar" style="margin-bottom:8px">
   <div class="table-toolbar__spacer mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <div class="export-control" data-export-control data-export-endpoint="<%= exportEndpoint %>" data-export-table="#<%= tableId %>" data-export-columns-root="[data-cols]" data-export-storage="<%= exportStorage %>">
+    <button type="button" class="btn small" data-export-main>
+      <span data-export-label>Export</span>
+    </button>
+    <button type="button" class="btn small btn-icon" data-export-toggle aria-label="Select export format">▾</button>
+    <div class="export-menu" data-export-menu hidden>
+      <button type="button" data-export-option="csv">CSV</button>
+      <button type="button" data-export-option="xlsx">XLSX</button>
+      <button type="button" data-export-option="pdf">PDF</button>
+    </div>
+  </div>
   <form method="get" action="<%= basePath %>">
     <% toPairs(query).forEach(function(pair){
          var key = pair[0];
@@ -221,7 +230,7 @@
 </div>
 
 <div class="table-wrap">
-  <table class="table" data-table>
+  <table id="<%= tableId %>" class="table" data-table>
     <thead>
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>

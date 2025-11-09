@@ -20,8 +20,21 @@
     perPageOptions = [...perPageOptions, perPageValue].sort((a, b) => a - b);
   }
   const perPageSelectId = 'perPage-admin-withdrawals-pending';
+  const tableId = 'admin-withdrawals-pending-table';
+  const columnsSelector = "[data-storage-key='admin.columns.withdrawals']";
 %>
 <div class="table-toolbar">
+  <div class="export-control" data-export-control data-export-endpoint="/admin/export/withdrawals" data-export-table="#<%= tableId %>" data-export-columns-root="<%= columnsSelector %>" data-export-storage="admin.export.withdrawals.pending">
+    <button type="button" class="btn small" data-export-main>
+      <span data-export-label>Export</span>
+    </button>
+    <button type="button" class="btn small btn-icon" data-export-toggle aria-label="Select export format">▾</button>
+    <div class="export-menu" data-export-menu hidden>
+      <button type="button" data-export-option="csv">CSV</button>
+      <button type="button" data-export-option="xlsx">XLSX</button>
+      <button type="button" data-export-option="pdf">PDF</button>
+    </div>
+  </div>
   <form method="get">
     <% Object.entries(query || {}).forEach(([key, value]) => {
          if (value === undefined || value === null || value === '' || key === 'perPage' || key === 'page') return;
@@ -39,7 +52,7 @@
 </div>
 
 <div class="table-wrap" data-auto-refresh="pending-withdrawals" data-return-to="<%= returnTo || '' %>">
-  <table class="table" data-withdraw-actions>
+  <table id="<%= tableId %>" class="table" data-withdraw-actions>
     <thead>
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>

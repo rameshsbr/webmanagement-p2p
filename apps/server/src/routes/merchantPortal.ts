@@ -10,6 +10,12 @@ import jwt from "jsonwebtoken";
 // ⬇️ NEW: we’ll mint a short-lived checkout token for the merchant demo
 import { signCheckoutToken } from "../services/checkoutToken.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
+import {
+  buildPaymentExportFile,
+  normalizeColumns,
+  PaymentExportColumn,
+  PaymentExportItem,
+} from "../services/paymentExports.js";
 
 const router = Router();
 
@@ -136,6 +142,24 @@ const listQuery = z.object({
   type: z.enum(["DEPOSIT", "WITHDRAWAL"]).optional(),
 });
 
+const LIST_QUERY_KEYS = new Set(Object.keys((listQuery as any).shape || {}));
+
+const MERCHANT_PAYMENT_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: "txnId", label: "TRANSACTION ID" },
+  { key: "userId", label: "USER ID" },
+  { key: "type", label: "TYPE" },
+  { key: "currency", label: "CURRENCY" },
+  { key: "amount", label: "AMOUNT" },
+  { key: "status", label: "STATUS" },
+  { key: "bank", label: "BANK" },
+  { key: "created", label: "DATE OF CREATION" },
+  { key: "processedAt", label: "DATE PROCESSED" },
+  { key: "processingTime", label: "TIME TO PROCESS" },
+  { key: "userInfo", label: "USER INFO" },
+  { key: "comment", label: "COMMENT" },
+  { key: "admin", label: "PROCESSED BY" },
+];
+
 function int(v: any, d: number) {
   const n = Number(v);
   return Number.isFinite(n) ? n : d;
@@ -187,8 +211,14 @@ function whereFrom(q: z.infer<typeof listQuery>, merchantId: string, type?: "DEP
   return where;
 }
 
-async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" | "WITHDRAWAL") {
-  const q = listQuery.parse(req.query);
+type ListQuery = z.infer<typeof listQuery>;
+
+async function fetchPaymentsFromQuery(
+  input: Partial<ListQuery>,
+  merchantId: string,
+  type?: "DEPOSIT" | "WITHDRAWAL"
+) {
+  const q = listQuery.parse(input);
   const where = whereFrom(q, merchantId, type ?? q.type);
   const page = Math.max(1, int(q.page, 1));
   const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
@@ -227,6 +257,40 @@ async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" 
   ]);
 
   return { total, items, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
+}
+
+async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" | "WITHDRAWAL") {
+  const q = req.query as Partial<ListQuery>;
+  return fetchPaymentsFromQuery(q, merchantId, type);
+}
+
+function parseExportFormat(raw: unknown): "csv" | "xlsx" | "pdf" {
+  const value = String(raw || "").toLowerCase();
+  if (value === "csv" || value === "xlsx" || value === "pdf") return value;
+  return "csv";
+}
+
+function coerceExportFilters(raw: unknown): Partial<ListQuery> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Partial<ListQuery> = {};
+  for (const key of LIST_QUERY_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === "undefined" || value === null) continue;
+    if (typeof value === "string") {
+      (out as any)[key] = value;
+    } else if (Array.isArray(value)) {
+      const last = value[value.length - 1];
+      if (typeof last === "string") (out as any)[key] = last;
+    } else {
+      (out as any)[key] = String(value);
+    }
+  }
+  return out;
+}
+
+function sanitizeColumns(raw: unknown, fallback: PaymentExportColumn[]): PaymentExportColumn[] {
+  const allowed = new Set(fallback.map((col) => col.key));
+  return normalizeColumns(raw, fallback, allowed);
 }
 
 // Dashboard
@@ -347,6 +411,32 @@ router.get("/ledger", async (req: any, res) => {
 });
 
 // EXPORTS
+router.post("/export/payments", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, MERCHANT_PAYMENT_EXPORT_COLUMNS);
+    const { items, query } = await fetchPaymentsFromQuery(filters, merchantId);
+    const typeContext: "DEPOSIT" | "WITHDRAWAL" | "ALL" =
+      query.type === "DEPOSIT" ? "DEPOSIT" : query.type === "WITHDRAWAL" ? "WITHDRAWAL" : "ALL";
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: "merchant", type: typeContext },
+    });
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "Unable to export payments" });
+  }
+});
+
 router.get("/export/payments.csv", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   const { items } = await fetchPayments(req, merchantId);

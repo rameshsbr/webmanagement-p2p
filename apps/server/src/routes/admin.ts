@@ -224,7 +224,7 @@ async function fetchPayments(
   const q = listQuery.parse({ ...req.query, ...(overrides || {}) });
   const where = whereFrom(q, type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, itemsRaw] = await Promise.all([

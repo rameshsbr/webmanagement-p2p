@@ -266,21 +266,22 @@ textarea{
   box-shadow: 0 18px 38px rgba(0, 0, 0, 0.5);
 }
 
+ /* Keep <td> as table-cell so rows share a single height & borders align */
 .table tbody td.actions {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
   min-width: 136px;
   text-align: center;
-  height: 100%;
+  vertical-align: middle; /* center within tall rows */
+  padding-top: 10px;
+  padding-bottom: 10px;
 }
 
+ /* Stack buttons neatly without turning the cell into a flex container */
 .table tbody td.actions .btn {
+  display: block;
   width: auto;
   min-width: 0;
-  justify-content: center;
+  margin: 4px auto; /* centers horizontally, adds gap vertically */
+  justify-content: center; /* harmless for flex buttons */
 }
 
 .table tbody td.actions .mini {

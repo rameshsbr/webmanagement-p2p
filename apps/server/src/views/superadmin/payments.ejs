@@ -112,6 +112,18 @@
 </form>
 
 <!-- Column settings (clean, collapsible) -->
+<%
+  const rows = [];
+  const seenIds = new Set();
+  (items || []).forEach(function(row){
+    if (!seenIds.has(row.id)) {
+      seenIds.add(row.id);
+      rows.push(row);
+    }
+  });
+  const displayCount = rows.length;
+%>
+
 <details class="cols" data-cols>
   <summary>
     <span class="muted">Column settings</span>
@@ -124,16 +136,21 @@
 
   <div class="grid">
     <% var COLS = [
-      { id: 'ref',      label: 'Ref' },
-      { id: 'merchant', label: 'Merchant' },
-      { id: 'status',   label: 'Status' },
-      { id: 'amount',   label: 'Amount' },
-      { id: 'user',     label: 'User' },
-      { id: 'bank',     label: 'Bank' },
-      { id: 'receipt',  label: 'Receipt' },
-      { id: 'created',  label: 'Created' },
-      { id: 'updated',  label: 'Updated' },
-      { id: 'actions',  label: 'Actions' },
+      { id: 'txnId',        label: 'Transaction ID' },
+      { id: 'userId',       label: 'User ID' },
+      { id: 'merchant',     label: 'Merchant' },
+      { id: 'currency',     label: 'Currency' },
+      { id: 'amount',       label: 'Amount' },
+      { id: 'status',       label: 'Status' },
+      { id: 'bank',         label: 'Bank name' },
+      { id: 'created',      label: 'Date of creation' },
+      { id: 'processedAt',  label: type === 'DEPOSIT' ? 'Date of deposit' : 'Date of withdrawal' },
+      { id: 'processingTime', label: 'Time to process' },
+      { id: 'userInfo',     label: 'User info' },
+      { id: 'comment',      label: 'Comment' },
+      { id: 'admin',        label: 'Admin' },
+      { id: 'receipts',     label: 'Receipts' },
+      { id: 'actions',      label: 'Actions' },
     ]; %>
     <% COLS.forEach(function(c){ %>
       <label class="chk">
@@ -145,58 +162,97 @@
 </details>
 
 <div class="panel" style="margin-bottom:8px">
-  <div class="mini">Showing <%= items.length %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <div class="mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
 </div>
 
 <div class="table-wrap">
   <table class="table" data-table>
     <thead>
       <tr>
-        <th data-col="ref">Ref</th>
-        <th data-col="merchant">Merchant</th>
-        <th data-col="status">Status</th>
-        <th data-col="amount">Amount</th>
-        <th data-col="user">User</th>
-        <th data-col="bank">Bank</th>
-        <th data-col="receipt">Receipt</th>
-        <th data-col="created">Created</th>
-        <th data-col="updated">Updated</th>
-        <th data-col="actions">Change</th>
+        <th data-col="txnId">TRANSACTION ID</th>
+        <th data-col="userId">USER ID</th>
+        <th data-col="merchant">MERCHANT</th>
+        <th data-col="currency">CURRENCY</th>
+        <th data-col="amount">AMOUNT</th>
+        <th data-col="status">STATUS</th>
+        <th data-col="bank">BANK NAME</th>
+        <th data-col="created">DATE OF CREATION</th>
+        <th data-col="processedAt"><%= type === 'DEPOSIT' ? 'DATE OF DEPOSIT' : 'DATE OF WITHDRAWAL' %></th>
+        <th data-col="processingTime">TIME TO PROCESS</th>
+        <th data-col="userInfo">USER INFO</th>
+        <th data-col="comment">COMMENT</th>
+        <th data-col="admin">ADMIN</th>
+        <th data-col="receipts">RECEIPTS</th>
+        <th data-col="actions">ACTIONS</th>
       </tr>
     </thead>
     <tbody>
-      <% items.forEach(function(p){ %>
+      <% if (!rows.length) { %>
+        <tr><td colspan="15" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+      <% } %>
+      <% rows.forEach(function(p){ %>
+        <% const methodRaw = (p.detailsJson && p.detailsJson.method) || (p.bankAccount && p.bankAccount.method) || ''; %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const payer = (p.detailsJson && (p.detailsJson.payer || p.detailsJson.destination)) || {}; %>
+        <% const payerBankName = payer.bankName || p.bankAccount?.bankName || null; %>
+        <% const processedAt = p.processedAt || p.updatedAt || null; %>
+        <% const hasProcessed = !(p.status==='PENDING' || p.status==='SUBMITTED' || !processedAt); %>
+        <% const receipts = p._receipts || p.receipts || null; %>
+        <% const receiptCount = (typeof p._receiptCount === 'number') ? p._receiptCount : (receipts ? receipts.length : (p.receiptFile ? 1 : 0)); %>
+        <% const showBankAccount = type === 'DEPOSIT' ? true : (p.bankAccount && p.status !== 'REJECTED'); %>
+      %>
         <tr>
-          <td data-col="ref"><code><%= p.referenceCode %></code></td>
+          <td data-col="txnId"><span class="mono"><%= p.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= p.user?.publicId || '-' %></span></td>
           <td data-col="merchant">
-            <div class="kvs">
-              <div>Merchant</div><div><%= p.merchant?.name || '—' %></div>
-              <div>ID</div><div class="mini"><%= p.merchant?.id || '—' %></div>
+            <div><%= p.merchant?.name || '-' %></div>
+            <div class="mini mono"><%= p.merchant?.id || '-' %></div>
+          </td>
+          <td data-col="currency"><%= p.currency %></td>
+          <td data-col="amount"><%= formatAmount(p.amountCents, p.currency) %></td>
+          <td data-col="status">
+            <% if (p.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
+            <% if (p.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
+            <% if (p.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
+            <% if (p.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+          </td>
+          <td data-col="bank">
+            <% if (showBankAccount && p.bankAccount) { %>
+              <span class="mono"><%= p.bankAccount.publicId || '-' %></span><br>
+              <%= p.bankAccount.bankName || '-' %>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+          <td data-col="created"><%- renderDateTime(p.createdAt) %></td>
+          <td data-col="processedAt"><%- hasProcessed ? renderDateTime(processedAt) : '-' %></td>
+          <td data-col="processingTime"><%= hasProcessed ? formatDuration(p.createdAt, processedAt) : '-' %></td>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <% if (type === 'DEPOSIT') { %>
+                <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= p.uniqueReference || '-' %></span></div>
+              <% } %>
+              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= payerBankName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || payer.holder || payer.accountName || payer.name || '-' %></span></div>
+              <% if (method === 'OSKO') { %>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || payer.accountNumber || payer.account || '-' %></span></div>
+                <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || payer.bsbNumber || '-' %></span></div>
+              <% } else if (method === 'PAYID') { %>
+                <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= payer.payIdValue || payer.payId || payer.payid || '-' %></span></div>
+              <% } %>
+              <div class="info-line"><span class="info-label">Email</span><span class="info-value"><%= p.user?.email || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Phone</span><span class="info-value"><%= p.user?.phone || '-' %></span></div>
             </div>
           </td>
-          <td data-col="status"><span class="pill"><%= p.status %></span></td>
-          <td data-col="amount"><%= formatAmount(p.amountCents, p.currency) %></td>
-          <td data-col="user">
-            <div class="mono"><%= p.user?.publicId || '—' %></div>
-            <div><%= p.user?.email || '—' %></div>
-            <div class="mini"><%= p.user?.phone || '' %></div>
-          </td>
-          <td data-col="bank"><%= p.bankAccount?.bankName || '—' %></td>
-
-          <!-- RECEIPTS (updated for multi) -->
-          <td data-col="receipt" class="nowrap">
-            <% 
-              var receipts = p._receipts || p.receipts || null;
-              var count = (typeof p._receiptCount === 'number')
-                ? p._receiptCount
-                : (receipts ? receipts.length : (p.receiptFile ? 1 : 0));
-            %>
-            <div class="mini" style="margin-bottom:6px">Receipts: <%= count %></div>
-
+          <td data-col="comment"><%= p.notes || p.rejectedReason || '-' %></td>
+          <td data-col="admin"><%= (p.processedByAdmin && (p.processedByAdmin.displayName || p.processedByAdmin.email)) || '-' %></td>
+          <td data-col="receipts" class="nowrap">
+            <div class="mini" style="margin-bottom:6px">Receipts: <%= receiptCount %></div>
             <% if (receipts && receipts.length) { %>
               <div class="row" style="gap:6px; flex-wrap:wrap">
                 <% receipts.forEach(function(r, idx){ %>
-                  <a class="btn small" href="<%= r.path %>" target="_blank">View <%= idx+1 %></a>
+                  <a class="btn small" href="<%= r.path %>" target="_blank">View <%= idx + 1 %></a>
                   <form method="post" action="/superadmin/payments/<%= p.id %>/receipts/<%= r.id %>/remove" style="display:inline">
                     <button class="btn small" type="submit" onclick="return confirm('Remove this receipt?')">Remove</button>
                   </form>
@@ -210,19 +266,14 @@
                 </form>
               </div>
             <% } %>
-
             <form method="post" action="/superadmin/payments/<%= p.id %>/receipt" enctype="multipart/form-data" style="display:inline-flex; gap:6px; margin-top:6px">
               <input class="input" style="height:30px" type="file" name="receipt" accept="image/*,application/pdf" required>
-              <button class="btn small" type="submit"><%= (count>0) ? 'Add receipt' : 'Upload' %></button>
+              <button class="btn small" type="submit"><%= (receiptCount>0) ? 'Add receipt' : 'Upload' %></button>
             </form>
           </td>
-          <!-- /RECEIPTS -->
-
-          <td data-col="created" class="mini"><%- renderDateTime(p.createdAt) %></td>
-          <td data-col="updated" class="mini"><%- renderDateTime(p.processedAt || p.updatedAt) %></td>
-          <td data-col="actions">
-            <div class="row" style="gap:6px; flex-wrap:wrap">
-              <form method="post" action="/superadmin/payments/<%= p.id %>/status" class="row" style="gap:6px">
+          <td data-col="actions" class="actions">
+            <div class="column" style="gap:10px">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/status" class="row" style="gap:6px; flex-wrap:wrap">
                 <select name="toStatus" class="input">
                   <% ['APPROVED','REJECTED','PENDING','SUBMITTED'].forEach(function(s){ %>
                     <option value="<%= s %>" <%= p.status===s ? 'selected' : '' %>><%= s %></option>
@@ -232,14 +283,14 @@
                 <button class="btn small" type="submit">Apply</button>
               </form>
 
-              <form method="post" action="/superadmin/payments/<%= p.id %>/edit-amount" class="row" style="gap:6px">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/edit-amount" class="row" style="gap:6px; flex-wrap:wrap">
                 <input class="input" type="number" step="0.01" name="amount" value="<%= (p.amountCents/100).toFixed(2) %>" style="width:120px">
                 <input class="input" name="currency" value="<%= p.currency %>" style="width:90px">
                 <input class="input" name="reason" placeholder="Reason (required) *" required>
                 <button class="btn small" type="submit">Save</button>
               </form>
 
-              <form method="post" action="/superadmin/payments/<%= p.id %>/notes" class="row" style="gap:6px">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/notes" class="row" style="gap:6px; flex-wrap:wrap">
                 <input class="input" name="notes" value="<%= p.notes || '' %>" placeholder="Notes" style="width:220px">
                 <button class="btn small" type="submit">Save</button>
               </form>
@@ -247,15 +298,12 @@
           </td>
         </tr>
       <% }) %>
-      <% if (!items.length) { %>
-        <tr><td colspan="10" class="mini">No results.</td></tr>
-      <% } %>
     </tbody>
   </table>
 </div>
 
 <div class="row between" style="margin-top:10px">
-  <div class="mini">Showing <%= items.length %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <div class="mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
   <div class="row" style="gap:6px">
     <a class="btn small" href="<%= page>1 ? pageHref(basePath, query, page-1) : 'javascript:void(0)' %>">Prev</a>
     <a class="btn small" href="<%= page<pages ? pageHref(basePath, query, page+1) : 'javascript:void(0)' %>">Next</a>

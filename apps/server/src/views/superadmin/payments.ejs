@@ -69,6 +69,17 @@
   .pill { padding:2px 6px; border:1px solid var(--border); border-radius:999px }
   .kvs { display:grid; grid-template-columns: 90px 1fr; gap:4px; font-size:12px; opacity:.9 }
   .nowrap { white-space:nowrap }
+  .receipts-cell { min-width:220px; }
+  .receipt-list { display:flex; flex-direction:column; gap:6px; margin-bottom:8px; }
+  .receipt-item { display:flex; align-items:center; gap:6px; }
+  .receipt-item form { margin:0; }
+  .receipt-link { color:var(--brand); text-decoration:none; font-weight:600; }
+  .receipt-link:hover { text-decoration:underline; }
+  .receipt-remove { border:none; background:transparent; color:var(--ink-dim); cursor:pointer; font-size:16px; line-height:1; padding:0 4px; }
+  .receipt-remove:hover { color:var(--danger, #ef4444); }
+  .receipt-upload { display:flex; align-items:center; gap:8px; margin:0; }
+  .receipt-upload-input { display:none; }
+  .toast.toast-top-right { top:16px; right:16px; bottom:auto; left:auto; }
 </style>
 
 <!-- Top bar: tabs + exports -->
@@ -295,28 +306,32 @@
           <td data-col="comment"><%= p.notes || p.rejectedReason || '-' %></td>
             <td data-col="admin"><%= (p.processedByAdmin && (p.processedByAdmin.displayName || p.processedByAdmin.email)) || '-' %></td>
             <% if (type === 'DEPOSIT') { %>
-            <td data-col="receipts" class="nowrap">
+            <td data-col="receipts" class="receipts-cell">
               <div class="mini" style="margin-bottom:6px">Receipts: <%= receiptCount %></div>
-              <% if (receipts && receipts.length) { %>
-                <div class="row" style="gap:6px; flex-wrap:wrap">
+              <div class="receipt-list">
+                <% if (receipts && receipts.length) { %>
                   <% receipts.forEach(function(r, idx){ %>
-                    <a class="btn small" href="<%= r.path %>" target="_blank">View <%= idx + 1 %></a>
-                    <form method="post" action="/superadmin/payments/<%= p.id %>/receipts/<%= r.id %>/remove" style="display:inline">
-                      <button class="btn small" type="submit" onclick="return confirm('Remove this receipt?')">Remove</button>
-                    </form>
+                    <div class="receipt-item">
+                      <a class="receipt-link" href="<%= r.path %>" target="_blank" rel="noopener noreferrer">Receipt<%= idx ? ' ' + (idx + 1) : '' %></a>
+                      <form method="post" action="/superadmin/payments/<%= p.id %>/receipts/<%= r.id %>/remove" data-receipt-remove-form>
+                        <button type="button" class="receipt-remove" data-receipt-remove data-receipt-label="Receipt<%= idx ? ' ' + (idx + 1) : '' %>">&times;</button>
+                      </form>
+                    </div>
                   <% }) %>
-                </div>
-              <% } else if (p.receiptFile) { %>
-                <div class="row" style="gap:6px; flex-wrap:wrap">
-                  <a class="btn small" href="<%= p.receiptFile.path %>" target="_blank">View</a>
-                  <form method="post" action="/superadmin/payments/<%= p.id %>/receipt/remove" style="display:inline">
-                    <button class="btn small" type="submit" onclick="return confirm('Remove most recent receipt?')">Remove recent</button>
-                  </form>
-                </div>
-              <% } %>
-              <form method="post" action="/superadmin/payments/<%= p.id %>/receipt" enctype="multipart/form-data" style="display:inline-flex; gap:6px; margin-top:6px">
-                <input class="input" style="height:30px" type="file" name="receipt" accept="image/*,application/pdf" required>
-                <button class="btn small" type="submit"><%= (receiptCount>0) ? 'Add receipt' : 'Upload' %></button>
+                <% } else if (p.receiptFile) { %>
+                  <div class="receipt-item">
+                    <a class="receipt-link" href="<%= p.receiptFile.path %>" target="_blank" rel="noopener noreferrer">Receipt</a>
+                    <form method="post" action="/superadmin/payments/<%= p.id %>/receipt/remove" data-receipt-remove-form>
+                      <button type="button" class="receipt-remove" data-receipt-remove data-receipt-label="Receipt">&times;</button>
+                    </form>
+                  </div>
+                <% } else { %>
+                  <div class="mini" style="opacity:0.75">No receipts</div>
+                <% } %>
+              </div>
+              <form method="post" action="/superadmin/payments/<%= p.id %>/receipt" enctype="multipart/form-data" class="receipt-upload" data-receipt-upload-form>
+                <input class="receipt-upload-input" type="file" name="receipt" accept="image/*,application/pdf" required data-receipt-input>
+                <button class="btn small" type="button" data-receipt-trigger><%= (receiptCount>0) ? 'Add receipt' : 'Upload receipt' %></button>
               </form>
             </td>
             <% } %>

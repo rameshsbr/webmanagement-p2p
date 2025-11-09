@@ -191,7 +191,7 @@ async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" 
   const q = listQuery.parse(req.query);
   const where = whereFrom(q, merchantId, type ?? q.type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, items] = await Promise.all([

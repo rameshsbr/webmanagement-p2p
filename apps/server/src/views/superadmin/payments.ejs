@@ -5,6 +5,23 @@
   function toPairs(obj){ return Object.entries(obj||{}).map(function([k,v]){ if(Array.isArray(v))v=v[0]; if(v==null)v=''; return [k,String(v)] }); }
   function qsString(obj){ return new URLSearchParams(toPairs(obj)).toString(); }
   function pageHref(base, obj, p){ var usp=new URLSearchParams(toPairs(obj)); usp.set('page', String(p)); return base + '?' + usp.toString(); }
+  function formatExtraValue(v){
+    if (v === null || typeof v === 'undefined') return '-';
+    if (Array.isArray(v)) {
+      var filtered = v.map(function(item){ return item == null ? '' : String(item); }).filter(function(str){ return str.trim() !== ''; });
+      return filtered.length ? filtered.join(', ') : '-';
+    }
+    if (typeof v === 'object') {
+      try {
+        var json = JSON.stringify(v);
+        return json && json !== '{}' ? json : '-';
+      } catch (err) {
+        return '-';
+      }
+    }
+    var str = String(v);
+    return str.trim() === '' ? '-' : str;
+  }
 
   var basePath = (type === 'DEPOSIT' ? '/superadmin/deposits' : '/superadmin/withdrawals');
   var qs = qsString(query || {});
@@ -52,6 +69,19 @@
   .pill { padding:2px 6px; border:1px solid var(--border); border-radius:999px }
   .kvs { display:grid; grid-template-columns: 90px 1fr; gap:4px; font-size:12px; opacity:.9 }
   .nowrap { white-space:nowrap }
+  .receipts-cell { min-width:220px; padding:12px 8px; }
+  .receipts-wrap { display:flex; flex-direction:column; align-items:center; justify-content:center; gap:10px; min-height:100%; width:100%; text-align:center; }
+  .receipts-count { font-size:12px; font-weight:600; letter-spacing:0.02em; text-transform:uppercase; color:var(--ink-dim); }
+  .receipt-list { display:flex; flex-direction:column; align-items:center; gap:8px; margin:0; }
+  .receipt-item { display:flex; align-items:center; justify-content:center; gap:6px; }
+  .receipt-item form { margin:0; }
+  .receipt-link { color:var(--brand); text-decoration:none; font-weight:600; }
+  .receipt-link:hover { text-decoration:underline; }
+  .receipt-remove { border:none; background:transparent; color:var(--ink-dim); cursor:pointer; font-size:16px; line-height:1; padding:0 4px; }
+  .receipt-remove:hover { color:var(--danger, #ef4444); }
+  .receipt-upload { display:flex; align-items:center; justify-content:center; gap:8px; margin:0; }
+  .receipt-upload-input { display:none; }
+  .toast.toast-top-right { top:16px; right:16px; bottom:auto; left:auto; z-index:1400; }
 </style>
 
 <!-- Top bar: tabs + exports -->
@@ -112,6 +142,26 @@
 </form>
 
 <!-- Column settings (clean, collapsible) -->
+<%
+  const rows = [];
+  const seenIds = new Set();
+  (items || []).forEach(function(row){
+    if (!seenIds.has(row.id)) {
+      seenIds.add(row.id);
+      rows.push(row);
+    }
+  });
+  const displayCount = rows.length;
+  const columnCount = type === 'DEPOSIT' ? 15 : 14;
+  var perPageValue = Number(perPage || 25);
+  var perPageOptions = [25, 50, 100, 150];
+  if (perPageOptions.indexOf(perPageValue) === -1) {
+    perPageOptions.push(perPageValue);
+    perPageOptions.sort(function(a, b){ return a - b; });
+  }
+  var perPageSelectId = type === 'DEPOSIT' ? 'perPage-superadmin-deposits' : 'perPage-superadmin-withdrawals';
+%>
+
 <details class="cols" data-cols>
   <summary>
     <span class="muted">Column settings</span>
@@ -124,17 +174,23 @@
 
   <div class="grid">
     <% var COLS = [
-      { id: 'ref',      label: 'Ref' },
-      { id: 'merchant', label: 'Merchant' },
-      { id: 'status',   label: 'Status' },
-      { id: 'amount',   label: 'Amount' },
-      { id: 'user',     label: 'User' },
-      { id: 'bank',     label: 'Bank' },
-      { id: 'receipt',  label: 'Receipt' },
-      { id: 'created',  label: 'Created' },
-      { id: 'updated',  label: 'Updated' },
-      { id: 'actions',  label: 'Actions' },
+      { id: 'txnId',        label: 'Transaction ID' },
+      { id: 'userId',       label: 'User ID' },
+      { id: 'merchant',     label: 'Merchant' },
+      { id: 'currency',     label: 'Currency' },
+      { id: 'amount',       label: 'Amount' },
+      { id: 'status',       label: 'Status' },
+      { id: 'bank',         label: 'Bank name' },
+      { id: 'created',      label: 'Date of creation' },
+      { id: 'processedAt',  label: type === 'DEPOSIT' ? 'Date of deposit' : 'Date of withdrawal' },
+      { id: 'processingTime', label: 'Time to process' },
+      { id: 'userInfo',     label: 'User info' },
+      { id: 'comment',      label: 'Comment' },
+      { id: 'admin',        label: 'Admin' },
+      { id: 'receipts',     label: 'Receipts' },
+      { id: 'actions',      label: 'Actions' },
     ]; %>
+    <% if (type !== 'DEPOSIT') { COLS = COLS.filter(function(c){ return c.id !== 'receipts'; }); } %>
     <% COLS.forEach(function(c){ %>
       <label class="chk">
         <input type="checkbox" class="col-toggle" data-col="<%= c.id %>" checked>
@@ -144,85 +200,171 @@
   </div>
 </details>
 
-<div class="panel" style="margin-bottom:8px">
-  <div class="mini">Showing <%= items.length %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+<div class="panel table-toolbar" style="margin-bottom:8px">
+  <div class="table-toolbar__spacer mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <form method="get" action="<%= basePath %>">
+    <% toPairs(query).forEach(function(pair){
+         var key = pair[0];
+         var value = pair[1];
+         if (!value || key === 'perPage' || key === 'page') return;
+    %>
+      <input type="hidden" name="<%= key %>" value="<%= value %>">
+    <% }); %>
+    <input type="hidden" name="page" value="1">
+    <label for="<%= perPageSelectId %>">Rows per page</label>
+    <select id="<%= perPageSelectId %>" name="perPage" onchange="this.form.submit()">
+      <% perPageOptions.forEach(function(size){ %>
+        <option value="<%= size %>" <%= perPageValue === size ? 'selected' : '' %>><%= size %></option>
+      <% }); %>
+    </select>
+  </form>
 </div>
 
 <div class="table-wrap">
   <table class="table" data-table>
     <thead>
       <tr>
-        <th data-col="ref">Ref</th>
-        <th data-col="merchant">Merchant</th>
-        <th data-col="status">Status</th>
-        <th data-col="amount">Amount</th>
-        <th data-col="user">User</th>
-        <th data-col="bank">Bank</th>
-        <th data-col="receipt">Receipt</th>
-        <th data-col="created">Created</th>
-        <th data-col="updated">Updated</th>
-        <th data-col="actions">Change</th>
+        <th data-col="txnId">TRANSACTION ID</th>
+        <th data-col="userId">USER ID</th>
+        <th data-col="merchant">MERCHANT</th>
+        <th data-col="currency">CURRENCY</th>
+        <th data-col="amount">AMOUNT</th>
+        <th data-col="status">STATUS</th>
+        <th data-col="bank">BANK NAME</th>
+        <th data-col="created">DATE OF CREATION</th>
+        <th data-col="processedAt"><%= type === 'DEPOSIT' ? 'DATE OF DEPOSIT' : 'DATE OF WITHDRAWAL' %></th>
+        <th data-col="processingTime">TIME TO PROCESS</th>
+        <th data-col="userInfo">USER INFO</th>
+        <th data-col="comment">COMMENT</th>
+        <th data-col="admin">ADMIN</th>
+        <% if (type === 'DEPOSIT') { %>
+        <th data-col="receipts">RECEIPTS</th>
+        <% } %>
+        <th data-col="actions">ACTIONS</th>
       </tr>
     </thead>
     <tbody>
-      <% items.forEach(function(p){ %>
+      <% if (!rows.length) { %>
+        <tr><td colspan="<%= columnCount %>" style="text-align:center;color:var(--ink-dim)">No data</td></tr>
+      <% } %>
+      <% rows.forEach(function(p){ %>
+        <% const methodRaw = (p.detailsJson && p.detailsJson.method) || (p.bankAccount && p.bankAccount.method) || ''; %>
+        <% const method = (methodRaw || '').toUpperCase(); %>
+        <% const payer = (p.detailsJson && (p.detailsJson.payer || p.detailsJson.destination)) || {}; %>
+        <% const payerBankName = payer.bankName || p.bankAccount?.bankName || null; %>
+        <% const processedAt = p.processedAt || p.updatedAt || null; %>
+        <% const hasProcessed = !(p.status==='PENDING' || p.status==='SUBMITTED' || !processedAt); %>
+        <% const receipts = p._receipts || p.receipts || null; %>
+        <% const receiptCount = (typeof p._receiptCount === 'number') ? p._receiptCount : (receipts ? receipts.length : (p.receiptFile ? 1 : 0)); %>
+        <% const showBankAccount = type === 'DEPOSIT' ? true : (p.bankAccount && p.status !== 'REJECTED'); %>
+        <% const extrasList = Array.isArray(p._extrasList) ? p._extrasList : []; %>
+        <% const extrasLookup = (p._extrasLookup && typeof p._extrasLookup === 'object') ? p._extrasLookup : {}; %>
+        <% const hasAnyExtraLabel = function(){
+             var args = Array.prototype.slice.call(arguments);
+             return args.some(function(label){
+               var key = String(label || '').trim().toLowerCase();
+               return !!(key && extrasLookup[key]);
+             });
+           }; %>
+      %>
         <tr>
-          <td data-col="ref"><code><%= p.referenceCode %></code></td>
+          <td data-col="txnId"><span class="mono"><%= p.referenceCode %></span></td>
+          <td data-col="userId"><span class="mono"><%= p.user?.publicId || '-' %></span></td>
           <td data-col="merchant">
-            <div class="kvs">
-              <div>Merchant</div><div><%= p.merchant?.name || '—' %></div>
-              <div>ID</div><div class="mini"><%= p.merchant?.id || '—' %></div>
+            <div><%= p.merchant?.name || '-' %></div>
+          </td>
+          <td data-col="currency"><%= p.currency %></td>
+          <td data-col="amount"><%= formatAmount(p.amountCents, p.currency) %></td>
+          <td data-col="status">
+            <% if (p.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
+            <% if (p.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
+            <% if (p.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
+            <% if (p.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+          </td>
+          <td data-col="bank">
+            <% if (showBankAccount && p.bankAccount) { %>
+              <span class="mono"><%= p.bankAccount.publicId || '-' %></span><br>
+              <%= p.bankAccount.bankName || '-' %>
+            <% } else { %>
+              -
+            <% } %>
+          </td>
+          <td data-col="created"><%- renderDateTime(p.createdAt) %></td>
+          <td data-col="processedAt"><%- hasProcessed ? renderDateTime(processedAt) : '-' %></td>
+          <td data-col="processingTime"><%= hasProcessed ? formatDuration(p.createdAt, processedAt) : '-' %></td>
+          <td data-col="userInfo" class="info-cell">
+            <div class="info-block">
+              <% if (type === 'DEPOSIT' && !hasAnyExtraLabel('unique reference no', 'unique reference number')) { %>
+                <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= p.uniqueReference || '-' %></span></div>
+              <% } %>
+              <% if (!hasAnyExtraLabel('method')) { %>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+              <% } %>
+              <% if (!hasAnyExtraLabel('bank name')) { %>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= payerBankName || '-' %></span></div>
+              <% } %>
+              <% if (!hasAnyExtraLabel('account holder name', 'account name')) { %>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || payer.holder || payer.accountName || payer.name || '-' %></span></div>
+              <% } %>
+              <% if (method === 'OSKO') { %>
+                <% if (!hasAnyExtraLabel('account number')) { %>
+                  <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || payer.accountNumber || payer.account || '-' %></span></div>
+                <% } %>
+                <% if (!hasAnyExtraLabel('bsb', 'bsb number')) { %>
+                  <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || payer.bsbNumber || '-' %></span></div>
+                <% } %>
+              <% } else if (method === 'PAYID') { %>
+                <% if (!hasAnyExtraLabel('payid type')) { %>
+                  <div class="info-line"><span class="info-label">PayID type</span><span class="info-value"><%= (payer.payIdType || payer.payidType || '') ? String(payer.payIdType || payer.payidType).toUpperCase() : '-' %></span></div>
+                <% } %>
+                <% if (!hasAnyExtraLabel('payid value', 'payid')) { %>
+                  <div class="info-line"><span class="info-label">PayID value</span><span class="info-value"><%= payer.payIdValue || payer.payId || payer.payid || '-' %></span></div>
+                <% } %>
+              <% } %>
+              <% if (extrasList.length) { %>
+                <% extrasList.forEach(function(extra){ %>
+                  <div class="info-line"><span class="info-label"><%= extra.label %></span><span class="info-value"><%= formatExtraValue(extra.value) %></span></div>
+                <% }); %>
+              <% } %>
             </div>
           </td>
-          <td data-col="status"><span class="pill"><%= p.status %></span></td>
-          <td data-col="amount"><%= formatAmount(p.amountCents, p.currency) %></td>
-          <td data-col="user">
-            <div class="mono"><%= p.user?.publicId || '—' %></div>
-            <div><%= p.user?.email || '—' %></div>
-            <div class="mini"><%= p.user?.phone || '' %></div>
-          </td>
-          <td data-col="bank"><%= p.bankAccount?.bankName || '—' %></td>
-
-          <!-- RECEIPTS (updated for multi) -->
-          <td data-col="receipt" class="nowrap">
-            <% 
-              var receipts = p._receipts || p.receipts || null;
-              var count = (typeof p._receiptCount === 'number')
-                ? p._receiptCount
-                : (receipts ? receipts.length : (p.receiptFile ? 1 : 0));
-            %>
-            <div class="mini" style="margin-bottom:6px">Receipts: <%= count %></div>
-
-            <% if (receipts && receipts.length) { %>
-              <div class="row" style="gap:6px; flex-wrap:wrap">
-                <% receipts.forEach(function(r, idx){ %>
-                  <a class="btn small" href="<%= r.path %>" target="_blank">View <%= idx+1 %></a>
-                  <form method="post" action="/superadmin/payments/<%= p.id %>/receipts/<%= r.id %>/remove" style="display:inline">
-                    <button class="btn small" type="submit" onclick="return confirm('Remove this receipt?')">Remove</button>
-                  </form>
-                <% }) %>
-              </div>
-            <% } else if (p.receiptFile) { %>
-              <div class="row" style="gap:6px; flex-wrap:wrap">
-                <a class="btn small" href="<%= p.receiptFile.path %>" target="_blank">View</a>
-                <form method="post" action="/superadmin/payments/<%= p.id %>/receipt/remove" style="display:inline">
-                  <button class="btn small" type="submit" onclick="return confirm('Remove most recent receipt?')">Remove recent</button>
+          <td data-col="comment"><%= p.notes || p.rejectedReason || '-' %></td>
+            <td data-col="admin"><%= (p.processedByAdmin && (p.processedByAdmin.displayName || p.processedByAdmin.email)) || '-' %></td>
+            <% if (type === 'DEPOSIT') { %>
+            <td data-col="receipts" class="receipts-cell">
+              <div class="receipts-wrap">
+                <div class="receipts-count">Receipts: <%= receiptCount %></div>
+                <div class="receipt-list">
+                <% if (receipts && receipts.length) { %>
+                  <% receipts.forEach(function(r, idx){ %>
+                    <div class="receipt-item">
+                      <a class="receipt-link" href="<%= r.path %>" target="_blank" rel="noopener noreferrer">Receipt<%= idx ? ' ' + (idx + 1) : '' %></a>
+                      <form method="post" action="/superadmin/payments/<%= p.id %>/receipts/<%= r.id %>/remove" data-receipt-remove-form>
+                        <button type="button" class="receipt-remove" data-receipt-remove data-receipt-label="Receipt<%= idx ? ' ' + (idx + 1) : '' %>">&times;</button>
+                      </form>
+                    </div>
+                  <% }) %>
+                <% } else if (p.receiptFile) { %>
+                  <div class="receipt-item">
+                    <a class="receipt-link" href="<%= p.receiptFile.path %>" target="_blank" rel="noopener noreferrer">Receipt</a>
+                    <form method="post" action="/superadmin/payments/<%= p.id %>/receipt/remove" data-receipt-remove-form>
+                      <button type="button" class="receipt-remove" data-receipt-remove data-receipt-label="Receipt">&times;</button>
+                    </form>
+                  </div>
+                <% } else { %>
+                  <div class="mini" style="opacity:0.75">No receipts</div>
+                <% } %>
+                </div>
+                <form method="post" action="/superadmin/payments/<%= p.id %>/receipt" enctype="multipart/form-data" class="receipt-upload" data-receipt-upload-form>
+                  <input class="receipt-upload-input" type="file" name="receipt" accept="image/*,application/pdf" required data-receipt-input>
+                  <button class="btn small" type="button" data-receipt-trigger><%= (receiptCount>0) ? 'Add receipt' : 'Upload receipt' %></button>
                 </form>
               </div>
+            </td>
             <% } %>
-
-            <form method="post" action="/superadmin/payments/<%= p.id %>/receipt" enctype="multipart/form-data" style="display:inline-flex; gap:6px; margin-top:6px">
-              <input class="input" style="height:30px" type="file" name="receipt" accept="image/*,application/pdf" required>
-              <button class="btn small" type="submit"><%= (count>0) ? 'Add receipt' : 'Upload' %></button>
-            </form>
-          </td>
-          <!-- /RECEIPTS -->
-
-          <td data-col="created" class="mini"><%- renderDateTime(p.createdAt) %></td>
-          <td data-col="updated" class="mini"><%- renderDateTime(p.processedAt || p.updatedAt) %></td>
-          <td data-col="actions">
-            <div class="row" style="gap:6px; flex-wrap:wrap">
-              <form method="post" action="/superadmin/payments/<%= p.id %>/status" class="row" style="gap:6px">
+          <td data-col="actions" class="actions">
+            <div class="column" style="gap:10px">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/status" class="row" style="gap:6px; flex-wrap:wrap">
                 <select name="toStatus" class="input">
                   <% ['APPROVED','REJECTED','PENDING','SUBMITTED'].forEach(function(s){ %>
                     <option value="<%= s %>" <%= p.status===s ? 'selected' : '' %>><%= s %></option>
@@ -232,14 +374,14 @@
                 <button class="btn small" type="submit">Apply</button>
               </form>
 
-              <form method="post" action="/superadmin/payments/<%= p.id %>/edit-amount" class="row" style="gap:6px">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/edit-amount" class="row" style="gap:6px; flex-wrap:wrap">
                 <input class="input" type="number" step="0.01" name="amount" value="<%= (p.amountCents/100).toFixed(2) %>" style="width:120px">
                 <input class="input" name="currency" value="<%= p.currency %>" style="width:90px">
                 <input class="input" name="reason" placeholder="Reason (required) *" required>
                 <button class="btn small" type="submit">Save</button>
               </form>
 
-              <form method="post" action="/superadmin/payments/<%= p.id %>/notes" class="row" style="gap:6px">
+              <form method="post" action="/superadmin/payments/<%= p.id %>/notes" class="row" style="gap:6px; flex-wrap:wrap">
                 <input class="input" name="notes" value="<%= p.notes || '' %>" placeholder="Notes" style="width:220px">
                 <button class="btn small" type="submit">Save</button>
               </form>
@@ -247,15 +389,12 @@
           </td>
         </tr>
       <% }) %>
-      <% if (!items.length) { %>
-        <tr><td colspan="10" class="mini">No results.</td></tr>
-      <% } %>
     </tbody>
   </table>
 </div>
 
 <div class="row between" style="margin-top:10px">
-  <div class="mini">Showing <%= items.length %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <div class="mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
   <div class="row" style="gap:6px">
     <a class="btn small" href="<%= page>1 ? pageHref(basePath, query, page-1) : 'javascript:void(0)' %>">Prev</a>
     <a class="btn small" href="<%= page<pages ? pageHref(basePath, query, page+1) : 'javascript:void(0)' %>">Next</a>

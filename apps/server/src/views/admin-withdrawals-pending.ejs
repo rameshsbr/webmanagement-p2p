@@ -13,6 +13,31 @@
   }
 }) %>
 
+<%
+  let perPageOptions = [25, 50, 100, 150];
+  const perPageValue = Number(table.perPage || 25);
+  if (!perPageOptions.includes(perPageValue)) {
+    perPageOptions = [...perPageOptions, perPageValue].sort((a, b) => a - b);
+  }
+  const perPageSelectId = 'perPage-admin-withdrawals-pending';
+%>
+<div class="table-toolbar">
+  <form method="get">
+    <% Object.entries(query || {}).forEach(([key, value]) => {
+         if (value === undefined || value === null || value === '' || key === 'perPage' || key === 'page') return;
+    %>
+      <input type="hidden" name="<%= key %>" value="<%= value %>">
+    <% }); %>
+    <input type="hidden" name="page" value="1">
+    <label for="<%= perPageSelectId %>">Rows per page</label>
+    <select id="<%= perPageSelectId %>" name="perPage" onchange="this.form.submit()">
+      <% perPageOptions.forEach((size) => { %>
+        <option value="<%= size %>" <%= perPageValue === size ? 'selected' : '' %>><%= size %></option>
+      <% }); %>
+    </select>
+  </form>
+</div>
+
 <div class="table-wrap" data-auto-refresh="pending-withdrawals" data-return-to="<%= returnTo || '' %>">
   <table class="table" data-withdraw-actions>
     <thead>

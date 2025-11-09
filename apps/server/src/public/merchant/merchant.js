@@ -16,6 +16,21 @@
   });
 })();
 
+// Collapsible panels (persisted per storage key)
+document.querySelectorAll('[data-collapsible]').forEach((box) => {
+  const btn = box.querySelector('[data-toggle-collapse]');
+  if (!btn) return;
+  const key = (box.getAttribute('data-storage-key') || 'merchant.collapsible') + '::collapsed';
+  const set = (v) => box.classList.toggle('is-collapsed', !!v);
+  const saved = localStorage.getItem(key);
+  if (saved !== null) set(saved === '1');
+  btn.addEventListener('click', () => {
+    const next = !box.classList.contains('is-collapsed');
+    set(next);
+    localStorage.setItem(key, next ? '1' : '0');
+  });
+});
+
 // Column visibility (shared with admin tables)
 (() => {
   document.querySelectorAll('[data-col-toggle]').forEach((cb) => {

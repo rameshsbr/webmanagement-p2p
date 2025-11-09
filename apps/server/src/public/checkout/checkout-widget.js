@@ -18,6 +18,7 @@
 
   // Merchant-level forms (loaded at init). We will still use these for withdrawals.
   let _forms = { ok: true, deposit: [], withdrawal: [] };
+  const _withdrawalFormCache = {};
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -311,6 +312,56 @@
     return buildDynamicFrom(list, draftExtras);
   }
 
+  const WITHDRAWAL_FALLBACK_FIELDS = {
+    OSKO: [
+      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, digits: 0 },
+      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, digits: 0 },
+      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, digits: 6 },
+    ],
+    PAYID: [
+      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, digits: 0 },
+      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, digits: 0 },
+    ],
+  };
+
+  function canonicalWithdrawalKey(name) {
+    const key = normKey(name);
+    if (!key) return key;
+    if (["account number", "account no", "account", "acct number"].includes(key)) return "account-number";
+    if (["account holder name", "holder name", "account name", "name"].includes(key)) return "account-holder";
+    if (["bsb"].includes(key)) return "bsb";
+    if (["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"].includes(key)) return "bank-name";
+    if (["payid value", "payid", "email", "payid (email)", "payid (mobile)", "mobile", "phone"].includes(key)) return "payid-value";
+    return key;
+  }
+
+  function mergeWithdrawalFields(methodVal, baseFields) {
+    const base = Array.isArray(baseFields)
+      ? baseFields
+      : (Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : []);
+    const defaults = WITHDRAWAL_FALLBACK_FIELDS[methodVal] || [];
+    const seen = new Set();
+    const merged = [];
+
+    base.forEach((f) => {
+      if (!f || !f.name) return;
+      const key = canonicalWithdrawalKey(f.name);
+      if (!key) return;
+      seen.add(key);
+      merged.push(f);
+    });
+
+    defaults.forEach((f) => {
+      if (!f || !f.name) return;
+      const key = canonicalWithdrawalKey(f.name);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      merged.push(f);
+    });
+
+    return merged;
+  }
+
   // Helper: pick the same bank the server would choose for a given method,
   // then fetch that bank's form config.
   async function getBankAndFormsForMethod(token, methodValue) {
@@ -319,11 +370,19 @@
 
     if (first && first.id) {
       const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(first.id)}`, token, { method: "GET" });
-      return { bankId: first.id, depositFields: cfg.deposit || [] };
+      return {
+        bankId: first.id,
+        depositFields: cfg.deposit || [],
+        withdrawalFields: cfg.withdrawal || [],
+      };
     }
 
     const cfg = await call(`/public/forms`, token, { method: "GET" });
-    return { bankId: null, depositFields: cfg.deposit || [] };
+    return {
+      bankId: null,
+      depositFields: cfg.deposit || [],
+      withdrawalFields: cfg.withdrawal || [],
+    };
   }
 
   // Infer payer/destination from dynamic form values
@@ -340,11 +399,19 @@
   }
   function inferPayerFromExtras(methodVal, extras) {
     const ex = extras || {};
+    const bankNameRaw = findValue(ex, ["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"]);
+    const bankName = bankNameRaw != null ? String(bankNameRaw).trim() : "";
+
     if (methodVal === "OSKO") {
       const holderName = findValue(ex, ["account holder name", "holder name", "account name", "name"]);
       const accountNo = findValue(ex, ["account number", "account no", "account #", "acct number"]);
       const bsb = findValue(ex, ["bsb"]);
-      return { holderName: String(holderName || ""), accountNo: String(accountNo || ""), bsb: String(bsb || "") };
+      return {
+        holderName: String(holderName || ""),
+        accountNo: String(accountNo || ""),
+        bsb: String(bsb || ""),
+        bankName: bankName || undefined,
+      };
     }
     const email = findValue(ex, ["email", "payid (email)"]);
     let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
@@ -359,7 +426,12 @@
       if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pv)) { type = "email"; value = pv; }
       else if (looksMobile(pv)) { type = "mobile"; value = pv; }
     }
-    return { holderName: String(holderName || ""), payIdType: type, payIdValue: value };
+    return {
+      holderName: String(holderName || ""),
+      payIdType: type,
+      payIdValue: value,
+      bankName: bankName || undefined,
+    };
   }
 
   // ─────────────────────────────────────────────────────────
@@ -574,10 +646,14 @@
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
     if (draft.method) method.value = draft.method;
 
-    const dyn = buildDynamic("withdrawal", draft.extras);
+    const dynMount = el("div");
+    const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
+    dynMount.appendChild(loadingNotice);
+    let dyn = buildDynamicFrom([], draft.extras);
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
 
     submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
+    setEnabled(submit, false);
 
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
@@ -593,12 +669,45 @@
       setEnabled(submit, !err);
       status.textContent = err || "";
     }
-    [amount, method].forEach(i => {
-      i && i.addEventListener(i.tagName === "SELECT" ? "change" : "input", updateValidity);
-    });
-    dyn.wrap.addEventListener("input", updateValidity);
-    dyn.wrap.addEventListener("change", updateValidity);
-    updateValidity();
+
+    let refreshSeq = 0;
+    async function refreshDynamicFields() {
+      const seq = ++refreshSeq;
+      const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
+      let baseFields = null;
+
+      if (Object.prototype.hasOwnProperty.call(_withdrawalFormCache, method.value)) {
+        baseFields = _withdrawalFormCache[method.value];
+      } else {
+        try {
+          const { withdrawalFields } = await getBankAndFormsForMethod(token, method.value);
+          if (Array.isArray(withdrawalFields)) {
+            _withdrawalFormCache[method.value] = withdrawalFields;
+            baseFields = withdrawalFields;
+          }
+        } catch (err) {
+          // ignore
+        }
+      }
+
+      if (!Array.isArray(baseFields) || baseFields.length === 0) {
+        baseFields = Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : [];
+      }
+
+      const next = buildDynamicFrom(mergeWithdrawalFields(method.value, baseFields), prev);
+      if (seq !== refreshSeq) return;
+
+      dyn = next;
+      dynMount.innerHTML = "";
+      dynMount.appendChild(dyn.wrap);
+      updateValidity();
+    }
+
+    [amount].forEach(i => { i && i.addEventListener("input", updateValidity); });
+    method.addEventListener("change", () => { refreshDynamicFields(); });
+    dynMount.addEventListener("input", updateValidity);
+    dynMount.addEventListener("change", updateValidity);
+    refreshDynamicFields().then(() => updateValidity());
 
     submit.addEventListener("click", async () => {
       const amountCents = normalizeAmountInput(amount.value);
@@ -635,7 +744,7 @@
 
     box.appendChild(inputRow("Amount (AUD)", amount));
     box.appendChild(inputRow("Method", method));
-    box.appendChild(dyn.wrap);
+    box.appendChild(dynMount);
     box.appendChild(submit);
     box.appendChild(status);
   }

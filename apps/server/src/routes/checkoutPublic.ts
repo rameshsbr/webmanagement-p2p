@@ -72,11 +72,13 @@ const payerOsko = z.object({
   holderName: z.string().min(2),
   accountNo: z.string().regex(/^\d{10,12}$/),
   bsb: z.string().regex(/^\d{6}$/),
+  bankName: z.string().min(1).optional(),
 });
 const payerPayId = z.object({
   holderName: z.string().min(2),
   payIdType: z.enum(["mobile", "email"]),
   payIdValue: z.union([z.string().email(), z.string().regex(/^\+?61\d{9}$/)]),
+  bankName: z.string().min(1).optional(),
 });
 
 function nowIso() { return new Date().toISOString(); }
@@ -605,16 +607,25 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   let destRecord;
   if (body.method === "OSKO") {
     const d = body.destination as z.infer<typeof payerOsko>;
-    destRecord = await prisma.withdrawalDestination.create({
-      data: { userId: user.id, currency, bankName: "OSKO", holderName: d.holderName, accountNo: d.accountNo, iban: null },
-    });
-  } else {
-    const d = body.destination as z.infer<typeof payerPayId>;
+    const bankName = (d.bankName || "").trim() || "OSKO";
     destRecord = await prisma.withdrawalDestination.create({
       data: {
         userId: user.id,
         currency,
-        bankName: `PAYID-${d.payIdType.toUpperCase()}`,
+        bankName,
+        holderName: d.holderName,
+        accountNo: d.accountNo,
+        iban: null,
+      },
+    });
+  } else {
+    const d = body.destination as z.infer<typeof payerPayId>;
+    const bankName = (d.bankName || "").trim() || `PAYID-${d.payIdType.toUpperCase()}`;
+    destRecord = await prisma.withdrawalDestination.create({
+      data: {
+        userId: user.id,
+        currency,
+        bankName,
         holderName: d.holderName,
         accountNo: d.payIdValue,
         iban: null,

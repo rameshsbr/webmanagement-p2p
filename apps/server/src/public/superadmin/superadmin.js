@@ -9,6 +9,57 @@
   });
 })();
 
+// Shared collapsible cards (persisted locally)
+document.querySelectorAll('[data-collapsible]').forEach((box) => {
+  const btn = box.querySelector('[data-toggle-collapse]');
+  if (!btn) return;
+
+  const storageKey = (box.getAttribute('data-storage-key') || 'sa.collapsible') + '::collapsed';
+  const setCollapsed = (v) => box.classList.toggle('is-collapsed', !!v);
+
+  const saved = (() => {
+    try { return localStorage.getItem(storageKey); } catch { return null; }
+  })();
+  if (saved !== null) setCollapsed(saved === '1');
+
+  btn.addEventListener('click', () => {
+    const next = !box.classList.contains('is-collapsed');
+    setCollapsed(next);
+    try { localStorage.setItem(storageKey, next ? '1' : '0'); } catch {}
+  });
+});
+
+// Column visibility toggles (persisted per storage key)
+(() => {
+  const toggles = document.querySelectorAll('[data-col-toggle]');
+  if (!toggles.length) return;
+
+  toggles.forEach((cb) => {
+    const container = cb.closest('[data-collapsible]');
+    const storageKey = container?.getAttribute('data-storage-key') || 'sa.columns';
+
+    let saved = {};
+    try { saved = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
+
+    const col = cb.getAttribute('data-col-toggle');
+    if (Object.prototype.hasOwnProperty.call(saved, col)) cb.checked = !!saved[col];
+
+    const apply = () => {
+      document.querySelectorAll(`[data-col="${col}"]`).forEach((el) => {
+        el.style.display = cb.checked ? '' : 'none';
+      });
+
+      let next = {};
+      try { next = JSON.parse(localStorage.getItem(storageKey) || '{}') || {}; } catch {}
+      next[col] = cb.checked;
+      try { localStorage.setItem(storageKey, JSON.stringify(next)); } catch {}
+    };
+
+    cb.addEventListener('change', apply);
+    apply();
+  });
+})();
+
 // Sidebar sections, theme toggle, timezone list, prefs UX
 (function () {
   // ──────────────────────────────────────────────────────────

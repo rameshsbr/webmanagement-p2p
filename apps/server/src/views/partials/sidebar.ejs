@@ -15,8 +15,10 @@
     <a class="nav-link" href="/admin/report/deposits/pending">Pending deposit requests</a>
     <a class="nav-link" href="/admin/report/withdrawals">Withdrawal requests</a>
     <a class="nav-link" href="/admin/report/withdrawals/pending">Pending withdrawal requests</a>
-    <div class="nav-group">USERS</div>
-    <a class="nav-link" href="/admin/users">Users</a>
+    <% if (!ADM || ADM.canViewUsers !== false) { %>
+      <div class="nav-group">USERS</div>
+      <a class="nav-link" href="/admin/users">Users</a>
+    <% } %>
   </nav>
 </div>
 

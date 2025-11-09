@@ -53,19 +53,46 @@
 
   .ios-toggle-switch { position: relative; display:inline-block; width: 44px; height: 24px; }
   .ios-toggle-switch input { opacity:0; width:0; height:0; }
-  .ios-toggle-switch .slider { position:absolute; inset:0; cursor:pointer; background:#cbd5e1; transition:.25s; border-radius:24px; box-shadow: inset 0 0 0 1px #b6c0cf; }
-  .ios-toggle-switch .slider:before { content:""; position:absolute; height:18px; width:18px; left:3px; bottom:3px; background:#fff; border-radius:50%; transition:.25s; box-shadow:0 1px 2px rgba(0,0,0,.2); }
-  .ios-toggle-switch input:checked + .slider { background:#34c759; box-shadow: inset 0 0 0 1px #2fb24f; }
+  .ios-toggle-switch .slider {
+    position:absolute; inset:0; cursor:pointer; border-radius:24px;
+    background: color-mix(in oklab, var(--surface-elevated) 85%, var(--surface));
+    box-shadow: inset 0 0 0 1px var(--border);
+    transition:.25s;
+  }
+  .ios-toggle-switch .slider:before {
+    content:""; position:absolute; height:18px; width:18px; left:3px; bottom:3px;
+    background: var(--card); border-radius:50%; transition:.25s;
+    box-shadow:0 1px 2px rgba(15,23,42,.18);
+  }
+  .ios-toggle-switch input:checked + .slider {
+    background: color-mix(in oklab, var(--tone-success) 70%, var(--surface));
+    box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--tone-success) 70%, var(--border));
+  }
   .ios-toggle-switch input:checked + .slider:before { transform: translateX(20px); }
 
   #extraTable { display:none; }
-  .muted { color:#6b7280; font-size:12px; }
+  .muted { color:var(--ink-dim); font-size:var(--fs-12); }
   .builder { display:grid; grid-template-columns: 1fr 200px 1fr 140px 120px; gap:8px; align-items:center; margin: 8px 0 8px; }
 
-  .iconbtn, .pencil-core, .trash-core { border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:6px; cursor:pointer; line-height:0; }
-  .iconbtn:hover, .pencil-core:hover, .trash-core:hover { background:#f9fafb; }
+  .iconbtn, .pencil-core, .trash-core {
+    border:1px solid var(--border);
+    background:var(--surface);
+    border-radius:8px;
+    padding:6px;
+    cursor:pointer;
+    line-height:0;
+    color: var(--ink-dim);
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+  }
+  .iconbtn:hover, .pencil-core:hover, .trash-core:hover { background:var(--ghost); }
+  .trash-core { color: var(--danger); }
 
-  .editable-label[data-editing="1"] { outline: 2px solid #93c5fd; background: #eff6ff; border-radius: 6px; padding: 0 4px; }
+  .editable-label[data-editing="1"] {
+    outline: 2px solid color-mix(in oklab, var(--tone-info) 45%, var(--ghost));
+    background: color-mix(in oklab, var(--tone-info) 16%, var(--surface));
+    border-radius: 6px;
+    padding: 0 4px;
+  }
 
   #extraMount { display:grid; grid-template-columns: repeat(12, 1fr); gap:14px; }
   .extra-card { grid-column: span 6; display:flex; flex-direction:column; gap:6px; }
@@ -73,7 +100,17 @@
   .promoted-grid { display:grid; grid-template-columns: repeat(12, 1fr); gap:14px; }
 
   /* Drag & drop */
-  .drag-handle { border:1px solid #e5e7eb; background:#fff; border-radius:8px; padding:6px; cursor:grab; line-height:0; }
+  .drag-handle {
+    border:1px solid var(--border);
+    background:var(--surface);
+    border-radius:8px;
+    padding:6px;
+    cursor:grab;
+    line-height:0;
+    color: var(--ink-dim);
+    transition: background .18s ease, color .18s ease, border-color .18s ease;
+  }
+  .drag-handle:hover { background: var(--ghost); }
   .drag-handle:active { cursor:grabbing; }
   .draggable.dragging { opacity:.6; }
 
@@ -151,10 +188,10 @@
           <span class="labelline">
             <span class="editable-label" data-core="holderName" data-default="Account Holder Name"><%- coreLabel('holderName','Account Holder Name') %></span>
             <button type="button" class="pencil-core" data-edit="holderName" title="Rename">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button type="button" class="trash-core" data-delete-core="holderName" title="Remove this field">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <!-- visibility + deleted flags -->
             <input type="hidden" name="core_visible_holderName" value="<%= coreVisible('holderName') ? 1 : 0 %>">
@@ -165,7 +202,7 @@
             </label>
           </span>
           <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
         <input type="hidden" name="core_order_holderName" value="<%= (core.holderName && typeof core.holderName.order==='number') ? core.holderName.order : coreOrderDefault('holderName') %>">
@@ -180,10 +217,10 @@
           <span class="labelline">
             <span class="editable-label" data-core="bankName" data-default="Bank Name"><%- coreLabel('bankName','Bank Name') %></span>
             <button type="button" class="pencil-core" data-edit="bankName" title="Rename">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button type="button" class="trash-core" data-delete-core="bankName" title="Remove this field">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <input type="hidden" name="core_visible_bankName" value="<%= coreVisible('bankName') ? 1 : 0 %>">
             <input type="hidden" name="core_deleted_bankName" value="0">
@@ -193,7 +230,7 @@
             </label>
           </span>
           <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
         <input type="hidden" name="core_order_bankName" value="<%= (core.bankName && typeof core.bankName.order==='number') ? core.bankName.order : coreOrderDefault('bankName') %>">
@@ -208,10 +245,10 @@
           <span class="labelline">
             <span class="editable-label" data-core="accountNo" data-default="Account / PayID Value"><%- coreLabel('accountNo','Account / PayID Value') %></span>
             <button type="button" class="pencil-core" data-edit="accountNo" title="Rename">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button type="button" class="trash-core" data-delete-core="accountNo" title="Remove this field">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <input type="hidden" name="core_visible_accountNo" value="<%= coreVisible('accountNo') ? 1 : 0 %>">
             <input type="hidden" name="core_deleted_accountNo" value="0">
@@ -221,7 +258,7 @@
             </label>
           </span>
           <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
         <input type="hidden" name="core_order_accountNo" value="<%= (core.accountNo && typeof core.accountNo.order==='number') ? core.accountNo.order : coreOrderDefault('accountNo') %>">
@@ -236,10 +273,10 @@
           <span class="labelline">
             <span class="editable-label" data-core="iban" data-default="IBAN (optional)"><%- coreLabel('iban','IBAN (optional)') %></span>
             <button type="button" class="pencil-core" data-edit="iban" title="Rename">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button type="button" class="trash-core" data-delete-core="iban" title="Remove this field">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <input type="hidden" name="core_visible_iban" value="<%= coreVisible('iban') ? 1 : 0 %>">
             <input type="hidden" name="core_deleted_iban" value="0">
@@ -249,7 +286,7 @@
             </label>
           </span>
           <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
         <input type="hidden" name="core_order_iban" value="<%= (core.iban && typeof core.iban.order==='number') ? core.iban.order : coreOrderDefault('iban') %>">
@@ -264,10 +301,10 @@
           <span class="labelline">
             <span class="editable-label" data-core="label" data-default="Label (shown to payers)"><%- coreLabel('label','Label (shown to payers)') %></span>
             <button type="button" class="pencil-core" data-edit="label" title="Rename">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <button type="button" class="trash-core" data-delete-core="label" title="Remove this field">
-              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
             </button>
             <input type="hidden" name="core_visible_label" value="<%= coreVisible('label') ? 1 : 0 %>">
             <input type="hidden" name="core_deleted_label" value="0">
@@ -277,7 +314,7 @@
             </label>
           </span>
           <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           </button>
         </div>
         <input type="hidden" name="core_order_label" value="<%= (core.label && typeof core.label.order==='number') ? core.label.order : coreOrderDefault('label') %>">
@@ -308,10 +345,10 @@
               <span class="labelline">
                 <span class="editable-label" data-core="<%- key %>" data-default="<%- defLabel %>"><%- coreLabel(key, defLabel) %></span>
                 <button type="button" class="pencil-core" data-edit="<%- key %>" title="Rename">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </button>
                 <button type="button" class="trash-core" data-delete-core="<%- key %>" title="Remove this field">
-                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </button>
                 <input type="hidden" name="core_visible_<%- key %>" value="<%= vis ? 1 : 0 %>">
                 <input type="hidden" name="core_deleted_<%- key %>" value="0">
@@ -321,7 +358,7 @@
                 </label>
               </span>
               <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
               </button>
             </div>
             <input type="hidden" name="core_order_<%- key %>" value="<%= orderVal %>">
@@ -403,7 +440,7 @@
             <% extra.forEach((f) => { %>
               <tr data-uid="x<%- (Math.random().toString(36).slice(2,10)) %>">
                 <td class="menu"><button type="button" class="iconbtn editBtn" title="Edit">
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
                 </button></td>
                 <td>
                   <input name="extra_label[]" value="<%- f.label %>" />
@@ -652,10 +689,10 @@
     <span class="labelline">
       <span class="editable-label" data-extra="${id}">${inLabel.value || ''}</span>
       <button type="button" class="iconbtn pencil-extra" title="Rename">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <button type="button" class="iconbtn trash-extra" title="Delete">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 6h18M8 6l1-2h6l1 2m-1 0-1 14H9L8 6Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <label class="ios-toggle-switch">
         <input type="checkbox" class="extra-visible" ${inVisHid.value==='1'?'checked':''} />
@@ -663,7 +700,7 @@
       </label>
     </span>
     <button type="button" class="drag-handle" draggable="true" title="Drag to reorder">
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/></svg>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 6h.01M15 6h.01M9 12h.01M15 12h.01M9 18h.01M15 18h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
     </button>
   </div>
   <div class="control-row">
@@ -795,7 +832,7 @@
     tr.dataset.uid = 'x' + Math.random().toString(36).slice(2,10);
     tr.innerHTML = `
       <td class="menu"><button type="button" class="iconbtn editBtn" title="Edit">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="#6b7280" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="#6b7280" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 20h9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L8 18l-4 1 1-4 11.5-11.5Z" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button></td>
       <td>
         <input name="extra_label[]" value="${label.replace(/"/g,'&quot;')}" />

@@ -19,7 +19,7 @@
 %>
 
 <% if (credsBlock) { %>
-  <div class="card" style="border-color:#34d399;background:#ecfdf5;margin-bottom:12px">
+  <div class="card tone-success" style="margin-bottom:12px">
     <div class="title">User created</div>
     <p>Temporary credentials (shown once):</p>
     <div class="row" style="gap:8px; align-items:center;">
@@ -45,6 +45,7 @@
       <col style="width:14%"/>
       <col style="width:14%"/>
       <col style="width:18%"/>
+      <col style="width:18%"/>
     </colgroup>
     <thead>
       <tr>
@@ -52,6 +53,7 @@
         <th>Role</th>
         <th>Active</th>
         <th>2FA</th>
+        <th>Users access</th>
         <th></th>
       </tr>
     </thead>
@@ -62,6 +64,7 @@
           <td><%= u.role %></td>
           <td><%= u.active ? 'yes' : 'no' %></td>
           <td><%= u.twoFactorEnabled ? 'enabled' : '—' %></td>
+          <td><%= u.canViewUserDirectory !== false ? 'yes' : 'no' %></td>
           <td class="nowrap">
             <a class="btn small" href="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/edit">Edit</a>
             <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/force-reset" style="display:inline">

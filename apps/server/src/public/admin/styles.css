@@ -388,7 +388,7 @@ textarea{
   display:inline-flex;
   align-items:center;
   border-radius:8px;
-  overflow:hidden;
+  overflow:visible;
 }
 .export-control .btn{
   border-radius:0;

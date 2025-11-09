@@ -166,6 +166,9 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         },
         user: { select: { id: true, publicId: true, email: true, phone: true } },
         merchant: { select: { id: true, name: true } },
+        processedByAdmin: {
+          select: { id: true, email: true, displayName: true },
+        },
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -173,15 +176,119 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
     }),
   ]);
 
-  const items = rawItems.map((x: any) => {
-    const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
-    return {
-      ...x,
-      receiptFile: first,
-      _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
-      _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+  const formCache = new Map<string, { deposit: any[]; withdrawal: any[] }>();
+
+  async function ensureFormConfig(
+    merchantId: string,
+    bankAccountId: string | null
+  ) {
+    const key = `${merchantId}::${bankAccountId || "null"}`;
+    if (formCache.has(key)) return formCache.get(key)!;
+
+    let row: any = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId, bankAccountId },
+    });
+
+    if (!row && bankAccountId) {
+      row = await prisma.merchantFormConfig.findFirst({
+        where: { merchantId, bankAccountId: null },
+      });
+    }
+
+    const entry = {
+      deposit: cleanRows(((row as any)?.deposit as any[]) || []),
+      withdrawal: cleanRows(((row as any)?.withdrawal as any[]) || []),
     };
+    formCache.set(key, entry);
+    return entry;
+  }
+
+  const comboList: Array<{ merchantId: string; bankAccountId: string | null }> = [];
+  const comboSeen = new Set<string>();
+
+  rawItems.forEach((x: any) => {
+    const bankKey = type === "DEPOSIT" ? x.bankAccountId || null : null;
+    const key = `${x.merchantId}::${bankKey || "null"}`;
+    if (!comboSeen.has(key)) {
+      comboSeen.add(key);
+      comboList.push({ merchantId: x.merchantId, bankAccountId: bankKey });
+    }
   });
+
+  await Promise.all(
+    comboList.map(({ merchantId, bankAccountId }) =>
+      ensureFormConfig(merchantId, bankAccountId)
+    )
+  );
+
+  const items = await Promise.all(
+    rawItems.map(async (x: any) => {
+      const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
+      const extras =
+        x?.detailsJson && typeof x.detailsJson === "object" && !Array.isArray(x.detailsJson)
+          ? (x.detailsJson as any)?.extras || {}
+          : {};
+
+      const extrasObj =
+        extras && typeof extras === "object" && !Array.isArray(extras)
+          ? (extras as Record<string, any>)
+          : {};
+
+      let orderedExtras: Array<{ label: string; value: any }> = [];
+
+      if (type === "DEPOSIT") {
+        const cfg = await ensureFormConfig(x.merchantId, x.bankAccountId || null);
+        const defined = Array.isArray(cfg.deposit) ? cfg.deposit : [];
+        if (defined.length) {
+          orderedExtras = defined.map((field: any) => ({
+            label: field.name,
+            value: extrasObj[field.name],
+          }));
+
+          const remainingKeys = Object.keys(extrasObj).filter(
+            (key) => !defined.some((field: any) => field.name === key)
+          );
+          remainingKeys.forEach((key) => {
+            orderedExtras.push({ label: key, value: extrasObj[key] });
+          });
+        } else {
+          orderedExtras = Object.keys(extrasObj).map((key) => ({
+            label: key,
+            value: extrasObj[key],
+          }));
+        }
+      } else {
+        const cfg = await ensureFormConfig(x.merchantId, null);
+        const defined = Array.isArray(cfg.withdrawal) ? cfg.withdrawal : [];
+        if (defined.length) {
+          orderedExtras = defined.map((field: any) => ({
+            label: field.name,
+            value: extrasObj[field.name],
+          }));
+
+          const remainingKeys = Object.keys(extrasObj).filter(
+            (key) => !defined.some((field: any) => field.name === key)
+          );
+          remainingKeys.forEach((key) => {
+            orderedExtras.push({ label: key, value: extrasObj[key] });
+          });
+        } else {
+          orderedExtras = Object.keys(extrasObj).map((key) => ({
+            label: key,
+            value: extrasObj[key],
+          }));
+        }
+      }
+
+      return {
+        ...x,
+        receiptFile: first,
+        _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
+        _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+        _extrasList: orderedExtras,
+      };
+    })
+  );
 
   return {
     total,

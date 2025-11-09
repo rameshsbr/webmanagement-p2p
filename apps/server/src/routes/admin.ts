@@ -390,7 +390,10 @@ router.get('/notifications/queue', async (req, res) => {
   const withdrawalWhere = {
     type: 'WITHDRAWAL' as const,
     status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
-    createdAt: { gt: since },
+    OR: [
+      { createdAt: { gt: since } },
+      { updatedAt: { gt: since } },
+    ],
   };
 
   const [deposits, withdrawals, latestDeposit, latestWithdrawal] = await Promise.all([
@@ -403,14 +406,14 @@ router.get('/notifications/queue', async (req, res) => {
     }),
     prisma.paymentRequest.findFirst({
       where: withdrawalWhere,
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
+      orderBy: { updatedAt: 'desc' },
+      select: { createdAt: true, updatedAt: true },
     }),
   ]);
 
   const latestCandidates = [
     latestDeposit?.updatedAt || latestDeposit?.createdAt,
-    latestWithdrawal?.createdAt,
+    latestWithdrawal?.updatedAt || latestWithdrawal?.createdAt,
   ]
     .filter((d): d is Date => !!d);
   const latest = latestCandidates.length

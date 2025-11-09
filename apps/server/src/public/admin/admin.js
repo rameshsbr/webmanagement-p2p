@@ -562,6 +562,8 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   if (!shell) return;
 
   const NotificationAPI = 'Notification' in window ? window.Notification : null;
+  const hostName = (window.location.hostname || '').toLowerCase();
+  const isLocalHost = hostName === 'localhost' || hostName === '127.0.0.1' || hostName === '::1';
   let lastStamp = Date.now();
   let audioCtx = null;
   let autoReloadScheduled = false;
@@ -578,7 +580,7 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   const notificationStatus = () => {
     if (!NotificationAPI) return 'unsupported';
-    if (!window.isSecureContext) return 'insecure';
+    if (!window.isSecureContext && !isLocalHost) return 'insecure';
     return NotificationAPI.permission || 'default';
   };
 
@@ -744,7 +746,7 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   const showBrowserNotification = async (title, message, tag, url) => {
     if (!NotificationAPI) return false;
-    if (!window.isSecureContext) return false;
+    if (!window.isSecureContext && !isLocalHost) return false;
     if (NotificationAPI.permission === 'default') {
       requestPermission();
       return false;

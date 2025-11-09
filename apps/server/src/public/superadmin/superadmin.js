@@ -336,6 +336,83 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
+(function () {
+  const triggers = document.querySelectorAll('[data-account-modal-open]');
+  if (!triggers.length) return;
+
+  const openModal = (templateId) => {
+    if (!templateId) return;
+    const tpl = document.getElementById(templateId);
+    if (!tpl || !('content' in tpl)) return;
+
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+
+    const card = document.createElement('div');
+    card.className = 'modal-card account-modal-card';
+
+    const fragment = tpl.content.cloneNode(true);
+    card.appendChild(fragment);
+    overlay.appendChild(card);
+
+    const close = () => {
+      overlay.classList.remove('is-visible');
+      document.removeEventListener('keydown', onKeyDown, true);
+      setTimeout(() => overlay.remove(), 180);
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close();
+      }
+    };
+
+    const cancelBtn = card.querySelector('[data-close-modal]');
+    if (cancelBtn) {
+      cancelBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        close();
+      });
+    }
+
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+
+    const fileInput = card.querySelector('[data-account-file-input]');
+    const fileTrigger = card.querySelector('[data-account-file-trigger]');
+    const fileName = card.querySelector('[data-account-file-name]');
+    if (fileTrigger && fileInput) {
+      fileTrigger.addEventListener('click', (event) => {
+        event.preventDefault();
+        fileInput.click();
+      });
+      fileInput.addEventListener('change', () => {
+        const next = fileInput.files && fileInput.files[0] ? fileInput.files[0].name : 'No file chosen';
+        if (fileName) fileName.textContent = next;
+      });
+    }
+
+    const firstField = card.querySelector('select, input, textarea');
+
+    document.body.appendChild(overlay);
+    document.addEventListener('keydown', onKeyDown, true);
+    requestAnimationFrame(() => {
+      overlay.classList.add('is-visible');
+      if (firstField && typeof firstField.focus === 'function') firstField.focus();
+    });
+  };
+
+  triggers.forEach((trigger) => {
+    trigger.addEventListener('click', (event) => {
+      event.preventDefault();
+      const tpl = trigger.getAttribute('data-account-modal-open');
+      openModal(tpl);
+    });
+  });
+})();
+
 // Sidebar sections, theme toggle, timezone list, prefs UX
 (function () {
   // ──────────────────────────────────────────────────────────

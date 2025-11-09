@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Express } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma.js";
 import { requireRole } from "../middleware/roles.js";
@@ -7,6 +8,7 @@ import { auditAdmin } from "../services/audit.js";
 import * as XLSX from "xlsx";
 import multer from "multer";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
 import { generateBankPublicId } from "../services/reference.js";
@@ -20,6 +22,12 @@ import {
   PaymentExportColumn,
   PaymentExportItem,
 } from "../services/paymentExports.js";
+import {
+  createAccountEntry,
+  listAccountEntries,
+  listMerchantBalances,
+} from "../services/merchantAccounts.js";
+import type { MerchantAccountEntryType } from "@prisma/client";
 
 export const superAdminRouter = Router();
 
@@ -167,6 +175,40 @@ async function collectUsersForSuperAdmin(merchantIds: string[], search?: string 
   if (!merchantIds.length) return [];
   return getAllUsers({ merchantIds, search: search ?? null });
 }
+
+function parseAmountToCents(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return Math.round(raw * 100);
+  }
+  const str = String(raw ?? "").replace(/,/g, "").trim();
+  if (!str) return null;
+  const value = Number(str);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value * 100);
+}
+
+async function loadAccountPageData(
+  type: MerchantAccountEntryType,
+  merchantId?: string | null
+) {
+  const merchants = await listMerchantBalances();
+  const entries = await listAccountEntries({ type, merchantId: merchantId || null });
+  return { merchants, entries };
+}
+
+// Multer setup (store in /uploads so they're web-accessible via /uploads/*)
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      cb(null, path.join(process.cwd(), "uploads"));
+    },
+    filename: (_req, file, cb) => {
+      const base = file.originalname.replace(/[^\w.\-]+/g, "_").slice(-100);
+      cb(null, `${Date.now()}_${base}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
 
 function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const where: any = { type };
@@ -1737,22 +1779,262 @@ superAdminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────
-// Payments — pages, edits, exports
+// Accounts — balances, settlements, topups
 // ───────────────────────────────────────────────────────────────
 
-// Multer setup (store in /uploads so they're web-accessible via /uploads/*)
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      cb(null, path.join(process.cwd(), "uploads"));
-    },
-    filename: (_req, file, cb) => {
-      const base = file.originalname.replace(/[^\w.\-]+/g, "_").slice(-100);
-      cb(null, `${Date.now()}_${base}`);
-    },
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+superAdminRouter.get("/accounts", (_req, res) => {
+  res.redirect("/superadmin/accounts/balance");
 });
+
+superAdminRouter.get("/accounts/balance", async (_req, res) => {
+  const balances = await listMerchantBalances();
+  res.render("superadmin/accounts-balance", {
+    title: "Accounts · Balance",
+    balances,
+  });
+});
+
+function pickMerchantFilter(raw: unknown): string {
+  if (Array.isArray(raw)) {
+    const last = raw[raw.length - 1];
+    return typeof last === "string" ? last.trim() : "";
+  }
+  if (typeof raw === "string") return raw.trim();
+  return "";
+}
+
+function buildAccountViewModel(opts: {
+  title: string;
+  merchants: Awaited<ReturnType<typeof listMerchantBalances>>;
+  entries: Awaited<ReturnType<typeof listAccountEntries>>;
+  merchantId: string;
+  success?: string | null;
+  error?: string | null;
+  form?: { merchantId?: string; amount?: string; method?: string; note?: string } | null;
+}) {
+  return {
+    title: opts.title,
+    merchants: opts.merchants,
+    entries: opts.entries,
+    filters: { merchantId: opts.merchantId },
+    success: opts.success ?? null,
+    error: opts.error ?? null,
+    form: opts.form ?? null,
+  };
+}
+
+superAdminRouter.get("/accounts/settlements", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId || null);
+  res.render(
+    "superadmin/accounts-settlements",
+    buildAccountViewModel({
+      title: "Accounts · Settlements",
+      merchants,
+      entries,
+      merchantId,
+      success: typeof req.query?.success === "string" ? req.query.success : null,
+    })
+  );
+});
+
+superAdminRouter.post(
+  "/accounts/settlements",
+  upload.single("receipt"),
+  async (req: any, res) => {
+    const merchantId = pickMerchantFilter(req.body?.merchantId);
+    const method = String(req.body?.method || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const amountCents = parseAmountToCents(req.body?.amount ?? req.body?.amountCents);
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!merchantId) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", null);
+      return res.status(400).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId: "",
+          error: "Merchant is required",
+          form: { amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    if (amountCents === null) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId);
+      return res.status(400).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId,
+          error: "Enter a valid amount",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    try {
+      await createAccountEntry({
+        merchantId,
+        type: "SETTLEMENT",
+        amountCents,
+        method,
+        note,
+        adminId,
+        receipt: file
+          ? {
+              path: file.path,
+              mimeType: file.mimetype,
+              original: file.originalname,
+              size: file.size,
+            }
+          : null,
+      });
+
+      await auditAdmin(req, "accounts.settlement.create", "MERCHANT", merchantId, {
+        amountCents,
+        method: method || null,
+      });
+
+      const params = new URLSearchParams();
+      params.set("success", "created");
+      if (merchantId) params.set("merchantId", merchantId);
+
+      return res.redirect(`/superadmin/accounts/settlements?${params.toString()}`);
+    } catch (err) {
+      console.error(err);
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId);
+      return res.status(500).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId,
+          error: err instanceof Error ? err.message : "Unable to create settlement",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+  }
+);
+
+superAdminRouter.get("/accounts/topups", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId || null);
+  res.render(
+    "superadmin/accounts-topups",
+    buildAccountViewModel({
+      title: "Accounts · Topups",
+      merchants,
+      entries,
+      merchantId,
+      success: typeof req.query?.success === "string" ? req.query.success : null,
+    })
+  );
+});
+
+superAdminRouter.post(
+  "/accounts/topups",
+  upload.single("receipt"),
+  async (req: any, res) => {
+    const merchantId = pickMerchantFilter(req.body?.merchantId);
+    const method = String(req.body?.method || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const amountCents = parseAmountToCents(req.body?.amount ?? req.body?.amountCents);
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!merchantId) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", null);
+      return res.status(400).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId: "",
+          error: "Merchant is required",
+          form: { amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    if (amountCents === null) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId);
+      return res.status(400).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId,
+          error: "Enter a valid amount",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    try {
+      await createAccountEntry({
+        merchantId,
+        type: "TOPUP",
+        amountCents,
+        method,
+        note,
+        adminId,
+        receipt: file
+          ? {
+              path: file.path,
+              mimeType: file.mimetype,
+              original: file.originalname,
+              size: file.size,
+            }
+          : null,
+      });
+
+      await auditAdmin(req, "accounts.topup.create", "MERCHANT", merchantId, {
+        amountCents,
+        method: method || null,
+      });
+
+      const params = new URLSearchParams();
+      params.set("success", "created");
+      if (merchantId) params.set("merchantId", merchantId);
+
+      return res.redirect(`/superadmin/accounts/topups?${params.toString()}`);
+    } catch (err) {
+      console.error(err);
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId);
+      return res.status(500).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId,
+          error: err instanceof Error ? err.message : "Unable to create topup",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+  }
+);
+
+// Payments — pages, edits, exports
+// ───────────────────────────────────────────────────────────────
 
 async function renderPaymentsPage(
   req: any,

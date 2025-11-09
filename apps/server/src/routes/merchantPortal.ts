@@ -16,6 +16,7 @@ import {
   PaymentExportColumn,
   PaymentExportItem,
 } from "../services/paymentExports.js";
+import { listAccountEntries } from "../services/merchantAccounts.js";
 
 const router = Router();
 
@@ -408,6 +409,36 @@ router.get("/ledger", async (req: any, res) => {
   });
 
   res.render("merchant/ledger", { title: "Ledger", entries });
+});
+
+router.get("/accounts", (_req, res) => res.redirect("/merchant/accounts/settlements"));
+
+router.get("/accounts/settlements", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  const [entries, merchant] = await Promise.all([
+    listAccountEntries({ type: "SETTLEMENT", merchantId }),
+    prisma.merchant.findUnique({ where: { id: merchantId }, select: { name: true, balanceCents: true } }),
+  ]);
+
+  res.render("merchant/accounts-settlements", {
+    title: "Accounts · Settlements",
+    entries,
+    merchant,
+  });
+});
+
+router.get("/accounts/topups", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  const [entries, merchant] = await Promise.all([
+    listAccountEntries({ type: "TOPUP", merchantId }),
+    prisma.merchant.findUnique({ where: { id: merchantId }, select: { name: true, balanceCents: true } }),
+  ]);
+
+  res.render("merchant/accounts-topups", {
+    title: "Accounts · Topups",
+    entries,
+    merchant,
+  });
 });
 
 // EXPORTS

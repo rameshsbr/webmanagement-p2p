@@ -17,18 +17,20 @@
 .table-merchants thead th {
   text-align: left;
   font-weight: 600;
-  opacity: .75;
   padding: 10px 8px;
-  border-bottom: 1px solid rgba(0,0,0,.08);
+  border-bottom: 1px solid var(--border);
+  color: var(--ink);
+  background: color-mix(in oklab, var(--surface) 85%, transparent);
 }
 
 .table-merchants tbody td {
   padding: 10px 8px;
-  border-bottom: 1px solid rgba(0,0,0,.06);
+  border-bottom: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
   vertical-align: middle;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  color: var(--ink);
 }
 
 /* Slightly wider actions column so Edit/Users never push the card edge */

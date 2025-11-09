@@ -153,6 +153,13 @@
   });
   const displayCount = rows.length;
   const columnCount = type === 'DEPOSIT' ? 15 : 14;
+  var perPageValue = Number(perPage || 25);
+  var perPageOptions = [25, 50, 100, 150];
+  if (perPageOptions.indexOf(perPageValue) === -1) {
+    perPageOptions.push(perPageValue);
+    perPageOptions.sort(function(a, b){ return a - b; });
+  }
+  var perPageSelectId = type === 'DEPOSIT' ? 'perPage-superadmin-deposits' : 'perPage-superadmin-withdrawals';
 %>
 
 <details class="cols" data-cols>
@@ -193,8 +200,24 @@
   </div>
 </details>
 
-<div class="panel" style="margin-bottom:8px">
-  <div class="mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+<div class="panel table-toolbar" style="margin-bottom:8px">
+  <div class="table-toolbar__spacer mini">Showing <%= displayCount %> of <%= total %> • Page <%= page %>/<%= pages %></div>
+  <form method="get" action="<%= basePath %>">
+    <% toPairs(query).forEach(function(pair){
+         var key = pair[0];
+         var value = pair[1];
+         if (!value || key === 'perPage' || key === 'page') return;
+    %>
+      <input type="hidden" name="<%= key %>" value="<%= value %>">
+    <% }); %>
+    <input type="hidden" name="page" value="1">
+    <label for="<%= perPageSelectId %>">Rows per page</label>
+    <select id="<%= perPageSelectId %>" name="perPage" onchange="this.form.submit()">
+      <% perPageOptions.forEach(function(size){ %>
+        <option value="<%= size %>" <%= perPageValue === size ? 'selected' : '' %>><%= size %></option>
+      <% }); %>
+    </select>
+  </form>
 </div>
 
 <div class="table-wrap">

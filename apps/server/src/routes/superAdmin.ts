@@ -152,7 +152,7 @@ function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
 async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const where = whereFrom(q, type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, rawItems] = await Promise.all([

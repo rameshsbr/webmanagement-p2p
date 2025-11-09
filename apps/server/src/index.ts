@@ -199,9 +199,46 @@ app.use("/auth", (req: any, res: any, next: any) => {
 });
 
 // when inside /admin, attach admin locals
-const withAdminLocals = (req: any, res: any, next: any) => {
-  res.locals.admin = req.admin || null;
+const withAdminLocals = async (req: any, res: any, next: any) => {
   res.locals.isAuthView = false;
+
+  const session = req.admin || null;
+  res.locals.admin = session || null;
+
+  const adminId = session?.sub ? String(session.sub) : null;
+  if (!adminId) {
+    return next();
+  }
+
+  try {
+    const admin = await prisma.adminUser.findUnique({
+      where: { id: adminId },
+      select: {
+        id: true,
+        email: true,
+        displayName: true,
+        role: true,
+        canViewUserDirectory: true,
+      },
+    });
+
+    if (admin) {
+      const canViewUsers = admin.canViewUserDirectory !== false;
+      req.adminDetails = admin;
+      req.adminCanViewUsers = canViewUsers;
+      if (session) {
+        session.canViewUsers = canViewUsers;
+      }
+      res.locals.admin = {
+        ...session,
+        ...admin,
+        canViewUsers,
+      };
+    }
+  } catch {
+    // ignore lookup errors, fall back to session payload
+  }
+
   next();
 };
 

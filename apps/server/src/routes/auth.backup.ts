@@ -20,8 +20,8 @@ function verifyTemp<T=any>(token: string) {
 }
 
 // Minimal "finalize login" that sets cookie; if you already have one, keep yours.
-function finalizeLogin(res: express.Response, adminId: string) {
-  const token = jwt.sign({ sub: adminId, role: 'admin' }, JWT_SECRET, { expiresIn: '8h' });
+function finalizeLogin(res: express.Response, adminId: string, canViewUsers = true) {
+  const token = jwt.sign({ sub: adminId, role: 'admin', canViewUsers }, JWT_SECRET, { expiresIn: '8h' });
   res.cookie('admin_jwt', token, { httpOnly: true, sameSite: 'lax' });
 }
 
@@ -105,7 +105,7 @@ router.post('/2fa/setup', async (req, res) => {
       where: { id: payload.adminId },
       data: { twoFactorEnabled: true, totpSecret: payload.secretBase32 }
     });
-    finalizeLogin(res, payload.adminId);
+    finalizeLogin(res, payload.adminId, true);
     return res.redirect('/admin');
   } catch {
     return res.status(400).render('auth-2fa-setup', { token, qrDataUrl: null, secretBase32: '', accountLabel: '', error: 'Setup error.' });
@@ -134,7 +134,7 @@ router.post('/2fa/verify', async (req, res) => {
     if (!ok) {
       return res.status(400).render('auth-2fa-verify', { token, error: 'Invalid or expired code.' });
     }
-    finalizeLogin(res, admin.id);
+    finalizeLogin(res, admin.id, admin.canViewUserDirectory !== false);
     return res.redirect('/admin');
   } catch {
     return res.status(400).render('auth-2fa-verify', { token, error: 'Verification error.' });

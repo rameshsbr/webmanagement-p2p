@@ -56,6 +56,11 @@
         Active
       </label>
 
+      <label class="chk" style="margin-top:6px">
+        <input type="checkbox" name="canViewUsers" <%= (user ? user.canViewUserDirectory !== false : true) ? 'checked' : '' %> />
+        May view Users directory
+      </label>
+
       <div class="row" style="gap:8px; margin-top:12px">
         <a class="btn" href="/superadmin/merchants/<%= merchant.id %>/users">Cancel</a>
         <button class="btn primary">Save</button>

@@ -1,5 +1,7 @@
 // apps/server/src/routes/admin.ts
 import { Router, Request, Response } from 'express';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { prisma } from '../lib/prisma.js';
 import { z } from 'zod';
 import { stringify } from 'csv-stringify';
@@ -16,7 +18,38 @@ async function safeNotify(text: string) {
   } catch {}
 }
 
+function adminCanViewUsers(req: Request): boolean {
+  const session: any = (req as any).admin || null;
+  if (session && typeof session.canViewUsers === 'boolean') {
+    return session.canViewUsers;
+  }
+
+  if (typeof (req as any).adminCanViewUsers === 'boolean') {
+    return !!(req as any).adminCanViewUsers;
+  }
+
+  const details: any = (req as any).adminDetails || null;
+  if (details && typeof details.canViewUserDirectory === 'boolean') {
+    const allowed = details.canViewUserDirectory !== false;
+    if (session && typeof session.canViewUsers !== 'boolean') {
+      session.canViewUsers = allowed;
+    }
+    return allowed;
+  }
+
+  return true;
+}
+
 const router = Router();
+
+const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const ADMIN_PUBLIC_DIR = path.join(CURRENT_DIR, '../public/admin');
+
+router.get('/queue-sw.js', (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+  res.setHeader('Service-Worker-Allowed', '/admin/');
+  res.sendFile(path.join(ADMIN_PUBLIC_DIR, 'queue-sw.js'));
+});
 
 // ───────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -357,7 +390,10 @@ router.get('/notifications/queue', async (req, res) => {
   const withdrawalWhere = {
     type: 'WITHDRAWAL' as const,
     status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
-    createdAt: { gt: since },
+    OR: [
+      { createdAt: { gt: since } },
+      { updatedAt: { gt: since } },
+    ],
   };
 
   const [deposits, withdrawals, latestDeposit, latestWithdrawal] = await Promise.all([
@@ -370,14 +406,14 @@ router.get('/notifications/queue', async (req, res) => {
     }),
     prisma.paymentRequest.findFirst({
       where: withdrawalWhere,
-      orderBy: { createdAt: 'desc' },
-      select: { createdAt: true },
+      orderBy: { updatedAt: 'desc' },
+      select: { createdAt: true, updatedAt: true },
     }),
   ]);
 
   const latestCandidates = [
     latestDeposit?.updatedAt || latestDeposit?.createdAt,
-    latestWithdrawal?.createdAt,
+    latestWithdrawal?.updatedAt || latestWithdrawal?.createdAt,
   ]
     .filter((d): d is Date => !!d);
   const latest = latestCandidates.length
@@ -403,6 +439,11 @@ const rejectBodySchema = z.object({
   comment: z.string().optional(),
   reason: z.string().optional(),
   returnTo: z.string().optional()
+});
+
+const withdrawApproveSchema = z.object({
+  bankAccountId: z.string().trim().min(1),
+  returnTo: z.string().optional(),
 });
 
 const statusChangeSchema = z.object({
@@ -547,7 +588,7 @@ router.post('/deposits/:id/status', async (req, res) => {
     res.json({ ok: true, status: updated.status, amountCents: updated.amountCents });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -626,27 +667,72 @@ router.get('/report/withdrawals', async (req, res) => {
 
 // DB-level filtering for PENDING so new items appear immediately
 router.get('/report/withdrawals/pending', async (req, res) => {
-  const { total, items, page, perPage, pages, query } = await fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' });
+  const [{ total, items, page, perPage, pages, query }, bankRows] = await Promise.all([
+    fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' }),
+    prisma.bankAccount.findMany({
+      where: { active: true },
+      orderBy: [{ method: 'asc' }, { bankName: 'asc' }, { createdAt: 'desc' }],
+      select: { id: true, publicId: true, bankName: true, label: true, method: true },
+    }),
+  ]);
+
+  const banks = bankRows.map((bank) => {
+    const parts: string[] = [];
+    if (bank.label) parts.push(bank.label);
+    else if (bank.bankName) parts.push(bank.bankName);
+    if (bank.publicId) parts.push(bank.publicId);
+    const label = parts.length ? parts.join(' • ') : 'Unnamed bank';
+    return {
+      id: bank.id,
+      label,
+      method: (bank.method || '').toUpperCase(),
+    };
+  });
+
   res.render('admin-withdrawals-pending', {
     title: 'Pending withdrawal requests',
     table: { total, items, page, perPage, pages },
-    query
+    query,
+    banks,
+    returnTo: req.originalUrl,
   });
 });
 
 router.post('/withdrawals/:id/approve', async (req, res) => {
   const id = req.params.id;
+  const parsed = withdrawApproveSchema.safeParse(req.body ?? {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: 'Select a bank before approving' });
+  }
+
   const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
   if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
   }
 
-  const redirectTarget = resolveReturnTo((req.body && (req.body.returnTo ?? req.body.redirect)) || undefined, '/admin/report/withdrawals/pending');
+  const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/withdrawals/pending');
+
+  const method = ((pr.detailsJson as any)?.method || '').toString().toUpperCase();
+  const bankAccount = await prisma.bankAccount.findFirst({
+    where: { id: parsed.data.bankAccountId, active: true },
+    select: { id: true, bankName: true, method: true },
+  });
+
+  if (!bankAccount) {
+    return res.status(400).json({ ok: false, error: 'Selected bank is no longer available' });
+  }
+
+  const bankMethod = (bankAccount.method || '').toUpperCase();
+  if (method && bankMethod && bankMethod !== method) {
+    return res.status(400).json({ ok: false, error: 'Selected bank does not support this method' });
+  }
+
   try {
     const result = await changePaymentStatus('WITHDRAWAL', {
       paymentId: id,
       targetStatus: 'APPROVED',
       actorAdminId: req.admin?.sub ?? null,
+      bankAccountId: bankAccount.id,
     });
     const updated = result.payment;
     const merchantName = updated.merchant?.name || pr.merchant?.name || updated.merchantId;
@@ -654,7 +740,7 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
     res.json({ ok: true, redirect: redirectTarget });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -693,7 +779,7 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
     res.json({ ok: true, redirect: redirectTarget });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -743,7 +829,7 @@ router.post('/withdrawals/:id/status', async (req, res) => {
     res.json({ ok: true, status: updated.status, amountCents: updated.amountCents });
   } catch (err) {
     if (err instanceof PaymentStatusError) {
-      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient balance' : err.message;
+      const message = err.code === 'INSUFFICIENT_FUNDS' ? 'Insufficient Balance' : err.message;
       return res.status(400).json({ ok: false, error: message });
     }
     console.error(err);
@@ -813,6 +899,9 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
 
 /* ---------------- Users ---------------- */
 router.get('/users', async (req, res) => {
+  if (!adminCanViewUsers(req)) {
+    return res.status(403).render('admin-users-disabled', { title: 'Users' });
+  }
   const { query, merchants, merchantIds } = await resolveUserDirectoryInput(req);
   const table = merchantIds.length
     ? await getUserDirectory({ merchantIds, search: query.q || null, page: query.page, perPage: query.perPage })
@@ -827,6 +916,9 @@ router.get('/users', async (req, res) => {
 });
 
 router.get('/export/users.csv', async (req: Request, res: Response) => {
+  if (!adminCanViewUsers(req)) {
+    return res.sendStatus(403);
+  }
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   res.setHeader('Content-Type', 'text/csv');
@@ -852,6 +944,9 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
 });
 
 router.get('/export/users.xlsx', async (req: Request, res: Response) => {
+  if (!adminCanViewUsers(req)) {
+    return res.sendStatus(403);
+  }
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const wb = new ExcelJS.Workbook();
@@ -884,6 +979,9 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
 });
 
 router.get('/export/users.pdf', async (req: Request, res: Response) => {
+  if (!adminCanViewUsers(req)) {
+    return res.sendStatus(403);
+  }
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const pdf = renderUserDirectoryPdf(items);

@@ -166,6 +166,18 @@ textarea{
 .btn.small{ padding:6px 10px }
 .btn.btn-icon{ padding:6px 8px }
 
+.table tbody td.actions{
+  display:flex;
+  flex-direction:column;
+  align-items:stretch;
+  gap:8px;
+}
+
+.table tbody td.actions .btn{
+  width:100%;
+  justify-content:center;
+}
+
 /* Filters */
 .filters-grid{ display:grid; gap:12px }
 .filters-grid.grid-4{ grid-template-columns: repeat(4, minmax(0,1fr)) }

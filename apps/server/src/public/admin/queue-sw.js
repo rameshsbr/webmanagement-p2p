@@ -25,3 +25,18 @@ self.addEventListener('notificationclick', (event) => {
     })
   );
 });
+
+self.addEventListener('message', (event) => {
+  if (!event?.data) return;
+  const { type, payload } = event.data;
+  if (type !== 'show-notification' || !payload) return;
+  const { title, message, tag, url } = payload || {};
+  if (!title || !message) return;
+  event.waitUntil(
+    self.registration.showNotification(title, {
+      body: message,
+      tag,
+      data: { url },
+    })
+  );
+});

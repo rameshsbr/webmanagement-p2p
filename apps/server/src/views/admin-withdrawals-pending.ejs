@@ -13,7 +13,7 @@
   }
 }) %>
 
-<div class="table-wrap" data-auto-refresh="pending-withdrawals">
+<div class="table-wrap" data-auto-refresh="pending-withdrawals" data-return-to="<%= returnTo || '' %>">
   <table class="table" data-withdraw-actions>
     <thead>
       <tr>
@@ -44,6 +44,7 @@
         <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
         <% const method = (methodRaw || '').toUpperCase(); %>
         <% const dest = (r.detailsJson && r.detailsJson.destination) || {}; %>
+        <% const showBankAccount = r.bankAccount && r.status !== 'REJECTED'; %>
         <tr>
           <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
           <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
@@ -58,11 +59,11 @@
             <% } %>
           </td>
           <td data-col="bank">
-            <% if (r.bankAccount) { %>
+            <% if (showBankAccount) { %>
               <span class="mono"><%= r.bankAccount.publicId || '-' %></span><br>
               <%= r.bankAccount.bankName || '-' %>
             <% } else { %>
-              <%= dest.bankName || '-' %>
+              -
             <% } %>
           </td>
           <td data-col="created"><%- renderDateTime(r.createdAt) %></td>
@@ -71,7 +72,7 @@
           <td data-col="userInfo" class="info-cell">
             <div class="info-block">
               <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
-              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= r.bankAccount?.bankName || dest.bankName || '-' %></span></div>
+              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= dest.bankName || r.bankAccount?.bankName || '-' %></span></div>
               <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= dest.holderName || '-' %></span></div>
               <% if (method === 'OSKO') { %>
                 <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= dest.accountNo || '-' %></span></div>
@@ -87,16 +88,19 @@
             <button
               type="button"
               class="btn small primary"
-              data-withdraw-approve
+              data-approve
               data-id="<%= r.id %>"
               data-reference="<%= r.referenceCode %>"
               data-amount="<%= r.amountCents %>"
+              data-amount-display="<%= formatAmount(r.amountCents) %> <%= r.currency %>"
               data-currency="<%= r.currency %>"
+              data-method="<%= method %>"
+              data-bank-id="<%= r.bankAccount?.id || '' %>"
             >Approve</button>
             <button
               type="button"
               class="btn small danger"
-              data-withdraw-reject
+              data-reject
               data-id="<%= r.id %>"
               data-reference="<%= r.referenceCode %>"
               data-amount="<%= r.amountCents %>"
@@ -108,3 +112,5 @@
     </tbody>
   </table>
 </div>
+
+<script type="application/json" id="withdraw-bank-options"><%- JSON.stringify(banks || []) %></script>

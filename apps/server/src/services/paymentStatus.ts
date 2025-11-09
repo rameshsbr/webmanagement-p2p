@@ -16,6 +16,7 @@ export type StatusChangeOptions = {
   actorAdminId?: string | null;
   amountCents?: number | null;
   comment?: string | null;
+  bankAccountId?: string | null;
 };
 
 type LoadedPayment = NonNullable<Awaited<ReturnType<typeof loadPaymentForResult>>>;
@@ -88,7 +89,7 @@ async function changeDepositStatus({
     if (targetStatus === "APPROVED") {
       const delta = nextAmount - existingAmount;
       if (delta < 0 && payment.merchant.balanceCents < Math.abs(delta)) {
-        throw new PaymentStatusError("Insufficient balance", "INSUFFICIENT_FUNDS");
+        throw new PaymentStatusError("Insufficient Balance", "INSUFFICIENT_FUNDS");
       }
 
       if (ledger) {
@@ -126,7 +127,7 @@ async function changeDepositStatus({
     } else {
       if (ledger) {
         if (payment.merchant.balanceCents < existingAmount) {
-          throw new PaymentStatusError("Insufficient balance", "INSUFFICIENT_FUNDS");
+          throw new PaymentStatusError("Insufficient Balance", "INSUFFICIENT_FUNDS");
         }
         balanceDelta = -existingAmount;
         await tx.merchant.update({
@@ -160,6 +161,7 @@ async function changeWithdrawalStatus({
   actorAdminId,
   amountCents,
   comment,
+  bankAccountId,
 }: StatusChangeOptions): Promise<ChangeResult> {
   const normalizedAmount = assertAmount(amountCents);
 
@@ -189,7 +191,7 @@ async function changeWithdrawalStatus({
       const delta = nextLedgerAmount - existingAmount;
       const currentBalance = payment.merchant.balanceCents;
       if (currentBalance + delta < 0) {
-        throw new PaymentStatusError("Insufficient balance", "INSUFFICIENT_FUNDS");
+        throw new PaymentStatusError("Insufficient Balance", "INSUFFICIENT_FUNDS");
       }
 
       if (ledger) {
@@ -213,16 +215,22 @@ async function changeWithdrawalStatus({
         });
       }
 
+      const updateData: any = {
+        status: "APPROVED",
+        amountCents: nextAmount,
+        notes: comment?.trim() ? comment.trim() : payment.notes,
+        rejectedReason: null,
+        processedAt: now,
+        processedByAdminId: actorAdminId ?? null,
+      };
+
+      if (bankAccountId !== undefined) {
+        updateData.bankAccountId = bankAccountId ?? null;
+      }
+
       await tx.paymentRequest.update({
         where: { id: payment.id },
-        data: {
-          status: "APPROVED",
-          amountCents: nextAmount,
-          notes: comment?.trim() ? comment.trim() : payment.notes,
-          rejectedReason: null,
-          processedAt: now,
-          processedByAdminId: actorAdminId ?? null,
-        },
+        data: updateData,
       });
     } else {
       if (ledger) {

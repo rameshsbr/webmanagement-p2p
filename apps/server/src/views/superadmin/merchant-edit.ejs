@@ -1,11 +1,7 @@
 <% layout('superadmin/layout') -%>
 
 <% if (typeof saved !== 'undefined' && saved) { %>
-  <div style="
-    position:fixed; right:16px; top:16px; z-index:9;
-    background:#e6ffed; color:#065f46; border:1px solid #34d399;
-    padding:10px 12px; border-radius:8px; box-shadow:0 2px 8px rgba(0,0,0,.08);
-  ">Saved ✅</div>
+  <div class="callout callout-success callout-floating">Saved ✅</div>
 <% } %>
 
 <form method="post" action="<%= merchant ? '/superadmin/merchants/'+merchant.id+'/edit' : '/superadmin/merchants/new' %>" class="card">
@@ -90,7 +86,7 @@
   </div>
 
   <% if (newCreds) { %>
-  <div class="card" style="border-color:#34d399;background:#ecfdf5">
+  <div class="card tone-success">
     <div class="title">User created</div>
     <p>
       Temporary credentials (shown once):
@@ -109,7 +105,7 @@
   <% } %>
 
   <% if (newApiKey) { %>
-  <div class="card" style="border-color:#34d399;background:#ecfdf5">
+  <div class="card tone-success">
     <div class="title">API key created</div>
     <p>This API key is shown <strong>once</strong>. Copy and store it securely:</p>
     <div class="row" style="gap:8px; align-items:center;">
@@ -150,7 +146,7 @@
         <tr style="<%= revoked ? 'opacity:.6' : '' %>">
           <td class="mono">
             <code><%= prefix %>.****<%= last4 %></code>
-            <%= revoked ? '<span style="color:#b91c1c; margin-left:6px">(revoked)</span>' : '' %>
+            <% if (revoked) { %><span class="text-danger" style="margin-left:6px">(revoked)</span><% } %>
           </td>
           <td><%= k.label || '—' %></td>
           <td class="mini"><%= Array.isArray(k.scopes) ? k.scopes.join(', ') : (k.scopes || '—') %></td>

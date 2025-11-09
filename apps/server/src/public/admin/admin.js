@@ -568,6 +568,19 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   let permissionBanner = null;
   let primed = false;
   let swRegistrationPromise = null;
+  let notificationWarningShown = false;
+
+  const notifyBlocked = (message) => {
+    if (notificationWarningShown) return;
+    notificationWarningShown = true;
+    toast(message || 'Enable browser notifications in your site settings to receive alerts.');
+  };
+
+  const notificationStatus = () => {
+    if (!NotificationAPI) return 'unsupported';
+    if (!window.isSecureContext) return 'insecure';
+    return NotificationAPI.permission || 'default';
+  };
 
   const normalizeUrl = (value) => {
     if (!value) return '';
@@ -601,15 +614,31 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
           const legacy = await navigator.serviceWorker.getRegistration('/static/admin/');
           if (legacy) await legacy.unregister().catch(() => {});
         } catch {}
-        let registration = null;
         try {
-          registration = await navigator.serviceWorker.getRegistration('/admin/');
-        } catch {}
-        if (!registration) {
-          registration = await navigator.serviceWorker.register('/admin/queue-sw.js', { scope: '/admin/' });
+          const existing = await navigator.serviceWorker.getRegistration('/admin/');
+          if (!existing) {
+            await navigator.serviceWorker.register('/admin/queue-sw.js', { scope: '/admin/' });
+          }
+        } catch (err) {
+          console.warn('[admin] failed to register queue service worker', err);
+          return null;
         }
-        return registration;
-      })().catch(() => null);
+        try {
+          const ready = await navigator.serviceWorker.ready;
+          if (ready && ready.scope && !ready.scope.endsWith('/admin/')) {
+            // Scope mismatch, fall back to explicit lookup.
+            const registration = await navigator.serviceWorker.getRegistration('/admin/');
+            return registration || ready;
+          }
+          return ready;
+        } catch (err) {
+          console.warn('[admin] queue service worker not ready', err);
+          return navigator.serviceWorker.getRegistration('/admin/').catch(() => null);
+        }
+      })().catch((err) => {
+        console.warn('[admin] queue service worker setup failed', err);
+        return null;
+      });
     }
     return swRegistrationPromise;
   };
@@ -675,10 +704,22 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   }, { once: true });
 
   const ensurePermissionPrompt = () => {
-    if (!NotificationAPI || NotificationAPI.permission !== 'default') {
+    const status = notificationStatus();
+    if (status === 'unsupported') {
+      if (!notificationWarningShown) {
+        notifyBlocked('Browser notifications are not supported in this browser.');
+      }
+    }
+    if (status === 'insecure') {
+      notifyBlocked('Open the admin portal over HTTPS to enable browser notifications.');
+    }
+    if (!NotificationAPI || status !== 'default') {
       if (permissionBanner) {
         permissionBanner.remove();
         permissionBanner = null;
+      }
+      if (status === 'denied') {
+        notifyBlocked('Browser notifications are blocked. Enable them in your browser site settings.');
       }
       return;
     }
@@ -702,12 +743,23 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   ensurePermissionPrompt();
 
   const showBrowserNotification = async (title, message, tag, url) => {
-    if (!NotificationAPI || NotificationAPI.permission !== 'granted') return false;
+    if (!NotificationAPI) return false;
+    if (!window.isSecureContext) return false;
+    if (NotificationAPI.permission === 'default') {
+      requestPermission();
+      return false;
+    }
+    if (NotificationAPI.permission !== 'granted') return false;
     const targetUrl = normalizeUrl(url);
+    const payload = { title, message, tag, url: targetUrl };
     try {
       const registration = await ensureServiceWorker();
       if (registration && typeof registration.showNotification === 'function') {
         await registration.showNotification(title, { body: message, tag, data: { url: targetUrl } });
+        return true;
+      }
+      if (registration?.active && typeof registration.active.postMessage === 'function') {
+        registration.active.postMessage({ type: 'show-notification', payload });
         return true;
       }
     } catch {}
@@ -724,7 +776,7 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
     return false;
   };
 
-  const sendNotification = (label, count) => {
+  const sendNotification = async (label, count) => {
     if (count <= 0) return;
     const plural = count > 1 ? 's' : '';
     const message = count > 1 ? `${count} new ${label}${plural}` : `New ${label}`;
@@ -732,7 +784,15 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
     const targetUrl = label.includes('withdrawal')
       ? '/admin/report/withdrawals/pending'
       : '/admin/report/deposits/pending';
-    showBrowserNotification('Payments queue update', message, `queue-${label}`, targetUrl).catch(() => {});
+    const ok = await showBrowserNotification('Payments queue update', message, `queue-${label}`, targetUrl).catch(() => false);
+    if (!ok) {
+      const status = notificationStatus();
+      if (status === 'default') {
+        notifyBlocked('Click "Enable" on the notification prompt to receive browser alerts.');
+      } else if (status === 'denied') {
+        notifyBlocked('Browser notifications are blocked. Enable them in your browser site settings.');
+      }
+    }
     playChime();
     scheduleReload();
   };
@@ -759,8 +819,10 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
         lastStamp = Date.now();
       }
       ensurePermissionPrompt();
-      sendNotification('deposit request', Number(data.deposits || 0));
-      sendNotification('withdrawal request', Number(data.withdrawals || 0));
+      await Promise.all([
+        sendNotification('deposit request', Number(data.deposits || 0)),
+        sendNotification('withdrawal request', Number(data.withdrawals || 0)),
+      ]);
     } catch {}
   };
 

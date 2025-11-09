@@ -44,6 +44,7 @@
         <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
         <% const method = (methodRaw || '').toUpperCase(); %>
         <% const dest = (r.detailsJson && r.detailsJson.destination) || {}; %>
+        <% const showBankAccount = r.bankAccount && r.status !== 'REJECTED'; %>
         <tr>
           <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
           <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
@@ -58,11 +59,11 @@
             <% } %>
           </td>
           <td data-col="bank">
-            <% if (r.bankAccount) { %>
+            <% if (showBankAccount) { %>
               <span class="mono"><%= r.bankAccount.publicId || '-' %></span><br>
               <%= r.bankAccount.bankName || '-' %>
             <% } else { %>
-              <%= dest.bankName || '-' %>
+              -
             <% } %>
           </td>
           <td data-col="created"><%- renderDateTime(r.createdAt) %></td>

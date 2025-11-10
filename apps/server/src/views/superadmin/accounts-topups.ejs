@@ -1,0 +1,137 @@
+<% layout('superadmin/layout') -%>
+
+<%
+  var selectedMerchantId = (filters && filters.merchantId) ? String(filters.merchantId) : '';
+  var formData = form || {};
+  var formMerchantId = formData.merchantId || selectedMerchantId;
+  var formAmount = formData.amount || '';
+  var formMethod = formData.method || '';
+  var formNote = formData.note || '';
+
+  function formatAmount(cents) {
+    if (typeof cents !== 'number' || !isFinite(cents)) return '-';
+    var amount = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return '+' + amount;
+  }
+  function formatDateTime(value) {
+    if (!value) return '-';
+    try {
+      return new Date(value).toLocaleString();
+    } catch (err) {
+      return '-';
+    }
+  }
+%>
+
+<% if (error) { %>
+  <div class="callout callout-danger"><%= error %></div>
+<% } %>
+
+<div class="panel table-toolbar account-toolbar">
+  <div class="table-toolbar__spacer mini">Showing <%= entries.length %> topup<%= entries.length === 1 ? '' : 's' %></div>
+  <div class="account-toolbar__actions">
+    <form class="account-filter" method="get" action="/superadmin/accounts/topups">
+      <label for="topups-merchant">Merchant</label>
+      <select id="topups-merchant" name="merchantId" onchange="this.form.submit()">
+        <option value="" <%= selectedMerchantId ? '' : 'selected' %>>All merchants</option>
+        <% merchants.forEach(function(m){ %>
+          <option value="<%= m.id %>" <%= selectedMerchantId === m.id ? 'selected' : '' %>><%= m.name %></option>
+        <% }) %>
+      </select>
+    </form>
+    <button type="button" class="btn small primary" data-account-modal-open="account-topup-template">New Topup</button>
+  </div>
+</div>
+
+<div class="table-wrap account-table-wrap">
+  <table class="table account-table">
+    <thead>
+      <tr>
+        <th style="width:200px">DATE</th>
+        <th>MERCHANT</th>
+        <th>METHOD</th>
+        <th style="text-align:right">AMOUNT</th>
+        <th>ADMIN</th>
+        <th>NOTE</th>
+        <th style="width:120px">RECEIPT</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!entries.length) { %>
+        <tr>
+          <td colspan="7" style="text-align:center;color:var(--ink-dim)">No topups recorded</td>
+        </tr>
+      <% } %>
+      <% entries.forEach(function(entry){ %>
+        <tr>
+          <td><%= formatDateTime(entry.createdAt) %></td>
+          <td><%= entry.merchant?.name || '-' %></td>
+          <td><%= entry.method ? entry.method : '—' %></td>
+          <td style="text-align:right"><span class="mono amount-positive"><%= formatAmount(entry.amountCents) %></span></td>
+          <td><%= entry.admin || '—' %></td>
+          <td class="note-cell"><%= entry.note && entry.note.trim() ? entry.note : '—' %></td>
+          <td>
+            <% if (entry.receipt) { %>
+              <a class="link" href="<%= entry.receipt.path %>" target="_blank" rel="noreferrer">Receipt</a>
+            <% } else { %>
+              —
+            <% } %>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>
+
+<template id="account-topup-template">
+  <header class="modal-header">
+    <h3 class="modal-title">New Topup</h3>
+  </header>
+  <form method="post" action="/superadmin/accounts/topups" enctype="multipart/form-data" class="account-form">
+    <div class="modal-body account-form__body">
+      <label class="account-field">
+        <span>Merchant</span>
+        <select name="merchantId" required>
+          <option value="">Select a merchant</option>
+          <% merchants.forEach(function(m){ %>
+            <option value="<%= m.id %>" <%= formMerchantId === m.id ? 'selected' : '' %>><%= m.name %></option>
+          <% }) %>
+        </select>
+      </label>
+      <label class="account-field">
+        <span>Amount</span>
+        <input type="number" name="amount" min="0" step="0.01" placeholder="0.00" value="<%= formAmount %>" required>
+      </label>
+      <label class="account-field">
+        <span>Method</span>
+        <input type="text" name="method" placeholder="e.g. Bank transfer" value="<%= formMethod %>">
+      </label>
+      <label class="account-field">
+        <span>Notes</span>
+        <textarea name="note" rows="3" placeholder="Optional details"><%= formNote %></textarea>
+      </label>
+      <div class="account-field account-field-file">
+        <span>Receipt (optional)</span>
+        <input type="file" name="receipt" accept="image/*,application/pdf" data-account-file-input>
+        <div class="account-file-actions">
+          <button type="button" class="btn small" data-account-file-trigger>Select file</button>
+          <span class="account-file-name" data-account-file-name>No file chosen</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer account-form__footer">
+      <button type="button" class="btn small" data-close-modal>Cancel</button>
+      <button type="submit" class="btn small primary">Create Topup</button>
+    </div>
+  </form>
+</template>
+
+<% if (success === 'created') { %>
+  <script>
+    window.addEventListener('DOMContentLoaded', function(){
+      if (typeof toast === 'function') {
+        toast('Topup recorded successfully.');
+      }
+    });
+  </script>
+<% } %>

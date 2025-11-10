@@ -61,6 +61,9 @@
           <a class="nav-link" href="/merchant/payments/deposits">Deposits</a>
           <a class="nav-link" href="/merchant/payments/withdrawals">Withdrawals</a>
           <a class="nav-link" href="/merchant/ledger">Ledger</a>
+          <div class="nav-group">ACCOUNTS</div>
+          <a class="nav-link" href="/merchant/accounts/settlements">Settlements</a>
+          <a class="nav-link" href="/merchant/accounts/topups">Topups</a>
           <a class="nav-link" href="/merchant/keys">API Keys</a>
           <% if (merchantFeatures && merchantFeatures.usersEnabled) { %>
             <div class="nav-group">USERS</div>
@@ -126,6 +129,7 @@
     </main>
   </div>
 
+  <script src="/static/shared/toast.js" defer></script>
   <script src="/static/merchant/merchant.js" defer></script>
 </body>
 </html>

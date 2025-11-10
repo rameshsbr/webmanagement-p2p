@@ -1,5 +1,5 @@
-// apps/server/src/index.ts
 import "dotenv/config";
+// apps/server/src/index.ts
 import "./lib/augmentExpress.js";
 
 import express from "express";
@@ -36,6 +36,13 @@ import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 
 
 const app = express();
+
+app.use((_, res, next) => {
+  if (typeof res.locals.siteKey === "undefined") {
+    res.locals.siteKey = process.env.TURNSTILE_SITE_KEY || "";
+  }
+  next();
+});
 
 backfillShortIdentifiers().catch((err) => {
   console.warn("[BOOT] short-id backfill skipped", err?.message || err);
@@ -83,6 +90,13 @@ console.log("[BOOT] NODE_ENV=", process.env.NODE_ENV);
 console.log("[BOOT] IS_LOCAL =", IS_LOCAL);
 console.log("[BOOT] ADMIN_DEBUG =", process.env.ADMIN_DEBUG);
 console.log("[BOOT] JWT_SECRET set? ->", Boolean(process.env.JWT_SECRET));
+if (IS_LOCAL) {
+  console.log("[SECURITY] TURNSTILE_SITE_KEY set?", Boolean(process.env.TURNSTILE_SITE_KEY));
+  console.log("[SECURITY] TURNSTILE_SECRET_KEY set?", Boolean(process.env.TURNSTILE_SECRET_KEY));
+  if (!process.env.TURNSTILE_SITE_KEY) {
+    console.warn("[SECURITY] Cloudflare Turnstile disabled in dev (missing site key)");
+  }
+}
 
 // Helpers
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";

@@ -288,15 +288,9 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 
 // Time zones list
 (() => {
-  const tz = document.getElementById('pref-tz');
-  if (!tz || tz.dataset.filled) return;
-  let zones = [];
-  try { if (Intl.supportedValuesOf) zones = Intl.supportedValuesOf('timeZone'); } catch {}
-  if (!zones.length) zones = ['UTC','Asia/Kuala_Lumpur','Asia/Jakarta','Asia/Singapore','Asia/Bangkok','Europe/London','America/New_York','Australia/Sydney'];
-  zones.sort((a,b) => a.localeCompare(b));
-  zones.forEach(z => { const o=document.createElement('option'); o.value=o.textContent=z; tz.appendChild(o); });
-  tz.value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  tz.dataset.filled = '1';
+  const select = document.getElementById('pref-tz');
+  if (!select || typeof window.timezone?.populate !== 'function') return;
+  window.timezone.populate(select);
 })();
 
 const purgeModals = () => {
@@ -1064,10 +1058,26 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 // Preferences Save / Cancel
 (() => {
   const SAVE_KEY = 'admin.prefs';
-  const read = () => JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
-  const write = (obj) => localStorage.setItem(SAVE_KEY, JSON.stringify(obj));
+  const read = () => {
+    try {
+      return JSON.parse(localStorage.getItem(SAVE_KEY) || '{}') || {};
+    } catch {
+      return {};
+    }
+  };
+  const write = (obj) => {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(obj));
+    } catch {}
+  };
 
   const el = (id) => document.getElementById(id);
+  const ensureTimezoneOption = (value) => {
+    const select = el('pref-tz');
+    if (!select || !value) return value;
+    const options = Array.from(select.options || []);
+    return options.some((opt) => opt.value === value) ? value : '';
+  };
   const fields = {
     email: () => el('pref-email')?.value || '',
     currency: () => el('pref-currency')?.value || '',
@@ -1077,7 +1087,12 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   const apply = (p) => {
     if (el('pref-email')) el('pref-email').value = p.email || '';
     if (el('pref-currency')) el('pref-currency').value = p.currency || '';
-    if (el('pref-tz')) el('pref-tz').value = p.tz || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+    const tzSelect = el('pref-tz');
+    if (tzSelect) {
+      const currentTz = typeof window.timezone?.get === 'function' ? window.timezone.get() : '';
+      const desired = ensureTimezoneOption(p.tz) || currentTz;
+      if (desired) tzSelect.value = desired;
+    }
     if (el('pref-dark')) {
       el('pref-dark').checked = (p.theme || 'light') === 'dark';
       document.documentElement.setAttribute('data-theme', el('pref-dark').checked ? 'dark' : 'light');
@@ -1086,19 +1101,42 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   const init = read();
   if (!init.theme) init.theme = (document.documentElement.getAttribute('data-theme') || 'light');
+  if (!init.tz && typeof window.timezone?.get === 'function') init.tz = window.timezone.get();
   apply(init);
 
   const saveBtn = el('prefs-save');
   const cancelBtn = el('prefs-cancel');
-  saveBtn?.addEventListener('click', (e) => {
+  const showError = (message) => {
+    if (!message) return;
+    if (typeof toast?.error === 'function') toast.error(message);
+    else toast(message);
+  };
+
+  saveBtn?.addEventListener('click', async (e) => {
     e.preventDefault();
-    const next = Object.fromEntries(Object.entries(fields).map(([k,f]) => [k, f()]));
-    write(next);
-    toast('Preference saved.');
+    const next = Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, f()]));
+    try {
+      const response = await postJson('/admin/prefs/timezone', { timezone: next.tz });
+      const resolved = response?.timezone || next.tz;
+      if (typeof window.timezone?.set === 'function') {
+        window.timezone.set(resolved);
+      }
+      next.tz = resolved;
+      write(next);
+      toast('Preference saved.');
+    } catch (err) {
+      console.error(err);
+      showError('Failed to save preferences.');
+    }
   });
+
   cancelBtn?.addEventListener('click', (e) => {
     e.preventDefault();
-    apply(read());
+    const current = read();
+    if (typeof window.timezone?.get === 'function') {
+      current.tz = window.timezone.get();
+    }
+    apply(current);
     toast('Changes discarded.');
   });
 })();

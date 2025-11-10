@@ -31,11 +31,73 @@ import {
   listMerchantBalances,
 } from "../services/merchantAccounts.js";
 import type { MerchantAccountEntryType } from "@prisma/client";
+import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 
 export const superAdminRouter = Router();
 
 // Require SUPER role
 superAdminRouter.use(requireRole(["SUPER"]));
+
+superAdminRouter.use(async (req: any, res: any, next) => {
+  const session = req.admin || null;
+  const adminId = session?.sub ? String(session.sub) : null;
+  let timezone = session?.timezone ? resolveTimezone(session.timezone) : defaultTimezone();
+  let adminRecord: any = null;
+
+  if (adminId) {
+    try {
+      adminRecord = await prisma.adminUser.findUnique({
+        where: { id: adminId },
+        select: { id: true, email: true, displayName: true, timezone: true },
+      });
+      if (adminRecord) {
+        timezone = resolveTimezone(adminRecord.timezone);
+      }
+    } catch {
+      adminRecord = null;
+    }
+  }
+
+  res.locals.admin = adminRecord
+    ? { ...session, ...adminRecord }
+    : session || null;
+
+  if (session) {
+    session.timezone = timezone;
+  }
+
+  res.locals.timezone = timezone;
+  (req as any).activeTimezone = timezone;
+
+  next();
+});
+
+superAdminRouter.post('/prefs/timezone', async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  }
+
+  const timezoneRaw = normalizeTimezone(req.body?.timezone);
+  const timezone = timezoneRaw ?? null;
+
+  try {
+    await prisma.adminUser.update({
+      where: { id: adminId },
+      data: { timezone },
+    });
+    const resolved = resolveTimezone(timezone);
+    res.locals.timezone = resolved;
+    (req as any).activeTimezone = resolved;
+    if (req.admin && typeof req.admin === 'object') {
+      req.admin.timezone = resolved;
+    }
+    return res.json({ ok: true, timezone: resolved });
+  } catch (err) {
+    console.error('[superadmin prefs] failed to update timezone', err);
+    return res.status(500).json({ ok: false, error: 'Failed to save timezone' });
+  }
+});
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
@@ -2398,11 +2460,13 @@ superAdminRouter.post("/deposits/export", async (req, res) => {
     const columns = sanitizeColumns(req.body?.columns, SUPERADMIN_DEPOSIT_EXPORT_COLUMNS);
     const query = Object.keys(filters).length ? filters : {};
     const { items } = await fetchPayments(query, "DEPOSIT");
+    const timezone = resolveTimezone((req as any).activeTimezone || res.locals.timezone);
     const file = await buildPaymentExportFile({
       format,
       columns,
       items: items as unknown as PaymentExportItem[],
       context: { scope: "superadmin", type: "DEPOSIT" },
+      timezone,
     });
     res.setHeader("Content-Type", file.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
@@ -2432,11 +2496,13 @@ superAdminRouter.post("/withdrawals/export", async (req, res) => {
     const columns = sanitizeColumns(req.body?.columns, SUPERADMIN_WITHDRAWAL_EXPORT_COLUMNS);
     const query = Object.keys(filters).length ? filters : {};
     const { items } = await fetchPayments(query, "WITHDRAWAL");
+    const timezone = resolveTimezone((req as any).activeTimezone || res.locals.timezone);
     const file = await buildPaymentExportFile({
       format,
       columns,
       items: items as unknown as PaymentExportItem[],
       context: { scope: "superadmin", type: "WITHDRAWAL" },
+      timezone,
     });
     res.setHeader("Content-Type", file.contentType);
     res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);

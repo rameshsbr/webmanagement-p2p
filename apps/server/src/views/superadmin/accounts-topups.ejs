@@ -13,14 +13,6 @@
     var amount = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return '+' + amount;
   }
-  function formatDateTime(value) {
-    if (!value) return '-';
-    try {
-      return new Date(value).toLocaleString();
-    } catch (err) {
-      return '-';
-    }
-  }
 %>
 
 <% if (error) { %>
@@ -64,7 +56,7 @@
       <% } %>
       <% entries.forEach(function(entry){ %>
         <tr>
-          <td><%= formatDateTime(entry.createdAt) %></td>
+          <td><%- renderDateTime(entry.createdAt) %></td>
           <td><%= entry.merchant?.name || '-' %></td>
           <td><%= entry.method ? entry.method : '—' %></td>
           <td style="text-align:right"><span class="mono amount-positive"><%= formatAmount(entry.amountCents) %></span></td>

@@ -19,6 +19,7 @@ import {
   PaymentExportItem,
 } from "../services/paymentExports.js";
 import { listAccountEntries } from "../services/merchantAccounts.js";
+import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 
 const router = Router();
 
@@ -62,6 +63,7 @@ async function loadCurrentMerchantUser(req: any) {
       email: true,
       twoFactorEnabled: true,
       totpSecret: true,
+      timezone: true,
     },
   });
 }
@@ -154,6 +156,10 @@ router.use(async (req: any, res, next) => {
   res.locals.merchantUser = merchantUser;
   res.locals.merchantAuth = authPayload;
   res.locals.merchantFeatures = { usersEnabled: canViewUsers };
+  const timezoneSource = merchantUser?.timezone ?? (authPayload && typeof authPayload === "object" ? (authPayload as any).timezone : null);
+  const timezone = resolveTimezone(timezoneSource);
+  res.locals.timezone = timezone;
+  (req as any).activeTimezone = timezone;
   next();
 });
 
@@ -778,6 +784,33 @@ router.post("/prefs/theme", (req, res) => {
     secure: process.env.NODE_ENV === "production",
   });
   res.json({ ok: true, mode });
+});
+
+router.post("/prefs/timezone", async (req: any, res) => {
+  const id = currentMerchantUserId(req);
+  if (!id) {
+    return res.status(401).json({ ok: false, error: "Not authenticated" });
+  }
+
+  const timezoneRaw = normalizeTimezone(req.body?.timezone);
+  const timezone = timezoneRaw ?? null;
+
+  try {
+    await prisma.merchantUser.update({
+      where: { id },
+      data: { timezone },
+    });
+    const resolved = resolveTimezone(timezone);
+    res.locals.timezone = resolved;
+    (req as any).activeTimezone = resolved;
+    if (req.merchantAuth && typeof req.merchantAuth === "object") {
+      req.merchantAuth.timezone = resolved;
+    }
+    return res.json({ ok: true, timezone: resolved });
+  } catch (err) {
+    console.error("[merchant prefs] failed to update timezone", err);
+    return res.status(500).json({ ok: false, error: "Failed to save timezone" });
+  }
 });
 
 router.post("/keys/create", async (req: any, res) => {

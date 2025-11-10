@@ -14,6 +14,7 @@ import {
   PaymentExportColumn,
   PaymentExportItem,
 } from '../services/paymentExports.js';
+import { normalizeTimezone, resolveTimezone } from '../lib/timezone.js';
 
 async function safeNotify(text: string) {
   try {
@@ -89,6 +90,33 @@ router.get('/queue-sw.js', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Service-Worker-Allowed', '/admin/');
   res.sendFile(path.join(ADMIN_PUBLIC_DIR, 'queue-sw.js'));
+});
+
+router.post('/prefs/timezone', async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  }
+
+  const timezoneRaw = normalizeTimezone(req.body?.timezone);
+  const timezone = timezoneRaw ?? null;
+
+  try {
+    await prisma.adminUser.update({
+      where: { id: adminId },
+      data: { timezone },
+    });
+    const resolved = resolveTimezone(timezone);
+    res.locals.timezone = resolved;
+    (req as any).activeTimezone = resolved;
+    if (req.admin && typeof req.admin === 'object') {
+      req.admin.timezone = resolved;
+    }
+    return res.json({ ok: true, timezone: resolved });
+  } catch (err) {
+    console.error('[admin prefs] failed to update timezone', err);
+    return res.status(500).json({ ok: false, error: 'Failed to save timezone' });
+  }
 });
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -705,11 +733,13 @@ router.post('/export/deposits', async (req: Request, res: Response) => {
     const filters = coerceExportFilters(req.body?.filters);
     const columns = sanitizeColumns(req.body?.columns, ADMIN_DEPOSIT_EXPORT_COLUMNS);
     const { items } = await fetchPaymentsFromQuery(filters, 'DEPOSIT');
+    const timezone = resolveTimezone((req as any).activeTimezone || res.locals.timezone);
     const file = await buildPaymentExportFile({
       format,
       columns,
       items: items as unknown as PaymentExportItem[],
       context: { scope: 'admin', type: 'DEPOSIT' },
+      timezone,
     });
     res.setHeader('Content-Type', file.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
@@ -967,11 +997,13 @@ router.post('/export/withdrawals', async (req: Request, res: Response) => {
     const filters = coerceExportFilters(req.body?.filters);
     const columns = sanitizeColumns(req.body?.columns, ADMIN_WITHDRAWAL_EXPORT_COLUMNS);
     const { items } = await fetchPaymentsFromQuery(filters, 'WITHDRAWAL');
+    const timezone = resolveTimezone((req as any).activeTimezone || res.locals.timezone);
     const file = await buildPaymentExportFile({
       format,
       columns,
       items: items as unknown as PaymentExportItem[],
       context: { scope: 'admin', type: 'WITHDRAWAL' },
+      timezone,
     });
     res.setHeader('Content-Type', file.contentType);
     res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);

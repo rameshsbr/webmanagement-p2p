@@ -280,6 +280,7 @@ model AdminUser {
   totpSecret       String?
   superTwoFactorEnabled Boolean @default(false)
   superTotpSecret       String?
+  timezone         String?
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
 
@@ -335,6 +336,7 @@ model MerchantUser {
   active           Boolean      @default(true)
   twoFactorEnabled Boolean      @default(false)
   totpSecret       String?
+  timezone         String?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   lastLoginAt      DateTime?

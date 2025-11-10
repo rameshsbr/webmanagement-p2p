@@ -33,6 +33,7 @@ import { merchantPortalRouter } from "./routes/merchantPortal.js";
 import { superAdminRouter } from './routes/superAdmin.js';
 import { auditHttpWrites } from "./services/audit.js";
 import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
+import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
 
 
 const app = express();
@@ -129,47 +130,89 @@ app.use((req: any, res: any, next: any) => {
   if (typeof res.locals.admin === "undefined") res.locals.admin = null;
   if (typeof res.locals.title === "undefined") res.locals.title = "Admin";
   if (typeof res.locals.isAuthView === "undefined") res.locals.isAuthView = false;
+  if (typeof res.locals.timezone === "undefined") res.locals.timezone = "";
+  if (typeof res.locals.getTimezone !== "function") {
+    res.locals.getTimezone = () => {
+      const tz = typeof res.locals.timezone === "string" && res.locals.timezone ? res.locals.timezone : defaultTimezone();
+      return tz;
+    };
+  }
   if (typeof res.locals.formatDateTime === "undefined") {
-    const dtFormatter = new Intl.DateTimeFormat("en-AU", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: true,
-    });
-    const dateFormatter = new Intl.DateTimeFormat("en-AU", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    });
-    const timeFormatter = new Intl.DateTimeFormat("en-AU", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-      hour12: true,
-    });
+    type FormatterSet = {
+      dateTime: Intl.DateTimeFormat;
+      date: Intl.DateTimeFormat;
+      time: Intl.DateTimeFormat;
+    };
+    const cache = new Map<string, FormatterSet>();
     const ensureDate = (value: Date | string | null | undefined) => {
       if (!value) return null;
       const date = value instanceof Date ? value : new Date(value);
       if (Number.isNaN(date.getTime())) return null;
       return date;
     };
-    res.locals.formatDateTime = (value: Date | string | null | undefined) => {
-      const date = ensureDate(value);
-      if (!date) return "-";
-      return dtFormatter.format(date);
+    const getFormatters = (tzRaw?: string): FormatterSet => {
+      const tz = resolveTimezone(tzRaw);
+      const existing = cache.get(tz);
+      if (existing) return existing;
+      const formatter: FormatterSet = {
+        dateTime: new Intl.DateTimeFormat("en-AU", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+          timeZone: tz,
+        }),
+        date: new Intl.DateTimeFormat("en-AU", {
+          day: "2-digit",
+          month: "2-digit",
+          year: "numeric",
+          timeZone: tz,
+        }),
+        time: new Intl.DateTimeFormat("en-AU", {
+          hour: "2-digit",
+          minute: "2-digit",
+          second: "2-digit",
+          hour12: true,
+          timeZone: tz,
+        }),
+      };
+      cache.set(tz, formatter);
+      return formatter;
     };
-    res.locals.formatDateParts = (value: Date | string | null | undefined) => {
-      const date = ensureDate(value);
-      if (!date) return null;
-      return { date: dateFormatter.format(date), time: timeFormatter.format(date) };
+    const escapeAttr = (value: string) => value
+      .replace(/&/g, "&amp;")
+      .replace(/"/g, "&quot;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
+    res.locals.formatDateTime = (value: Date | string | null | undefined, tzOverride?: string) => {
+      const target = ensureDate(value);
+      if (!target) return "-";
+      const tz = tzOverride || res.locals.getTimezone();
+      const { dateTime } = getFormatters(tz);
+      return dateTime.format(target);
     };
-    res.locals.renderDateTime = (value: Date | string | null | undefined) => {
-      const parts = res.locals.formatDateParts(value);
-      if (!parts) return "-";
-      return `<span class="date-stack"><span>${parts.date}</span><span>${parts.time}</span></span>`;
+    res.locals.formatDateParts = (value: Date | string | null | undefined, tzOverride?: string) => {
+      const target = ensureDate(value);
+      if (!target) return null;
+      const tz = tzOverride || res.locals.getTimezone();
+      const formatterSet = getFormatters(tz);
+      return {
+        date: formatterSet.date.format(target),
+        time: formatterSet.time.format(target),
+      };
+    };
+    res.locals.renderDateTime = (value: Date | string | null | undefined, tzOverride?: string) => {
+      const target = ensureDate(value);
+      if (!target) return "-";
+      const tz = tzOverride || res.locals.getTimezone();
+      const formatters = getFormatters(tz);
+      const iso = escapeAttr(target.toISOString());
+      const dateText = escapeAttr(formatters.date.format(target));
+      const timeText = escapeAttr(formatters.time.format(target));
+      return `<span class="date-stack" data-dt="${iso}" data-tz="${escapeAttr(tz)}"><span>${dateText}</span><span>${timeText}</span></span>`;
     };
   }
   if (typeof res.locals.formatAmount === "undefined") {
@@ -221,6 +264,9 @@ const withAdminLocals = async (req: any, res: any, next: any) => {
 
   const adminId = session?.sub ? String(session.sub) : null;
   if (!adminId) {
+    const fallbackTz = session?.timezone ? resolveTimezone(session.timezone) : defaultTimezone();
+    res.locals.timezone = fallbackTz;
+    (req as any).activeTimezone = fallbackTz;
     return next();
   }
 
@@ -233,6 +279,7 @@ const withAdminLocals = async (req: any, res: any, next: any) => {
         displayName: true,
         role: true,
         canViewUserDirectory: true,
+        timezone: true,
       },
     });
 
@@ -240,8 +287,12 @@ const withAdminLocals = async (req: any, res: any, next: any) => {
       const canViewUsers = admin.canViewUserDirectory !== false;
       req.adminDetails = admin;
       req.adminCanViewUsers = canViewUsers;
+      const timezone = resolveTimezone(admin.timezone);
+      res.locals.timezone = timezone;
+      (req as any).activeTimezone = timezone;
       if (session) {
         session.canViewUsers = canViewUsers;
+        session.timezone = timezone;
       }
       res.locals.admin = {
         ...session,
@@ -253,6 +304,11 @@ const withAdminLocals = async (req: any, res: any, next: any) => {
     // ignore lookup errors, fall back to session payload
   }
 
+  if (!res.locals.timezone) {
+    const fallbackTz = session?.timezone ? resolveTimezone(session.timezone) : defaultTimezone();
+    res.locals.timezone = fallbackTz;
+    (req as any).activeTimezone = fallbackTz;
+  }
   next();
 };
 

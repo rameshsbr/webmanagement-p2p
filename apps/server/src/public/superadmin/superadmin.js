@@ -451,43 +451,8 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   // Timezones — full world list (matches admin/merchant)
   // ──────────────────────────────────────────────────────────
   const tzSel = document.getElementById('pref-tz');
-  if (tzSel) {
-    tzSel.innerHTML = '';
-
-    let zones = [];
-    if (typeof Intl.supportedValuesOf === 'function') {
-      try { zones = Intl.supportedValuesOf('timeZone') || []; } catch {}
-    }
-    if (!zones.length) {
-      zones = [
-        'UTC',
-        'Africa/Abidjan','Africa/Accra','Africa/Cairo','Africa/Johannesburg','Africa/Lagos','Africa/Nairobi',
-        'America/Argentina/Buenos_Aires','America/Bogota','America/Chicago','America/Denver','America/Los_Angeles','America/Mexico_City','America/New_York','America/Santiago','America/Sao_Paulo','America/Toronto','America/Vancouver',
-        'Asia/Bangkok','Asia/Dhaka','Asia/Dubai','Asia/Ho_Chi_Minh','Asia/Hong_Kong','Asia/Jakarta','Asia/Kolkata','Asia/Kuala_Lumpur','Asia/Manila','Asia/Riyadh','Asia/Seoul','Asia/Shanghai','Asia/Singapore','Asia/Taipei','Asia/Tokyo',
-        'Australia/Perth','Australia/Adelaide','Australia/Brisbane','Australia/Sydney',
-        'Europe/Amsterdam','Europe/Athens','Europe/Berlin','Europe/Brussels','Europe/Bucharest','Europe/Budapest','Europe/Copenhagen','Europe/Dublin','Europe/Helsinki','Europe/Istanbul','Europe/Kyiv','Europe/Lisbon','Europe/London','Europe/Madrid','Europe/Oslo','Europe/Paris','Europe/Prague','Europe/Rome','Europe/Stockholm','Europe/Vienna','Europe/Warsaw','Europe/Zurich',
-        'Pacific/Auckland','Pacific/Fiji','Pacific/Honolulu'
-      ];
-    }
-    try { zones.sort(); } catch {}
-
-    const saved = localStorage.getItem('pref_tz') || '';
-    const detected = (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
-    const chosen = zones.includes(saved) ? saved : (zones.includes(detected) ? detected : 'UTC');
-
-    const frag = document.createDocumentFragment();
-    for (const z of zones) {
-      const o = document.createElement('option');
-      o.value = z;
-      o.textContent = z;
-      frag.appendChild(o);
-    }
-    tzSel.appendChild(frag);
-    tzSel.value = chosen;
-
-    tzSel.addEventListener('change', () => {
-      localStorage.setItem('pref_tz', tzSel.value);
-    });
+  if (tzSel && typeof window.timezone?.populate === 'function') {
+    window.timezone.populate(tzSel);
   }
 
   // ──────────────────────────────────────────────────────────
@@ -499,7 +464,8 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     catch { return {}; }
   };
   const writePrefs = (value) => {
-    localStorage.setItem(PREF_KEY, JSON.stringify(value));
+    try { localStorage.setItem(PREF_KEY, JSON.stringify(value)); }
+    catch {}
   };
   const el = (id) => document.getElementById(id);
   const applyPrefs = (prefs) => {
@@ -507,9 +473,10 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     const currency = el('pref-currency');
     if (currency && next.currency) currency.value = next.currency;
     const tzField = el('pref-tz');
-    if (tzField && next.tz) {
-      tzField.value = next.tz;
-      try { localStorage.setItem('pref_tz', next.tz); } catch {}
+    if (tzField) {
+      const currentTz = typeof window.timezone?.get === 'function' ? window.timezone.get() : '';
+      const desired = next.tz || currentTz;
+      if (desired) tzField.value = desired;
     }
     if (darkInput) {
       const mode = (next.theme || currentTheme || 'light');
@@ -540,7 +507,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   const saveBtn = el('prefs-save');
   const cancelBtn = el('prefs-cancel');
 
-  saveBtn?.addEventListener('click', (event) => {
+  saveBtn?.addEventListener('click', async (event) => {
     event.preventDefault();
     const next = {
       currency: el('pref-currency')?.value || '',
@@ -548,6 +515,22 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       theme: darkInput?.checked ? 'dark' : 'light',
     };
     try {
+      const res = await fetch('/superadmin/prefs/timezone', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        credentials: 'same-origin',
+        body: JSON.stringify({ timezone: next.tz }),
+      });
+      let data = null;
+      try { data = await res.json(); } catch {}
+      if (!res.ok || !data?.ok) {
+        throw new Error((data && data.error) || 'Failed to save timezone');
+      }
+      const resolved = data.timezone || next.tz;
+      if (typeof window.timezone?.set === 'function') {
+        window.timezone.set(resolved);
+      }
+      next.tz = resolved;
       writePrefs(next);
       applyPrefs(next);
       show('reports');
@@ -560,7 +543,11 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 
   cancelBtn?.addEventListener('click', (event) => {
     event.preventDefault();
-    applyPrefs(readPrefs());
+    const current = readPrefs();
+    if (typeof window.timezone?.get === 'function') {
+      current.tz = window.timezone.get();
+    }
+    applyPrefs(current);
     show('reports');
     showToast('Changes discarded.');
   });

@@ -1,6 +1,7 @@
 // apps/server/src/services/paymentExports.ts
 import { stringify as csvStringify } from "csv-stringify/sync";
 import ExcelJS from "exceljs";
+import { resolveTimezone } from "../lib/timezone.js";
 
 export type PaymentExportFormat = "csv" | "xlsx" | "pdf";
 
@@ -57,6 +58,7 @@ export interface PaymentExportOptions {
   columns: PaymentExportColumn[];
   items: PaymentExportItem[];
   context: PaymentExportContext;
+  timezone?: string;
 }
 
 export function normalizeColumns(
@@ -96,7 +98,8 @@ export async function buildPaymentExportFile(options: PaymentExportOptions): Pro
   const { format, columns, items, context } = options;
   const safeColumns = columns.filter((col) => col.key && col.label);
   const headers = safeColumns.map((col) => col.label);
-  const rows = items.map((item) => safeColumns.map((col) => formatColumnValue(item, col.key, context)));
+  const timezone = resolveTimezone(options.timezone);
+  const rows = items.map((item) => safeColumns.map((col) => formatColumnValue(item, col.key, context, timezone)));
 
   const stamp = new Date().toISOString().slice(0, 10);
   const baseName = buildBaseName(context);
@@ -188,7 +191,7 @@ function resolveContextType(context: PaymentExportContext): "DEPOSITS" | "WITHDR
   return "PAYMENTS";
 }
 
-function formatColumnValue(item: PaymentExportItem, key: string, context: PaymentExportContext): string {
+function formatColumnValue(item: PaymentExportItem, key: string, context: PaymentExportContext, timezone: string): string {
   const paymentType = resolvePaymentType(item, context.type);
   const method = extractMethod(item);
   const processedAt = item.processedAt || item.updatedAt || null;
@@ -217,9 +220,9 @@ function formatColumnValue(item: PaymentExportItem, key: string, context: Paymen
       return `${id}\n${name}`;
     }
     case "created":
-      return formatDateTime(item.createdAt);
+      return formatDateTime(item.createdAt, timezone);
     case "processedAt":
-      return hasProcessed && processedAt ? formatDateTime(processedAt) : "-";
+      return hasProcessed && processedAt ? formatDateTime(processedAt, timezone) : "-";
     case "processingTime":
       return hasProcessed && processedAt ? formatDuration(item.createdAt, processedAt) : "-";
     case "userInfo":
@@ -357,22 +360,28 @@ function formatAmount(cents: number, currency?: string): string {
   return currency ? `${value} ${currency}` : value;
 }
 
-function formatDateTime(value: Date | string | null | undefined): string {
+const exportDateTimeCache = new Map<string, Intl.DateTimeFormat>();
+
+function formatDateTime(value: Date | string | null | undefined, timezoneRaw?: string): string {
   if (!value) return "-";
   const date = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
-  const datePart = new Intl.DateTimeFormat("en-AU", {
-    day: "2-digit",
-    month: "2-digit",
-    year: "numeric",
-  }).format(date);
-  const timePart = new Intl.DateTimeFormat("en-AU", {
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  }).format(date);
-  return `${datePart} ${timePart}`;
+  const timezone = resolveTimezone(timezoneRaw);
+  let formatter = exportDateTimeCache.get(timezone);
+  if (!formatter) {
+    formatter = new Intl.DateTimeFormat("en-AU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+      timeZone: timezone,
+    });
+    exportDateTimeCache.set(timezone, formatter);
+  }
+  return formatter.format(date);
 }
 
 function formatDuration(start: Date | string | null | undefined, end: Date | string | null | undefined): string {

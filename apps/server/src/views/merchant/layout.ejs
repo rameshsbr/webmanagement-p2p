@@ -35,7 +35,7 @@
   <link rel="stylesheet" href="/static/admin/styles.css"/>
   <link rel="stylesheet" href="/static/merchant/styles.css"/>
 </head>
-<body data-theme="<%= theme || 'light' %>">
+<body data-theme="<%= theme || 'light' %>" data-timezone="<%= timezone || '' %>">
   <% var IS_AUTH = (typeof isAuthView !== 'undefined' && isAuthView); %>
   <% var MER     = (typeof merchant !== 'undefined' && merchant) ? merchant : null; %>
 
@@ -130,6 +130,7 @@
   </div>
 
   <script src="/static/shared/toast.js" defer></script>
+  <script src="/static/shared/timezone.js" defer></script>
   <script src="/static/merchant/merchant.js" defer></script>
 </body>
 </html>

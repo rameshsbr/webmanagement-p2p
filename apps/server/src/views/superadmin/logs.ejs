@@ -34,7 +34,7 @@
       <% } %>
       <% logs.forEach(l => { %>
         <tr>
-          <td style="white-space:nowrap"><%= l.createdAt ? l.createdAt.toISOString() : '' %></td>
+          <td style="white-space:nowrap"><%- l.createdAt ? renderDateTime(l.createdAt) : '' %></td>
           <td>
             <%= (l.admin && l.admin.email) ? l.admin.email : (l.adminId || '-') %>
           </td>

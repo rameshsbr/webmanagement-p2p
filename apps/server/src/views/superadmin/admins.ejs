@@ -24,7 +24,7 @@
           <td><%= a.role %></td>
           <td><%= a.twoFactorEnabled ? 'enabled' : '-' %></td>
           <td><%= a.canViewUserDirectory !== false ? 'yes' : 'no' %></td>
-          <td class="mini"><%= a.createdAt.toISOString() %></td>
+          <td class="mini"><%- renderDateTime(a.createdAt) %></td>
           <td class="nowrap">
             <a class="btn small" href="/superadmin/admins/<%= a.id %>/edit">Edit</a>
 

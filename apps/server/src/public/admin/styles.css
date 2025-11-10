@@ -477,6 +477,7 @@ textarea{
 .info-value a:hover{ text-decoration:underline }
 .list-unstyled{ list-style:none; margin:0; padding:0 }
 .date-stack{ display:inline-flex; flex-direction:column; align-items:center; line-height:1.2; gap:2px }
+.date-inline{ display:inline-flex; flex-direction:row; align-items:center; gap:4px }
 .table th{ font-weight:700; background:var(--row); position:sticky; top:0 }
 
 /* Toast */

@@ -756,11 +756,11 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   const NotificationAPI = 'Notification' in window ? window.Notification : null;
   const hostName = (window.location.hostname || '').toLowerCase();
   const isLocalHost = hostName === 'localhost' || hostName === '127.0.0.1' || hostName === '::1';
-  let lastStamp = Date.now();
+  let lastDepositStamp = Date.now();
+  let lastWithdrawalStamp = Date.now();
   let audioCtx = null;
   let autoReloadScheduled = false;
   let permissionBanner = null;
-  let primed = false;
   let swRegistrationPromise = null;
   let notificationWarningShown = false;
 
@@ -839,13 +839,22 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   ensureServiceWorker();
 
-  const findAutoRefreshContext = () =>
-    document.querySelector('[data-auto-refresh="pending-deposits"]') ||
-    document.querySelector('[data-auto-refresh="pending-withdrawals"]');
+  const findAutoRefreshContext = (queueType) => {
+    if (queueType === 'withdrawal') {
+      return document.querySelector('[data-auto-refresh="pending-withdrawals"]');
+    }
+    if (queueType === 'deposit') {
+      return document.querySelector('[data-auto-refresh="pending-deposits"]');
+    }
+    return (
+      document.querySelector('[data-auto-refresh="pending-deposits"]') ||
+      document.querySelector('[data-auto-refresh="pending-withdrawals"]')
+    );
+  };
 
-  const scheduleReload = () => {
+  const scheduleReload = (queueType) => {
     if (autoReloadScheduled) return;
-    const ctx = findAutoRefreshContext();
+    const ctx = findAutoRefreshContext(queueType);
     if (!ctx) return;
     autoReloadScheduled = true;
     window.setTimeout(() => window.location.reload(), 1500);
@@ -970,15 +979,17 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
     return false;
   };
 
-  const sendNotification = async (label, count) => {
+  const sendNotification = async (queueType, count) => {
     if (count <= 0) return;
+    const isWithdrawal = queueType === 'withdrawal';
+    const label = isWithdrawal ? 'withdrawal request' : 'deposit request';
     const plural = count > 1 ? 's' : '';
     const message = count > 1 ? `${count} new ${label}${plural}` : `New ${label}`;
     toast(message);
-    const targetUrl = label.includes('withdrawal')
+    const targetUrl = isWithdrawal
       ? '/admin/report/withdrawals/pending'
       : '/admin/report/deposits/pending';
-    const ok = await showBrowserNotification('Payments queue update', message, `queue-${label}`, targetUrl).catch(() => false);
+    const ok = await showBrowserNotification('Payments queue update', message, `queue-${queueType}`, targetUrl).catch(() => false);
     if (!ok) {
       const status = notificationStatus();
       if (status === 'default') {
@@ -988,16 +999,21 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
       }
     }
     playChime();
-    scheduleReload();
+    scheduleReload(queueType);
   };
 
   const poll = async () => {
-    if (!primed) {
-      primed = true;
-      lastStamp = Date.now();
-      return;
+    const qs = new URLSearchParams();
+    if (Number.isFinite(lastDepositStamp) && lastDepositStamp > 0) {
+      qs.set('sinceDeposits', String(Math.floor(lastDepositStamp)));
     }
-    const qs = new URLSearchParams({ since: String(lastStamp) });
+    if (Number.isFinite(lastWithdrawalStamp) && lastWithdrawalStamp > 0) {
+      qs.set('sinceWithdrawals', String(Math.floor(lastWithdrawalStamp)));
+    }
+    const baseStamp = Math.min(lastDepositStamp || Date.now(), lastWithdrawalStamp || Date.now());
+    if (Number.isFinite(baseStamp) && baseStamp > 0) {
+      qs.set('since', String(Math.floor(baseStamp)));
+    }
     try {
       const res = await fetch(`/admin/notifications/queue?${qs.toString()}`, {
         credentials: 'same-origin',
@@ -1006,16 +1022,42 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
       if (!res.ok) return;
       const data = await res.json();
       if (!data?.ok) return;
-      const latest = typeof data.latest === 'string' ? Date.parse(data.latest) : NaN;
-      if (!Number.isNaN(latest) && latest >= lastStamp) {
-        lastStamp = latest + 1;
-      } else {
-        lastStamp = Date.now();
+      const parseStamp = (value) => {
+        if (!value) return NaN;
+        if (value instanceof Date) return value.getTime();
+        if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+        if (typeof value === 'string') {
+          const num = Number(value);
+          if (Number.isFinite(num)) return num;
+          const parsed = Date.parse(value);
+          if (!Number.isNaN(parsed)) return parsed;
+        }
+        return NaN;
+      };
+
+      const updateStamp = (current, nextRaw) => {
+        const next = parseStamp(nextRaw);
+        if (!Number.isFinite(next)) return current;
+        if (!Number.isFinite(current) || next >= current) return next + 1;
+        return current;
+      };
+
+      if (Object.prototype.hasOwnProperty.call(data, 'latestDeposit')) {
+        lastDepositStamp = updateStamp(lastDepositStamp, data.latestDeposit);
+      }
+      if (Object.prototype.hasOwnProperty.call(data, 'latestWithdrawal')) {
+        lastWithdrawalStamp = updateStamp(lastWithdrawalStamp, data.latestWithdrawal);
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'latestDeposit')) {
+        lastDepositStamp = updateStamp(lastDepositStamp, data.latest);
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'latestWithdrawal')) {
+        lastWithdrawalStamp = updateStamp(lastWithdrawalStamp, data.latest);
       }
       ensurePermissionPrompt();
       await Promise.all([
-        sendNotification('deposit request', Number(data.deposits || 0)),
-        sendNotification('withdrawal request', Number(data.withdrawals || 0)),
+        sendNotification('deposit', Number(data.deposits || 0)),
+        sendNotification('withdrawal', Number(data.withdrawals || 0)),
       ]);
     } catch {}
   };

@@ -452,19 +452,41 @@ router.get('/report/deposits/pending', async (req, res) => {
 });
 
 router.get('/notifications/queue', async (req, res) => {
-  const sinceRaw = Number(req.query?.since);
-  let since = new Date();
-  if (Number.isFinite(sinceRaw) && sinceRaw > 0) {
-    const candidate = new Date(sinceRaw);
-    if (!Number.isNaN(candidate.getTime())) since = candidate;
-  }
+  const parseSinceParam = (value: unknown): Date | null => {
+    if (!value) return null;
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (raw === undefined || raw === null) return null;
+    if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const candidate = new Date(numeric);
+      if (!Number.isNaN(candidate.getTime())) return candidate;
+    }
+    if (typeof raw === 'string' && raw.trim()) {
+      const candidate = new Date(raw);
+      if (!Number.isNaN(candidate.getTime())) return candidate;
+    }
+    return null;
+  };
+
+  const fallbackSince = parseSinceParam(req.query?.since) ?? new Date();
+  const depositsSince =
+    parseSinceParam((req.query as Record<string, unknown>)?.sinceDeposits) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.depositsSince) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.depositSince) ??
+    fallbackSince;
+  const withdrawalsSince =
+    parseSinceParam((req.query as Record<string, unknown>)?.sinceWithdrawals) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.withdrawalsSince) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.withdrawSince) ??
+    fallbackSince;
 
   const depositWhere = {
     type: 'DEPOSIT' as const,
     status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
     OR: [
-      { createdAt: { gt: since } },
-      { updatedAt: { gt: since } },
+      { createdAt: { gt: depositsSince } },
+      { updatedAt: { gt: depositsSince } },
     ],
   };
 
@@ -472,8 +494,8 @@ router.get('/notifications/queue', async (req, res) => {
     type: 'WITHDRAWAL' as const,
     status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
     OR: [
-      { createdAt: { gt: since } },
-      { updatedAt: { gt: since } },
+      { createdAt: { gt: withdrawalsSince } },
+      { updatedAt: { gt: withdrawalsSince } },
     ],
   };
 
@@ -492,11 +514,9 @@ router.get('/notifications/queue', async (req, res) => {
     }),
   ]);
 
-  const latestCandidates = [
-    latestDeposit?.updatedAt || latestDeposit?.createdAt,
-    latestWithdrawal?.updatedAt || latestWithdrawal?.createdAt,
-  ]
-    .filter((d): d is Date => !!d);
+  const latestDepositDate = latestDeposit?.updatedAt || latestDeposit?.createdAt || null;
+  const latestWithdrawalDate = latestWithdrawal?.updatedAt || latestWithdrawal?.createdAt || null;
+  const latestCandidates = [latestDepositDate, latestWithdrawalDate].filter((d): d is Date => !!d);
   const latest = latestCandidates.length
     ? new Date(Math.max(...latestCandidates.map((d) => d.getTime())))
     : null;
@@ -506,6 +526,8 @@ router.get('/notifications/queue', async (req, res) => {
     deposits,
     withdrawals,
     latest,
+    latestDeposit: latestDepositDate,
+    latestWithdrawal: latestWithdrawalDate,
   });
 });
 

@@ -1,0 +1,46 @@
+<% layout('superadmin/layout') -%>
+
+<%
+  function formatAmount(cents) {
+    if (typeof cents !== 'number' || !isFinite(cents)) return '-';
+    return (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  function formatDate(value) {
+    if (!value) return '-';
+    try {
+      return new Date(value).toLocaleString();
+    } catch (err) {
+      return '-';
+    }
+  }
+%>
+
+<div class="panel">
+  <p class="muted">Monitor every merchant's balance at a glance. Balances update immediately when a settlement or topup is recorded.</p>
+</div>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>MERCHANT</th>
+        <th style="text-align:right">BALANCE</th>
+        <th style="width:220px">LAST UPDATE</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!balances.length) { %>
+        <tr>
+          <td colspan="3" style="text-align:center;color:var(--ink-dim)">No merchants found</td>
+        </tr>
+      <% } %>
+      <% balances.forEach(function(item){ %>
+        <tr>
+          <td><%= item.name %></td>
+          <td style="text-align:right"><span class="mono"><%= formatAmount(item.balanceCents) %></span></td>
+          <td><%= formatDate(item.lastActivityAt) %></td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

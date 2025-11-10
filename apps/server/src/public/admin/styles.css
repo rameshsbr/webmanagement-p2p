@@ -480,12 +480,38 @@ textarea{
 .table th{ font-weight:700; background:var(--row); position:sticky; top:0 }
 
 /* Toast */
+.toast-host{
+  position:fixed;
+  right:14px;
+  bottom:14px;
+  display:flex;
+  flex-direction:column;
+  gap:8px;
+  align-items:flex-end;
+  pointer-events:none;
+  z-index:1400;
+}
 .toast{
-  position:fixed; right:14px; bottom:14px; background:var(--card); border:1px solid var(--muted);
-  border-radius:10px; padding:10px 12px; opacity:0; transform:translateY(8px); transition:.2s;
-  box-shadow:0 8px 24px rgba(0,0,0,.12)
+  position:relative;
+  background:var(--card);
+  border:1px solid var(--muted);
+  border-radius:10px;
+  padding:10px 12px;
+  opacity:0;
+  transform:translateY(8px);
+  transition:.2s;
+  box-shadow:0 8px 24px rgba(0,0,0,.12);
+  color:var(--ink);
+  pointer-events:auto;
+  min-width:200px;
+  max-width:320px;
 }
 .toast.show{ opacity:1; transform:translateY(0) }
+.toast--error{
+  border-color:color-mix(in oklab, var(--tone-danger) 55%, var(--muted));
+  background:color-mix(in oklab, var(--tone-danger) 18%, var(--card));
+  color:var(--danger);
+}
 
 /* iOS-style theme switch (icons embedded) */
 .ios-input{ position:absolute; opacity:0; pointer-events:none }

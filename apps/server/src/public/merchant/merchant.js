@@ -68,9 +68,9 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   const controls = document.querySelectorAll('[data-export-control]');
   if (!controls.length) return;
 
-  const notify = (message) => {
-    if (typeof window.toast === 'function') window.toast(message);
-    else if (message) window.alert(message);
+  const notify = (message, options) => {
+    if (typeof window.toast === 'function') window.toast(message, options);
+    else if (message) console.warn(message);
   };
 
   controls.forEach((control) => {
@@ -388,16 +388,32 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 
   const saveBtn = el('prefs-save');
   const cancelBtn = el('prefs-cancel');
+  const showToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast === 'function') window.toast(message);
+    else console.info(message);
+  };
+  const showErrorToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast?.error === 'function') window.toast.error(message);
+    else if (typeof window.toast === 'function') window.toast(message);
+    else console.error(message);
+  };
   saveBtn?.addEventListener('click', (e) => {
     e.preventDefault();
     const next = Object.fromEntries(Object.entries(fields).map(([k,f]) => [k, f()]));
-    write(next);
-    alert('Preferences saved');
+    try {
+      write(next);
+      showToast('Preference saved.');
+    } catch (err) {
+      console.error(err);
+      showErrorToast('Failed to save preferences.');
+    }
   });
   cancelBtn?.addEventListener('click', (e) => {
     e.preventDefault();
     apply(read());
-    alert('Changes discarded');
+    showToast('Changes discarded.');
   });
 })();
 

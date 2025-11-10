@@ -1,4 +1,73 @@
-// apps/server/src/public/superadmin/superadmin.js
+function confirmDialog({
+  title = 'Confirm',
+  message = 'Are you sure?',
+  confirmLabel = 'Confirm',
+  cancelLabel = 'Cancel',
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const overlay = document.createElement('div');
+    overlay.className = 'modal-backdrop';
+    overlay.innerHTML = `
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="sa-confirm-title" aria-describedby="sa-confirm-message">
+        <div class="modal-header">
+          <h3 id="sa-confirm-title" class="modal-title"></h3>
+        </div>
+        <div class="modal-body">
+          <p class="modal-message" id="sa-confirm-message"></p>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn small" data-cancel></button>
+          <button type="button" class="btn small primary" data-confirm></button>
+        </div>
+      </div>`;
+
+    const card = overlay.querySelector('.modal-card');
+    const titleEl = overlay.querySelector('.modal-title');
+    const messageEl = overlay.querySelector('.modal-message');
+    const cancelBtn = overlay.querySelector('[data-cancel]');
+    const confirmBtn = overlay.querySelector('[data-confirm]');
+
+    if (!card || !titleEl || !messageEl || !cancelBtn || !confirmBtn) {
+      resolve(false);
+      return;
+    }
+
+    titleEl.textContent = title;
+    messageEl.textContent = message;
+    cancelBtn.textContent = cancelLabel;
+    confirmBtn.textContent = confirmLabel;
+
+    const close = (result) => {
+      if (settled) return;
+      settled = true;
+      overlay.classList.remove('is-visible');
+      document.removeEventListener('keydown', onKeyDown, true);
+      setTimeout(() => overlay.remove(), 180);
+      resolve(!!result);
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        close(false);
+      }
+    };
+
+    cancelBtn.addEventListener('click', () => close(false));
+    confirmBtn.addEventListener('click', () => close(true));
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close(false);
+    });
+
+    document.addEventListener('keydown', onKeyDown, true);
+    document.body.appendChild(overlay);
+    requestAnimationFrame(() => {
+      overlay.classList.add('is-visible');
+      confirmBtn.focus();
+    });
+  });
+}
 
 function toast(msg) {
   if (!msg) return;
@@ -150,7 +219,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 
   const notify = (message) => {
     if (typeof toast === 'function') toast(message);
-    else if (message) window.alert(message);
+    else if (message) console.warn(message);
   };
 
   controls.forEach((control) => {
@@ -444,14 +513,21 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   }
 
   const darkInput = document.getElementById('pref-dark');
-  const currentTheme = readCookie(DARK_COOKIE) || 'light';
+  let currentTheme = readCookie(DARK_COOKIE) || 'light';
   if (darkInput) {
     darkInput.checked = currentTheme === 'dark';
     document.documentElement.setAttribute('data-theme', currentTheme);
+    document.documentElement.classList.toggle('dark', currentTheme === 'dark');
+    document.body?.setAttribute('data-theme', currentTheme);
+    document.body?.classList.toggle('dark', currentTheme === 'dark');
     darkInput.addEventListener('change', function () {
       const mode = this.checked ? 'dark' : 'light';
       writeCookie(DARK_COOKIE, mode);
       document.documentElement.setAttribute('data-theme', mode);
+      document.documentElement.classList.toggle('dark', mode === 'dark');
+      document.body?.setAttribute('data-theme', mode);
+      document.body?.classList.toggle('dark', mode === 'dark');
+      currentTheme = mode;
     });
   }
 
@@ -499,10 +575,79 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   }
 
   // ──────────────────────────────────────────────────────────
-  // Save/Cancel — UX sugar (like other portals)
+  // Save/Cancel — align with other portals + toasts
   // ──────────────────────────────────────────────────────────
-  document.getElementById('prefs-save')?.addEventListener('click', () => show('reports'));
-  document.getElementById('prefs-cancel')?.addEventListener('click', () => show('reports'));
+  const PREF_KEY = 'superadmin.prefs';
+  const readPrefs = () => {
+    try { return JSON.parse(localStorage.getItem(PREF_KEY) || '{}') || {}; }
+    catch { return {}; }
+  };
+  const writePrefs = (value) => {
+    localStorage.setItem(PREF_KEY, JSON.stringify(value));
+  };
+  const el = (id) => document.getElementById(id);
+  const applyPrefs = (prefs) => {
+    const next = prefs && typeof prefs === 'object' ? prefs : {};
+    const currency = el('pref-currency');
+    if (currency && next.currency) currency.value = next.currency;
+    const tzField = el('pref-tz');
+    if (tzField && next.tz) {
+      tzField.value = next.tz;
+      try { localStorage.setItem('pref_tz', next.tz); } catch {}
+    }
+    if (darkInput) {
+      const mode = (next.theme || currentTheme || 'light');
+      darkInput.checked = mode === 'dark';
+      document.documentElement.setAttribute('data-theme', mode);
+      document.documentElement.classList.toggle('dark', mode === 'dark');
+      document.body?.setAttribute('data-theme', mode);
+      document.body?.classList.toggle('dark', mode === 'dark');
+      writeCookie(DARK_COOKIE, mode);
+      currentTheme = mode;
+    }
+  };
+
+  applyPrefs(readPrefs());
+
+  const showToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast === 'function') window.toast(message);
+    else console.info(message);
+  };
+  const showErrorToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast?.error === 'function') window.toast.error(message);
+    else if (typeof window.toast === 'function') window.toast(message);
+    else console.error(message);
+  };
+
+  const saveBtn = el('prefs-save');
+  const cancelBtn = el('prefs-cancel');
+
+  saveBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    const next = {
+      currency: el('pref-currency')?.value || '',
+      tz: el('pref-tz')?.value || '',
+      theme: darkInput?.checked ? 'dark' : 'light',
+    };
+    try {
+      writePrefs(next);
+      applyPrefs(next);
+      show('reports');
+      showToast('Preference saved.');
+    } catch (err) {
+      console.error(err);
+      showErrorToast('Failed to save preferences.');
+    }
+  });
+
+  cancelBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    applyPrefs(readPrefs());
+    show('reports');
+    showToast('Changes discarded.');
+  });
 })();
 
 /* ─────────────────────────────────────────────────────────────

@@ -75,15 +75,197 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
-// Toast helper
-function toast(msg) {
-  let t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  requestAnimationFrame(() => t.classList.add('show'));
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 1400);
-}
+(function () {
+  const controls = document.querySelectorAll('[data-export-control]');
+  if (!controls.length) return;
+
+  const notify = (message) => {
+    if (typeof toast === 'function') toast(message);
+    else if (message) console.warn(message);
+  };
+
+  controls.forEach((control) => {
+    const mainBtn = control.querySelector('[data-export-main]');
+    const toggleBtn = control.querySelector('[data-export-toggle]');
+    const menu = control.querySelector('[data-export-menu]');
+    const label = control.querySelector('[data-export-label]');
+    if (!mainBtn || !toggleBtn || !menu || !label) return;
+
+    const endpoint = control.getAttribute('data-export-endpoint');
+    if (!endpoint) return;
+
+    const tableSelector = control.getAttribute('data-export-table') || '';
+    const columnsRootSelector = control.getAttribute('data-export-columns-root') || '';
+    const storageKey = control.getAttribute('data-export-storage') || 'admin.export.default';
+
+    const readStoredType = () => {
+      try { return localStorage.getItem(storageKey) || 'csv'; } catch { return 'csv'; }
+    };
+    const storeType = (type) => {
+      try { localStorage.setItem(storageKey, type); } catch {}
+    };
+
+    let currentType = readStoredType();
+
+    const updateLabel = () => {
+      label.textContent = currentType ? `${currentType.toUpperCase()} Export` : 'Export';
+    };
+
+    updateLabel();
+
+    const closeMenu = () => {
+      menu.hidden = true;
+      control.removeAttribute('data-open');
+      document.removeEventListener('click', onDocClick, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+
+    const openMenu = () => {
+      if (!menu.hidden) return;
+      menu.hidden = false;
+      control.setAttribute('data-open', '1');
+      document.addEventListener('click', onDocClick, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    };
+
+    const onDocClick = (event) => {
+      if (!control.contains(event.target)) closeMenu();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu();
+      }
+    };
+
+    toggleBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (menu.hidden) openMenu();
+      else closeMenu();
+    });
+
+    menu.querySelectorAll('[data-export-option]').forEach((optionBtn) => {
+      optionBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        const next = (optionBtn.getAttribute('data-export-option') || '').toLowerCase();
+        if (!next) return;
+        currentType = next;
+        storeType(currentType);
+        updateLabel();
+        closeMenu();
+      });
+    });
+
+    const collectColumns = () => {
+      const table = tableSelector ? document.querySelector(tableSelector) : null;
+      if (!table) return [];
+
+      const headerCells = Array.from(table.querySelectorAll('thead th[data-col]'));
+      const toggleMap = new Map();
+      if (columnsRootSelector) {
+        const root = document.querySelector(columnsRootSelector);
+        if (root) {
+          root.querySelectorAll('[data-col-toggle]').forEach((cb) => {
+            const col = cb.getAttribute('data-col-toggle');
+            if (col) toggleMap.set(col, cb.checked);
+          });
+          root.querySelectorAll('.col-toggle').forEach((cb) => {
+            const col = cb.getAttribute('data-col');
+            if (col) toggleMap.set(col, cb.checked);
+          });
+        }
+      }
+
+      const columns = headerCells
+        .map((th) => {
+          const key = th.getAttribute('data-col');
+          if (!key) return null;
+          const isVisible = toggleMap.has(key) ? toggleMap.get(key) : th.offsetParent !== null;
+          if (!isVisible) return null;
+          const text = th.textContent ? th.textContent.replace(/\s+/g, ' ').trim() : '';
+          return { key, label: text || key };
+        })
+        .filter(Boolean);
+
+      if (columns.length) return columns;
+      return headerCells
+        .map((th) => {
+          const key = th.getAttribute('data-col');
+          if (!key) return null;
+          const text = th.textContent ? th.textContent.replace(/\s+/g, ' ').trim() : '';
+          return { key, label: text || key };
+        })
+        .filter(Boolean);
+    };
+
+    const buildFilters = () => {
+      const filters = {};
+      const params = new URLSearchParams(window.location.search || '');
+      params.forEach((value, key) => {
+        filters[key] = value;
+      });
+      return filters;
+    };
+
+    const parseFilename = (disposition, fallback) => {
+      if (!disposition) return fallback;
+      const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+      if (match) {
+        return decodeURIComponent(match[1] || match[2]);
+      }
+      return fallback;
+    };
+
+    const triggerExport = async () => {
+      if (control.dataset.exporting === '1') return;
+      control.dataset.exporting = '1';
+      const columns = collectColumns();
+      const filters = buildFilters();
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/octet-stream' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ type: currentType, columns, filters }),
+        });
+        if (!res.ok) {
+          let message = 'Export failed';
+          const ct = res.headers.get('Content-Type') || '';
+          if (ct.includes('application/json')) {
+            try {
+              const data = await res.json();
+              if (data && data.error) message = data.error;
+            } catch {}
+          }
+          throw new Error(message);
+        }
+
+        const blob = await res.blob();
+        const fallbackName = `export.${currentType}`;
+        const filename = parseFilename(res.headers.get('Content-Disposition'), fallbackName);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      } catch (err) {
+        notify((err && err.message) || 'Unable to export');
+      } finally {
+        control.dataset.exporting = '0';
+      }
+    };
+
+    mainBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      triggerExport();
+    });
+  });
+})();
 
 (function () {
   const controls = document.querySelectorAll('[data-export-control]');
@@ -1104,12 +1286,12 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
     e.preventDefault();
     const next = Object.fromEntries(Object.entries(fields).map(([k,f]) => [k, f()]));
     write(next);
-    toast('Preferences saved');
+    toast('Preference saved.');
   });
   cancelBtn?.addEventListener('click', (e) => {
     e.preventDefault();
     apply(read());
-    toast('Changes discarded');
+    toast('Changes discarded.');
   });
 })();
 

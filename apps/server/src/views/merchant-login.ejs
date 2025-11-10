@@ -1,20 +1,23 @@
-<!doctype html>
-<html lang="en">
+<!DOCTYPE html>
+<html lang="en" data-theme="auto">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Merchant Login</title>
+  <title><%= title || 'Merchant Login' %></title>
   <link rel="stylesheet" href="/static/auth/styles.css" />
+  <% if (typeof siteKey !== 'undefined' && siteKey) { %>
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+  <% } %>
 </head>
 <body class="login-body">
   <div class="bg" aria-hidden="true"></div>
 
-  <section class="login-card" role="region" aria-labelledby="login-title">
-    <div class="brand">
+  <main class="login-card" role="region" aria-labelledby="login-title">
+    <header class="brand">
       <div class="logo" aria-hidden="true">🪙</div>
       <h1 id="login-title">Merchant Portal</h1>
       <p class="muted">Sign in to manage deposits, withdrawals &amp; API keys.</p>
-    </div>
+    </header>
 
     <% if (typeof reset !== 'undefined' && reset) { %>
       <div class="alert success" role="status">Password updated. Please sign in.</div>
@@ -24,45 +27,48 @@
       <div class="alert error" role="alert"><%= error %></div>
     <% } %>
 
-    <form class="form" method="POST" action="/auth/merchant/login" novalidate>
+    <form class="form" method="POST" action="/auth/merchant/login" id="loginForm">
       <div class="field">
         <label for="email">Email</label>
-        <input id="email" name="email" type="email"
-               placeholder="you@company.com" autocomplete="username" required />
+        <input
+          id="email"
+          name="email"
+          type="email"
+          placeholder="you@company.com"
+          autocomplete="username"
+          required />
       </div>
 
       <div class="field">
         <label for="password">Password</label>
-        <div class="password-wrap" style="position:relative">
-          <input id="password" name="password" type="password"
-                 placeholder="••••••••" autocomplete="current-password" required style="padding-right:72px" />
-          <button type="button" id="toggle-pass" class="toggle-pass" aria-pressed="false" aria-label="Show password"
-                  style="position:absolute; right:6px; top:50%; transform:translateY(-50%);">
-            Show
-          </button>
+        <div class="password-wrap">
+          <input
+            id="password"
+            name="password"
+            type="password"
+            placeholder="••••••••"
+            autocomplete="current-password"
+            required />
+          <button type="button" class="toggle-pass" aria-pressed="false">Show</button>
         </div>
       </div>
+
+      <% if (typeof siteKey !== 'undefined' && siteKey) { %>
+      <div class="field">
+        <label>Verification</label>
+        <div class="cf-turnstile" data-sitekey="<%= siteKey %>" data-callback="__cfOk"></div>
+      </div>
+      <% } %>
+
+      <input type="hidden" name="cf-turnstile-token" id="cfToken" />
 
       <button class="btn primary w-100" type="submit">Sign in</button>
       <div class="foot">
         <small class="muted">Having trouble? Contact your admin.</small>
       </div>
     </form>
-  </section>
+  </main>
 
-  <script>
-    (function(){
-      var btn = document.getElementById('toggle-pass');
-      var input = document.getElementById('password');
-      if (btn && input) {
-        btn.addEventListener('click', function(){
-          var isHidden = input.type === 'password';
-          input.type = isHidden ? 'text' : 'password';
-          btn.textContent = isHidden ? 'Hide' : 'Show';
-          btn.setAttribute('aria-pressed', String(isHidden));
-        });
-      }
-    })();
-  </script>
+  <script src="/static/auth/login.js" defer></script>
 </body>
 </html>

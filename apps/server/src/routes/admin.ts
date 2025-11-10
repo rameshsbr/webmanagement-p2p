@@ -8,6 +8,12 @@ import { stringify } from 'csv-stringify';
 import ExcelJS from 'exceljs';
 import { getUserDirectory, getAllUsers, UserDirectoryItem, renderUserDirectoryPdf } from '../services/userDirectory.js';
 import { changePaymentStatus, PaymentStatusError } from '../services/paymentStatus.js';
+import {
+  buildPaymentExportFile,
+  normalizeColumns,
+  PaymentExportColumn,
+  PaymentExportItem,
+} from '../services/paymentExports.js';
 
 async function safeNotify(text: string) {
   try {
@@ -44,6 +50,40 @@ const router = Router();
 
 const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const ADMIN_PUBLIC_DIR = path.join(CURRENT_DIR, '../public/admin');
+
+const ADMIN_DEPOSIT_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: 'txnId', label: 'TRANSACTION ID' },
+  { key: 'userId', label: 'USER ID' },
+  { key: 'merchant', label: 'MERCHANT' },
+  { key: 'currency', label: 'CURRENCY' },
+  { key: 'amount', label: 'AMOUNT' },
+  { key: 'status', label: 'STATUS' },
+  { key: 'bank', label: 'BANK NAME' },
+  { key: 'created', label: 'DATE OF CREATION' },
+  { key: 'processedAt', label: 'DATE OF DEPOSIT' },
+  { key: 'processingTime', label: 'TIME TO PROCESS' },
+  { key: 'userInfo', label: 'USER INFO' },
+  { key: 'comment', label: 'COMMENT' },
+  { key: 'admin', label: 'ADMIN' },
+  { key: 'actions', label: 'ACTIONS' },
+];
+
+const ADMIN_WITHDRAWAL_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: 'txnId', label: 'TRANSACTION ID' },
+  { key: 'userId', label: 'USER ID' },
+  { key: 'merchant', label: 'MERCHANT' },
+  { key: 'currency', label: 'CURRENCY' },
+  { key: 'amount', label: 'AMOUNT' },
+  { key: 'status', label: 'STATUS' },
+  { key: 'bank', label: 'BANK NAME' },
+  { key: 'created', label: 'DATE OF CREATION' },
+  { key: 'processedAt', label: 'DATE OF WITHDRAWAL' },
+  { key: 'processingTime', label: 'TIME TO PROCESS' },
+  { key: 'userInfo', label: 'USER INFO' },
+  { key: 'comment', label: 'COMMENT' },
+  { key: 'admin', label: 'ADMIN' },
+  { key: 'actions', label: 'ACTIONS' },
+];
 
 router.get('/queue-sw.js', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
@@ -143,6 +183,8 @@ const listQuery = z.object({
   perPage: z.string().optional()
 });
 
+const LIST_QUERY_KEYS = new Set(Object.keys((listQuery as any).shape || {}));
+
 function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL') {
   const where: any = { type };
   const and: any[] = [];
@@ -216,15 +258,16 @@ function whereFrom(q: z.infer<typeof listQuery>, type: 'DEPOSIT' | 'WITHDRAWAL')
   return where;
 }
 
-async function fetchPayments(
-  req: Request,
-  type: 'DEPOSIT'|'WITHDRAWAL',
-  overrides?: Partial<Record<keyof z.infer<typeof listQuery>, string | undefined>>
+type ListQuery = z.infer<typeof listQuery>;
+
+async function fetchPaymentsFromQuery(
+  input: Partial<ListQuery>,
+  type: 'DEPOSIT' | 'WITHDRAWAL'
 ) {
-  const q = listQuery.parse({ ...req.query, ...(overrides || {}) });
+  const q = listQuery.parse(input);
   const where = whereFrom(q, type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, itemsRaw] = await Promise.all([
@@ -264,6 +307,44 @@ async function fetchPayments(
   }
 
   return { total, items, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
+}
+
+async function fetchPayments(
+  req: Request,
+  type: 'DEPOSIT'|'WITHDRAWAL',
+  overrides?: Partial<Record<keyof ListQuery, string | undefined>>
+) {
+  const q = { ...req.query, ...(overrides || {}) } as Partial<ListQuery>;
+  return fetchPaymentsFromQuery(q, type);
+}
+
+function parseExportFormat(raw: unknown): 'csv' | 'xlsx' | 'pdf' {
+  const value = String(raw || '').toLowerCase();
+  if (value === 'csv' || value === 'xlsx' || value === 'pdf') return value;
+  return 'csv';
+}
+
+function coerceExportFilters(raw: unknown): Partial<ListQuery> {
+  if (!raw || typeof raw !== 'object') return {};
+  const out: Partial<ListQuery> = {};
+  for (const key of LIST_QUERY_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === 'undefined' || value === null) continue;
+    if (typeof value === 'string') {
+      (out as any)[key] = value;
+    } else if (Array.isArray(value)) {
+      const last = value[value.length - 1];
+      if (typeof last === 'string') (out as any)[key] = last;
+    } else {
+      (out as any)[key] = String(value);
+    }
+  }
+  return out;
+}
+
+function sanitizeColumns(raw: unknown, fallback: PaymentExportColumn[]): PaymentExportColumn[] {
+  const allowed = new Set(fallback.map((col) => col.key));
+  return normalizeColumns(raw, fallback, allowed);
 }
 
 function resolveReturnTo(raw: unknown, fallback: string) {
@@ -371,19 +452,41 @@ router.get('/report/deposits/pending', async (req, res) => {
 });
 
 router.get('/notifications/queue', async (req, res) => {
-  const sinceRaw = Number(req.query?.since);
-  let since = new Date();
-  if (Number.isFinite(sinceRaw) && sinceRaw > 0) {
-    const candidate = new Date(sinceRaw);
-    if (!Number.isNaN(candidate.getTime())) since = candidate;
-  }
+  const parseSinceParam = (value: unknown): Date | null => {
+    if (!value) return null;
+    const raw = Array.isArray(value) ? value[0] : value;
+    if (raw === undefined || raw === null) return null;
+    if (raw instanceof Date && !Number.isNaN(raw.getTime())) return raw;
+    const numeric = Number(raw);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      const candidate = new Date(numeric);
+      if (!Number.isNaN(candidate.getTime())) return candidate;
+    }
+    if (typeof raw === 'string' && raw.trim()) {
+      const candidate = new Date(raw);
+      if (!Number.isNaN(candidate.getTime())) return candidate;
+    }
+    return null;
+  };
+
+  const fallbackSince = parseSinceParam(req.query?.since) ?? new Date();
+  const depositsSince =
+    parseSinceParam((req.query as Record<string, unknown>)?.sinceDeposits) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.depositsSince) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.depositSince) ??
+    fallbackSince;
+  const withdrawalsSince =
+    parseSinceParam((req.query as Record<string, unknown>)?.sinceWithdrawals) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.withdrawalsSince) ??
+    parseSinceParam((req.query as Record<string, unknown>)?.withdrawSince) ??
+    fallbackSince;
 
   const depositWhere = {
     type: 'DEPOSIT' as const,
     status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
     OR: [
-      { createdAt: { gt: since } },
-      { updatedAt: { gt: since } },
+      { createdAt: { gt: depositsSince } },
+      { updatedAt: { gt: depositsSince } },
     ],
   };
 
@@ -391,8 +494,8 @@ router.get('/notifications/queue', async (req, res) => {
     type: 'WITHDRAWAL' as const,
     status: { in: ['PENDING', 'SUBMITTED'] as Array<'PENDING' | 'SUBMITTED'> },
     OR: [
-      { createdAt: { gt: since } },
-      { updatedAt: { gt: since } },
+      { createdAt: { gt: withdrawalsSince } },
+      { updatedAt: { gt: withdrawalsSince } },
     ],
   };
 
@@ -411,11 +514,9 @@ router.get('/notifications/queue', async (req, res) => {
     }),
   ]);
 
-  const latestCandidates = [
-    latestDeposit?.updatedAt || latestDeposit?.createdAt,
-    latestWithdrawal?.updatedAt || latestWithdrawal?.createdAt,
-  ]
-    .filter((d): d is Date => !!d);
+  const latestDepositDate = latestDeposit?.updatedAt || latestDeposit?.createdAt || null;
+  const latestWithdrawalDate = latestWithdrawal?.updatedAt || latestWithdrawal?.createdAt || null;
+  const latestCandidates = [latestDepositDate, latestWithdrawalDate].filter((d): d is Date => !!d);
   const latest = latestCandidates.length
     ? new Date(Math.max(...latestCandidates.map((d) => d.getTime())))
     : null;
@@ -425,6 +526,8 @@ router.get('/notifications/queue', async (req, res) => {
     deposits,
     withdrawals,
     latest,
+    latestDeposit: latestDepositDate,
+    latestWithdrawal: latestWithdrawalDate,
   });
 });
 
@@ -593,6 +696,27 @@ router.post('/deposits/:id/status', async (req, res) => {
     }
     console.error(err);
     res.status(500).json({ ok: false, error: 'Unable to update status' });
+  }
+});
+
+router.post('/export/deposits', async (req: Request, res: Response) => {
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, ADMIN_DEPOSIT_EXPORT_COLUMNS);
+    const { items } = await fetchPaymentsFromQuery(filters, 'DEPOSIT');
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: 'admin', type: 'DEPOSIT' },
+    });
+    res.setHeader('Content-Type', file.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to export deposits' });
   }
 });
 
@@ -837,6 +961,27 @@ router.post('/withdrawals/:id/status', async (req, res) => {
   }
 });
 
+router.post('/export/withdrawals', async (req: Request, res: Response) => {
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, ADMIN_WITHDRAWAL_EXPORT_COLUMNS);
+    const { items } = await fetchPaymentsFromQuery(filters, 'WITHDRAWAL');
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: 'admin', type: 'WITHDRAWAL' },
+    });
+    res.setHeader('Content-Type', file.contentType);
+    res.setHeader('Content-Disposition', `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: 'Unable to export withdrawals' });
+  }
+});
+
 router.get('/export/withdrawals.csv', async (req: Request, res: Response) => {
   const { items } = await fetchPayments(req, 'WITHDRAWAL');
   res.setHeader('Content-Type', 'text/csv');
@@ -897,10 +1042,10 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
   await wb.xlsx.write(res); res.end();
 });
 
-/* ---------------- Users ---------------- */
+/* ---------------- Clients ---------------- */
 router.get('/users', async (req, res) => {
   if (!adminCanViewUsers(req)) {
-    return res.status(403).render('admin-users-disabled', { title: 'Users' });
+    return res.status(403).render('admin-users-disabled', { title: 'Clients' });
   }
   const { query, merchants, merchantIds } = await resolveUserDirectoryInput(req);
   const table = merchantIds.length
@@ -908,7 +1053,7 @@ router.get('/users', async (req, res) => {
     : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
 
   res.render('admin-users', {
-    title: 'Users',
+    title: 'Clients',
     table,
     query,
     merchants,
@@ -922,7 +1067,7 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="users.csv"');
+  res.setHeader('Content-Disposition', 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
     columns: ['userId','fullName','email','phone','status','registeredAt','lastActivity','merchants'],
@@ -950,7 +1095,7 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Users');
+  const ws = wb.addWorksheet('Clients');
   ws.columns = [
     { header: 'User ID', key: 'userId', width: 16 },
     { header: 'Full name', key: 'fullName', width: 24 },
@@ -974,7 +1119,7 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
     });
   });
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition','attachment; filename="users.xlsx"');
+  res.setHeader('Content-Disposition','attachment; filename="clients.xlsx"');
   await wb.xlsx.write(res); res.end();
 });
 
@@ -986,7 +1131,7 @@ router.get('/export/users.pdf', async (req: Request, res: Response) => {
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const pdf = renderUserDirectoryPdf(items);
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', 'attachment; filename="users.pdf"');
+  res.setHeader('Content-Disposition', 'attachment; filename="clients.pdf"');
   res.end(pdf);
 });
 

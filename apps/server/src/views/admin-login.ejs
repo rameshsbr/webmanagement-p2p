@@ -6,7 +6,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title><%= title || 'Admin Login' %></title>
   <link rel="stylesheet" href="/static/auth/styles.css" />
-  <% if (siteKey) { %>
+  <% if (typeof siteKey !== 'undefined' && siteKey) { %>
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
   <% } %>
 </head>
@@ -54,7 +54,7 @@
         </div>
       </div>
 
-      <% if (siteKey) { %>
+      <% if (typeof siteKey !== 'undefined' && siteKey) { %>
       <div class="field">
         <label>Verification</label>
         <!-- Turnstile widget; /static/auth/login.js handles token -->

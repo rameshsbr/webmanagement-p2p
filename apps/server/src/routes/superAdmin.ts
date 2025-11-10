@@ -1,4 +1,5 @@
 import { Router } from "express";
+import type { Express } from "express";
 import bcrypt from "bcryptjs";
 import { prisma } from "../lib/prisma.js";
 import { requireRole } from "../middleware/roles.js";
@@ -7,6 +8,7 @@ import { auditAdmin } from "../services/audit.js";
 import * as XLSX from "xlsx";
 import multer from "multer";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
 import { generateBankPublicId } from "../services/reference.js";
@@ -14,6 +16,18 @@ import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../servic
 import { changePaymentStatus, PaymentStatusError } from "../services/paymentStatus.js";
 import { stringify } from "csv-stringify";
 import ExcelJS from "exceljs";
+import {
+  buildPaymentExportFile,
+  normalizeColumns,
+  PaymentExportColumn,
+  PaymentExportItem,
+} from "../services/paymentExports.js";
+import {
+  createAccountEntry,
+  listAccountEntries,
+  listMerchantBalances,
+} from "../services/merchantAccounts.js";
+import type { MerchantAccountEntryType } from "@prisma/client";
 
 export const superAdminRouter = Router();
 
@@ -77,10 +91,124 @@ function sortSpec(s?: string) {
   return { [col]: dir } as any;
 }
 
+const PAYMENT_FILTER_KEYS = new Set([
+  "q",
+  "id",
+  "merchantId",
+  "currency",
+  "status",
+  "from",
+  "to",
+  "dateField",
+  "sort",
+  "hasReceipt",
+  "amountMin",
+  "amountMax",
+  "page",
+  "perPage",
+]);
+
+const SUPERADMIN_DEPOSIT_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: "txnId", label: "TRANSACTION ID" },
+  { key: "userId", label: "USER ID" },
+  { key: "merchant", label: "MERCHANT" },
+  { key: "currency", label: "CURRENCY" },
+  { key: "amount", label: "AMOUNT" },
+  { key: "status", label: "STATUS" },
+  { key: "bank", label: "BANK NAME" },
+  { key: "created", label: "DATE OF CREATION" },
+  { key: "processedAt", label: "DATE OF DEPOSIT" },
+  { key: "processingTime", label: "TIME TO PROCESS" },
+  { key: "userInfo", label: "USER INFO" },
+  { key: "comment", label: "COMMENT" },
+  { key: "admin", label: "ADMIN" },
+  { key: "receipts", label: "RECEIPTS" },
+  { key: "actions", label: "ACTIONS" },
+];
+
+const SUPERADMIN_WITHDRAWAL_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: "txnId", label: "TRANSACTION ID" },
+  { key: "userId", label: "USER ID" },
+  { key: "merchant", label: "MERCHANT" },
+  { key: "currency", label: "CURRENCY" },
+  { key: "amount", label: "AMOUNT" },
+  { key: "status", label: "STATUS" },
+  { key: "bank", label: "BANK NAME" },
+  { key: "created", label: "DATE OF CREATION" },
+  { key: "processedAt", label: "DATE OF WITHDRAWAL" },
+  { key: "processingTime", label: "TIME TO PROCESS" },
+  { key: "userInfo", label: "USER INFO" },
+  { key: "comment", label: "COMMENT" },
+  { key: "admin", label: "ADMIN" },
+  { key: "actions", label: "ACTIONS" },
+];
+
+function parseExportFormat(raw: unknown): "csv" | "xlsx" | "pdf" {
+  const value = String(raw || "").toLowerCase();
+  if (value === "csv" || value === "xlsx" || value === "pdf") return value;
+  return "csv";
+}
+
+function coerceExportFilters(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const key of PAYMENT_FILTER_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === "undefined" || value === null) continue;
+    if (typeof value === "string") out[key] = value;
+    else if (Array.isArray(value)) {
+      const last = value[value.length - 1];
+      if (typeof last === "string") out[key] = last;
+    } else {
+      out[key] = String(value);
+    }
+  }
+  return out;
+}
+
+function sanitizeColumns(raw: unknown, fallback: PaymentExportColumn[]): PaymentExportColumn[] {
+  const allowed = new Set(fallback.map((col) => col.key));
+  return normalizeColumns(raw, fallback, allowed);
+}
+
 async function collectUsersForSuperAdmin(merchantIds: string[], search?: string | null) {
   if (!merchantIds.length) return [];
   return getAllUsers({ merchantIds, search: search ?? null });
 }
+
+function parseAmountToCents(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return Math.round(raw * 100);
+  }
+  const str = String(raw ?? "").replace(/,/g, "").trim();
+  if (!str) return null;
+  const value = Number(str);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value * 100);
+}
+
+async function loadAccountPageData(
+  type: MerchantAccountEntryType,
+  merchantId?: string | null
+) {
+  const merchants = await listMerchantBalances();
+  const entries = await listAccountEntries({ type, merchantId: merchantId || null });
+  return { merchants, entries };
+}
+
+// Multer setup (store in /uploads so they're web-accessible via /uploads/*)
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      cb(null, path.join(process.cwd(), "uploads"));
+    },
+    filename: (_req, file, cb) => {
+      const base = file.originalname.replace(/[^\w.\-]+/g, "_").slice(-100);
+      cb(null, `${Date.now()}_${base}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
 
 function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const where: any = { type };
@@ -152,7 +280,7 @@ function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
 async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const where = whereFrom(q, type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, rawItems] = await Promise.all([
@@ -166,6 +294,9 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         },
         user: { select: { id: true, publicId: true, email: true, phone: true } },
         merchant: { select: { id: true, name: true } },
+        processedByAdmin: {
+          select: { id: true, email: true, displayName: true },
+        },
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -173,15 +304,110 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
     }),
   ]);
 
-  const items = rawItems.map((x: any) => {
-    const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
-    return {
-      ...x,
-      receiptFile: first,
-      _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
-      _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+  const formCache = new Map<string, { deposit: any[]; withdrawal: any[] }>();
+
+  async function ensureFormConfig(
+    merchantId: string,
+    bankAccountId: string | null
+  ) {
+    const key = `${merchantId}::${bankAccountId || "null"}`;
+    if (formCache.has(key)) return formCache.get(key)!;
+
+    let row: any = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId, bankAccountId },
+    });
+
+    if (!row && bankAccountId) {
+      row = await prisma.merchantFormConfig.findFirst({
+        where: { merchantId, bankAccountId: null },
+      });
+    }
+
+    const entry = {
+      deposit: cleanRows(((row as any)?.deposit as any[]) || []),
+      withdrawal: cleanRows(((row as any)?.withdrawal as any[]) || []),
     };
+    formCache.set(key, entry);
+    return entry;
+  }
+
+  const comboList: Array<{ merchantId: string; bankAccountId: string | null }> = [];
+  const comboSeen = new Set<string>();
+
+  rawItems.forEach((x: any) => {
+    const bankKey = type === "DEPOSIT" ? x.bankAccountId || null : null;
+    const key = `${x.merchantId}::${bankKey || "null"}`;
+    if (!comboSeen.has(key)) {
+      comboSeen.add(key);
+      comboList.push({ merchantId: x.merchantId, bankAccountId: bankKey });
+    }
   });
+
+  await Promise.all(
+    comboList.map(({ merchantId, bankAccountId }) =>
+      ensureFormConfig(merchantId, bankAccountId)
+    )
+  );
+
+  const items = await Promise.all(
+    rawItems.map(async (x: any) => {
+      const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
+      const extras =
+        x?.detailsJson && typeof x.detailsJson === "object" && !Array.isArray(x.detailsJson)
+          ? (x.detailsJson as any)?.extras || {}
+          : {};
+
+      const extrasObj =
+        extras && typeof extras === "object" && !Array.isArray(extras)
+          ? (extras as Record<string, any>)
+          : {};
+
+      const seenExtras = new Set<string>();
+      const orderedExtras: Array<{ label: string; value: any }> = [];
+
+      const pushExtra = (label: any, value: any) => {
+        const norm = typeof label === "string" ? label.trim() : "";
+        if (!norm) return;
+        const key = norm.toLowerCase();
+        if (seenExtras.has(key)) return;
+        seenExtras.add(key);
+        orderedExtras.push({ label: norm, value });
+      };
+
+      if (type === "DEPOSIT") {
+        const cfg = await ensureFormConfig(x.merchantId, x.bankAccountId || null);
+        const defined = Array.isArray(cfg.deposit) ? cfg.deposit : [];
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
+      } else {
+        const cfg = await ensureFormConfig(x.merchantId, null);
+        const defined = Array.isArray(cfg.withdrawal) ? cfg.withdrawal : [];
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
+      }
+
+      Object.keys(extrasObj).forEach((key) => {
+        pushExtra(key, extrasObj[key]);
+      });
+
+      const extrasLookup: Record<string, true> = {};
+      orderedExtras.forEach((extra) => {
+        const key = typeof extra.label === "string" ? extra.label.trim().toLowerCase() : "";
+        if (key) extrasLookup[key] = true;
+      });
+
+      return {
+        ...x,
+        receiptFile: first,
+        _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
+        _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+        _extrasList: orderedExtras,
+        _extrasLookup: extrasLookup,
+      };
+    })
+  );
 
   return {
     total,
@@ -1553,22 +1779,262 @@ superAdminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────
-// Payments — pages, edits, exports
+// Accounts — balances, settlements, topups
 // ───────────────────────────────────────────────────────────────
 
-// Multer setup (store in /uploads so they're web-accessible via /uploads/*)
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      cb(null, path.join(process.cwd(), "uploads"));
-    },
-    filename: (_req, file, cb) => {
-      const base = file.originalname.replace(/[^\w.\-]+/g, "_").slice(-100);
-      cb(null, `${Date.now()}_${base}`);
-    },
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+superAdminRouter.get("/accounts", (_req, res) => {
+  res.redirect("/superadmin/accounts/balance");
 });
+
+superAdminRouter.get("/accounts/balance", async (_req, res) => {
+  const balances = await listMerchantBalances();
+  res.render("superadmin/accounts-balance", {
+    title: "Accounts · Balance",
+    balances,
+  });
+});
+
+function pickMerchantFilter(raw: unknown): string {
+  if (Array.isArray(raw)) {
+    const last = raw[raw.length - 1];
+    return typeof last === "string" ? last.trim() : "";
+  }
+  if (typeof raw === "string") return raw.trim();
+  return "";
+}
+
+function buildAccountViewModel(opts: {
+  title: string;
+  merchants: Awaited<ReturnType<typeof listMerchantBalances>>;
+  entries: Awaited<ReturnType<typeof listAccountEntries>>;
+  merchantId: string;
+  success?: string | null;
+  error?: string | null;
+  form?: { merchantId?: string; amount?: string; method?: string; note?: string } | null;
+}) {
+  return {
+    title: opts.title,
+    merchants: opts.merchants,
+    entries: opts.entries,
+    filters: { merchantId: opts.merchantId },
+    success: opts.success ?? null,
+    error: opts.error ?? null,
+    form: opts.form ?? null,
+  };
+}
+
+superAdminRouter.get("/accounts/settlements", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId || null);
+  res.render(
+    "superadmin/accounts-settlements",
+    buildAccountViewModel({
+      title: "Accounts · Settlements",
+      merchants,
+      entries,
+      merchantId,
+      success: typeof req.query?.success === "string" ? req.query.success : null,
+    })
+  );
+});
+
+superAdminRouter.post(
+  "/accounts/settlements",
+  upload.single("receipt"),
+  async (req: any, res) => {
+    const merchantId = pickMerchantFilter(req.body?.merchantId);
+    const method = String(req.body?.method || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const amountCents = parseAmountToCents(req.body?.amount ?? req.body?.amountCents);
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!merchantId) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", null);
+      return res.status(400).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId: "",
+          error: "Merchant is required",
+          form: { amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    if (amountCents === null) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId);
+      return res.status(400).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId,
+          error: "Enter a valid amount",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    try {
+      await createAccountEntry({
+        merchantId,
+        type: "SETTLEMENT",
+        amountCents,
+        method,
+        note,
+        adminId,
+        receipt: file
+          ? {
+              path: file.path,
+              mimeType: file.mimetype,
+              original: file.originalname,
+              size: file.size,
+            }
+          : null,
+      });
+
+      await auditAdmin(req, "accounts.settlement.create", "MERCHANT", merchantId, {
+        amountCents,
+        method: method || null,
+      });
+
+      const params = new URLSearchParams();
+      params.set("success", "created");
+      if (merchantId) params.set("merchantId", merchantId);
+
+      return res.redirect(`/superadmin/accounts/settlements?${params.toString()}`);
+    } catch (err) {
+      console.error(err);
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId);
+      return res.status(500).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId,
+          error: err instanceof Error ? err.message : "Unable to create settlement",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+  }
+);
+
+superAdminRouter.get("/accounts/topups", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId || null);
+  res.render(
+    "superadmin/accounts-topups",
+    buildAccountViewModel({
+      title: "Accounts · Topups",
+      merchants,
+      entries,
+      merchantId,
+      success: typeof req.query?.success === "string" ? req.query.success : null,
+    })
+  );
+});
+
+superAdminRouter.post(
+  "/accounts/topups",
+  upload.single("receipt"),
+  async (req: any, res) => {
+    const merchantId = pickMerchantFilter(req.body?.merchantId);
+    const method = String(req.body?.method || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const amountCents = parseAmountToCents(req.body?.amount ?? req.body?.amountCents);
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!merchantId) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", null);
+      return res.status(400).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId: "",
+          error: "Merchant is required",
+          form: { amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    if (amountCents === null) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId);
+      return res.status(400).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId,
+          error: "Enter a valid amount",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    try {
+      await createAccountEntry({
+        merchantId,
+        type: "TOPUP",
+        amountCents,
+        method,
+        note,
+        adminId,
+        receipt: file
+          ? {
+              path: file.path,
+              mimeType: file.mimetype,
+              original: file.originalname,
+              size: file.size,
+            }
+          : null,
+      });
+
+      await auditAdmin(req, "accounts.topup.create", "MERCHANT", merchantId, {
+        amountCents,
+        method: method || null,
+      });
+
+      const params = new URLSearchParams();
+      params.set("success", "created");
+      if (merchantId) params.set("merchantId", merchantId);
+
+      return res.redirect(`/superadmin/accounts/topups?${params.toString()}`);
+    } catch (err) {
+      console.error(err);
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId);
+      return res.status(500).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId,
+          error: err instanceof Error ? err.message : "Unable to create topup",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+  }
+);
+
+// Payments — pages, edits, exports
+// ───────────────────────────────────────────────────────────────
 
 async function renderPaymentsPage(
   req: any,
@@ -1815,6 +2281,28 @@ superAdminRouter.post("/payments/:id/receipt/remove", async (req, res) => {
 });
 
 // Exports — per type, respect filters
+superAdminRouter.post("/deposits/export", async (req, res) => {
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, SUPERADMIN_DEPOSIT_EXPORT_COLUMNS);
+    const query = Object.keys(filters).length ? filters : {};
+    const { items } = await fetchPayments(query, "DEPOSIT");
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: "superadmin", type: "DEPOSIT" },
+    });
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "Unable to export deposits" });
+  }
+});
+
 superAdminRouter.get("/deposits/export.csv", async (req, res) => {
   const { items } = await fetchPayments(req.query || {}, "DEPOSIT");
   const csv = toCSVRows(items);
@@ -1825,6 +2313,28 @@ superAdminRouter.get("/deposits/export.csv", async (req, res) => {
     `attachment; filename="deposits_${stamp}.csv"`
   );
   res.send(csv);
+});
+
+superAdminRouter.post("/withdrawals/export", async (req, res) => {
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, SUPERADMIN_WITHDRAWAL_EXPORT_COLUMNS);
+    const query = Object.keys(filters).length ? filters : {};
+    const { items } = await fetchPayments(query, "WITHDRAWAL");
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: "superadmin", type: "WITHDRAWAL" },
+    });
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "Unable to export withdrawals" });
+  }
 });
 
 superAdminRouter.get("/withdrawals/export.csv", async (req, res) => {

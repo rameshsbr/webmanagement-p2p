@@ -358,16 +358,22 @@ router.get('/merchant/login', (req, res) => {
   res.render('merchant-login', {
     title: 'Merchant Login',
     error: '',
-    reset: req.query?.reset === 'ok'
+    reset: req.query?.reset === 'ok',
+    siteKey: SITE_KEY,
   });
 });
 
-router.post('/merchant/login', async (req, res) => {
+router.post('/merchant/login', enforceTurnstile, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const password = String(req.body?.password || '');
 
   if (!email || !password) {
-    return res.status(400).render('merchant-login', { title: 'Merchant Login', error: 'Missing email or password.', reset: false });
+    return res.status(400).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Missing email or password.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   const user = await prisma.merchantUser.findUnique({
@@ -376,18 +382,33 @@ router.post('/merchant/login', async (req, res) => {
   });
 
   if (!user || !user.active || !user.merchant) {
-    return res.status(401).render('merchant-login', { title: 'Merchant Login', error: 'Invalid credentials.', reset: false });
+    return res.status(401).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Invalid credentials.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   const m = user.merchant as any;
   const status = String(m.status || '').toLowerCase();
   if (!m.active || status === 'suspended' || status === 'closed') {
-    return res.status(403).render('merchant-login', { title: 'Merchant Login', error: 'Merchant account is not active.', reset: false });
+    return res.status(403).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Merchant account is not active.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) {
-    return res.status(401).render('merchant-login', { title: 'Merchant Login', error: 'Invalid credentials.', reset: false });
+    return res.status(401).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Invalid credentials.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   // 2FA

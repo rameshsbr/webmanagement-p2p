@@ -31,7 +31,7 @@
     merchants: 'Merchants',
     didit: 'Didit profile'
   },
-  columnHeading: 'USER COLUMN SETTINGS'
+  columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
 <div class="table-wrap">
@@ -58,7 +58,7 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No users found</td></tr>
+        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>

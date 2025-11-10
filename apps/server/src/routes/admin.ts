@@ -1042,10 +1042,10 @@ router.get('/export/withdrawals.xlsx', async (req: Request, res: Response) => {
   await wb.xlsx.write(res); res.end();
 });
 
-/* ---------------- Users ---------------- */
+/* ---------------- Clients ---------------- */
 router.get('/users', async (req, res) => {
   if (!adminCanViewUsers(req)) {
-    return res.status(403).render('admin-users-disabled', { title: 'Users' });
+    return res.status(403).render('admin-users-disabled', { title: 'Clients' });
   }
   const { query, merchants, merchantIds } = await resolveUserDirectoryInput(req);
   const table = merchantIds.length
@@ -1053,7 +1053,7 @@ router.get('/users', async (req, res) => {
     : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
 
   res.render('admin-users', {
-    title: 'Users',
+    title: 'Clients',
     table,
     query,
     merchants,
@@ -1067,7 +1067,7 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   res.setHeader('Content-Type', 'text/csv');
-  res.setHeader('Content-Disposition', 'attachment; filename="users.csv"');
+  res.setHeader('Content-Disposition', 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
     columns: ['userId','fullName','email','phone','status','registeredAt','lastActivity','merchants'],
@@ -1095,7 +1095,7 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
   const { query, merchantIds } = await resolveUserDirectoryInput(req);
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet('Users');
+  const ws = wb.addWorksheet('Clients');
   ws.columns = [
     { header: 'User ID', key: 'userId', width: 16 },
     { header: 'Full name', key: 'fullName', width: 24 },
@@ -1119,7 +1119,7 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
     });
   });
   res.setHeader('Content-Type','application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition','attachment; filename="users.xlsx"');
+  res.setHeader('Content-Disposition','attachment; filename="clients.xlsx"');
   await wb.xlsx.write(res); res.end();
 });
 
@@ -1131,7 +1131,7 @@ router.get('/export/users.pdf', async (req: Request, res: Response) => {
   const items = await collectUsersForExport(merchantIds, query.q || null);
   const pdf = renderUserDirectoryPdf(items);
   res.setHeader('Content-Type', 'application/pdf');
-  res.setHeader('Content-Disposition', 'attachment; filename="users.pdf"');
+  res.setHeader('Content-Disposition', 'attachment; filename="clients.pdf"');
   res.end(pdf);
 });
 

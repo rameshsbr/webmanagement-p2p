@@ -33,7 +33,7 @@
   color: var(--ink);
 }
 
-/* Slightly wider actions column so Edit/Users never push the card edge */
+/* Slightly wider actions column so Edit/Clients never push the card edge */
 .table-merchants col.col-name     { width: 24%; }
 .table-merchants col.col-email    { width: 24%; }
 .table-merchants col.col-status   { width: 12%; }

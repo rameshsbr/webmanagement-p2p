@@ -502,12 +502,12 @@ router.get("/payments/withdrawals", (_req, res) => res.redirect("/merchant/payme
 
 router.get("/users", async (req: any, res) => {
   if (!usersFeatureEnabled(res)) {
-    return res.status(403).render("merchant/users-disabled", { title: "Users" });
+    return res.status(403).render("merchant/users-disabled", { title: "Clients" });
   }
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const table = await getUserDirectory({ merchantIds: [merchantId], search: query.q || null, page: query.page, perPage: query.perPage });
-  res.render("merchant/users", { title: "Users", table, query });
+  res.render("merchant/users", { title: "Clients", table, query });
 });
 
 // Ledger
@@ -679,12 +679,12 @@ router.get("/export/ledger.xlsx", async (req: any, res) => {
 });
 
 router.get("/export/users.csv", async (req: any, res) => {
-  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  if (!usersFeatureEnabled(res)) return res.status(403).send("Client directory disabled");
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const items = await collectMerchantUsersForExport(merchantId, query.q || null);
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
     columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity"],
@@ -705,12 +705,12 @@ router.get("/export/users.csv", async (req: any, res) => {
 });
 
 router.get("/export/users.xlsx", async (req: any, res) => {
-  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  if (!usersFeatureEnabled(res)) return res.status(403).send("Client directory disabled");
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const items = await collectMerchantUsersForExport(merchantId, query.q || null);
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Users");
+  const ws = wb.addWorksheet("Clients");
   ws.columns = [
     { header: "User ID", key: "userId", width: 16 },
     { header: "Full name", key: "fullName", width: 24 },
@@ -732,19 +732,19 @@ router.get("/export/users.xlsx", async (req: any, res) => {
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  res.setHeader("Content-Disposition",'attachment; filename="clients.xlsx"');
   await wb.xlsx.write(res);
   res.end();
 });
 
 router.get("/export/users.pdf", async (req: any, res) => {
-  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  if (!usersFeatureEnabled(res)) return res.status(403).send("Client directory disabled");
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const items = await collectMerchantUsersForExport(merchantId, query.q || null);
   const pdf = renderUserDirectoryPdf(items);
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.pdf"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.pdf"');
   res.end(pdf);
 });
 

@@ -12,8 +12,46 @@
   }
 }) %>
 
+<%
+  let perPageOptions = [25, 50, 100, 150];
+  const perPageValue = Number(table.perPage || 25);
+  if (!perPageOptions.includes(perPageValue)) {
+    perPageOptions = [...perPageOptions, perPageValue].sort((a, b) => a - b);
+  }
+  const perPageSelectId = 'perPage-admin-deposits';
+  const tableId = 'admin-deposits-table';
+  const columnsSelector = "[data-storage-key='admin.columns.deposits']";
+%>
+<div class="table-toolbar">
+  <div class="export-control" data-export-control data-export-endpoint="/admin/export/deposits" data-export-table="#<%= tableId %>" data-export-columns-root="<%= columnsSelector %>" data-export-storage="admin.export.deposits">
+    <button type="button" class="btn small" data-export-main>
+      <span data-export-label>Export</span>
+    </button>
+    <button type="button" class="btn small btn-icon" data-export-toggle aria-label="Select export format">▾</button>
+    <div class="export-menu" data-export-menu hidden>
+      <button type="button" data-export-option="csv">CSV</button>
+      <button type="button" data-export-option="xlsx">XLSX</button>
+      <button type="button" data-export-option="pdf">PDF</button>
+    </div>
+  </div>
+  <form method="get">
+    <% Object.entries(query || {}).forEach(([key, value]) => {
+         if (value === undefined || value === null || value === '' || key === 'perPage' || key === 'page') return;
+    %>
+      <input type="hidden" name="<%= key %>" value="<%= value %>">
+    <% }); %>
+    <input type="hidden" name="page" value="1">
+    <label for="<%= perPageSelectId %>">Rows per page</label>
+    <select id="<%= perPageSelectId %>" name="perPage" onchange="this.form.submit()">
+      <% perPageOptions.forEach((size) => { %>
+        <option value="<%= size %>" <%= perPageValue === size ? 'selected' : '' %>><%= size %></option>
+      <% }); %>
+    </select>
+  </form>
+</div>
+
 <div class="table-wrap">
-  <table class="table">
+  <table id="<%= tableId %>" class="table">
     <thead>
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>

@@ -278,6 +278,8 @@ model AdminUser {
   updatedAt        DateTime  @default(now()) @updatedAt // ← add default so backfill works
   twoFactorEnabled Boolean   @default(false)
   totpSecret       String?
+  superTwoFactorEnabled Boolean @default(false)
+  superTotpSecret       String?
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
 

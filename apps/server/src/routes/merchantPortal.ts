@@ -7,6 +7,8 @@ import ExcelJS from "exceljs";
 import crypto from "node:crypto";
 import { seal } from "../services/secretBox.js";
 import jwt from "jsonwebtoken";
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
 // ⬇️ NEW: we’ll mint a short-lived checkout token for the merchant demo
 import { signCheckoutToken } from "../services/checkoutToken.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
@@ -34,6 +36,34 @@ function usersFeatureEnabled(res: any): boolean {
 
 async function collectMerchantUsersForExport(merchantId: string, search?: string | null) {
   return getAllUsers({ merchantIds: [merchantId], search: search ?? null });
+}
+
+function currentMerchantUserId(req: any): string | null {
+  if (req.merchantUser?.id) return String(req.merchantUser.id);
+  const auth = req.merchantAuth || {};
+  if (typeof auth.merchantUserId === "string" && auth.merchantUserId) {
+    return auth.merchantUserId;
+  }
+  if (typeof auth.sub === "string" && auth.sub) {
+    const merchantId = req.merchant?.sub ? String(req.merchant.sub) : null;
+    if (!merchantId || auth.sub !== merchantId) return auth.sub;
+  }
+  return null;
+}
+
+async function loadCurrentMerchantUser(req: any) {
+  const id = currentMerchantUserId(req);
+  if (!id) return null;
+  return prisma.merchantUser.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      merchantId: true,
+      email: true,
+      twoFactorEnabled: true,
+      totpSecret: true,
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -125,6 +155,89 @@ router.use(async (req: any, res, next) => {
   res.locals.merchantAuth = authPayload;
   res.locals.merchantFeatures = { usersEnabled: canViewUsers };
   next();
+});
+
+// ─────────────────────────────────────────────────────────────
+// Merchant security settings (2FA)
+// ─────────────────────────────────────────────────────────────
+router.get('/settings/security', async (req: any, res) => {
+  const user = await loadCurrentMerchantUser(req);
+  if (!user) return res.redirect('/auth/merchant/login');
+
+  const enabled = !!(user.twoFactorEnabled && user.totpSecret);
+  const { enabled: justEnabled, disabled: justDisabled, already, error } = req.query || {};
+  let flash: { message: string; variant?: 'error' } | null = null;
+  if (typeof error === 'string' && error) {
+    flash = { message: error, variant: 'error' };
+  } else if (typeof already !== 'undefined') {
+    flash = { message: 'Two-factor authentication is already enabled.' };
+  } else if (typeof justEnabled !== 'undefined') {
+    flash = { message: 'Two-factor authentication enabled.' };
+  } else if (typeof justDisabled !== 'undefined') {
+    flash = { message: 'Two-factor authentication disabled.' };
+  }
+
+  return res.render('merchant-settings-security', {
+    title: 'Security',
+    twoFactorEnabled: enabled,
+    email: user.email || '',
+    flash,
+  });
+});
+
+router.post('/settings/security/start', async (req: any, res) => {
+  const user = await loadCurrentMerchantUser(req);
+  if (!user) return res.redirect('/auth/merchant/login');
+
+  if (user.twoFactorEnabled && user.totpSecret) {
+    return res.redirect('/merchant/settings/security?already=1');
+  }
+
+  try {
+    const secret = speakeasy.generateSecret({ name: `Merchant (${user.email || user.id})` });
+    const otpauth = secret.otpauth_url!;
+    const qrDataUrl = await QRCode.toDataURL(otpauth);
+
+    const token = jwt.sign({
+      userId: user.id,
+      merchantId: user.merchantId,
+      stage: '2fa_setup',
+      secretBase32: secret.base32,
+      issuer: 'Merchant',
+      accountLabel: user.email || user.id,
+      redirectTo: '/merchant/settings/security?enabled=1',
+    }, JWT_SECRET, { expiresIn: '10m' });
+
+    return res.render('auth-2fa-setup', {
+      token,
+      qrDataUrl,
+      secretBase32: secret.base32,
+      accountLabel: user.email || user.id,
+      error: '',
+      mode: 'merchant',
+    });
+  } catch (err) {
+    console.error('[merchant 2fa] start failed', err);
+    const msg = encodeURIComponent('Unable to start two-factor setup.');
+    return res.redirect(`/merchant/settings/security?error=${msg}`);
+  }
+});
+
+router.post('/settings/security/disable', async (req: any, res) => {
+  const user = await loadCurrentMerchantUser(req);
+  if (!user) return res.redirect('/auth/merchant/login');
+
+  try {
+    await prisma.merchantUser.update({
+      where: { id: user.id },
+      data: { twoFactorEnabled: false, totpSecret: null },
+    });
+    return res.redirect('/merchant/settings/security?disabled=1');
+  } catch (err) {
+    console.error('[merchant 2fa] disable failed', err);
+    const msg = encodeURIComponent('Unable to disable two-factor authentication.');
+    return res.redirect(`/merchant/settings/security?error=${msg}`);
+  }
 });
 
 const listQuery = z.object({

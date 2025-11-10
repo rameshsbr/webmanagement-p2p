@@ -1,6 +1,9 @@
 import { Router } from "express";
 import type { Express } from "express";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
 import { prisma } from "../lib/prisma.js";
 import { requireRole } from "../middleware/roles.js";
 import crypto from "node:crypto";
@@ -33,6 +36,12 @@ export const superAdminRouter = Router();
 
 // Require SUPER role
 superAdminRouter.use(requireRole(["SUPER"]));
+
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+
+function signTemp(payload: object, minutes = 10) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: `${minutes}m` });
+}
 
 // ───────────────────────────────────────────────────────────────
 // Small helpers used across pages
@@ -107,6 +116,102 @@ const PAYMENT_FILTER_KEYS = new Set([
   "page",
   "perPage",
 ]);
+
+// ───────────────────────────────────────────────────────────────
+// Super Admin 2FA settings
+// ───────────────────────────────────────────────────────────────
+superAdminRouter.get("/settings/security", async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) return res.redirect("/auth/super/login");
+
+  const admin = await prisma.adminUser.findUnique({
+    where: { id: adminId },
+    select: { email: true, superTwoFactorEnabled: true, superTotpSecret: true },
+  });
+
+  const enabled = !!(admin?.superTwoFactorEnabled && admin?.superTotpSecret);
+  const { enabled: justEnabled, disabled: justDisabled, already, error } = req.query || {};
+  let flash: { message: string; variant?: "error" } | null = null;
+  if (typeof error === "string" && error) {
+    flash = { message: error, variant: "error" };
+  } else if (typeof already !== "undefined") {
+    flash = { message: "Two-factor authentication is already enabled." };
+  } else if (typeof justEnabled !== "undefined") {
+    flash = { message: "Two-factor authentication enabled." };
+  } else if (typeof justDisabled !== "undefined") {
+    flash = { message: "Two-factor authentication disabled." };
+  }
+
+  return res.render("superadmin-settings-security", {
+    title: "Security",
+    twoFactorEnabled: enabled,
+    email: admin?.email || "",
+    flash,
+  });
+});
+
+superAdminRouter.post("/settings/security/start", async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) return res.redirect("/auth/super/login");
+
+  const admin = await prisma.adminUser.findUnique({
+    where: { id: adminId },
+    select: { email: true, superTwoFactorEnabled: true, superTotpSecret: true },
+  });
+
+  if (admin?.superTwoFactorEnabled && admin?.superTotpSecret) {
+    return res.redirect("/superadmin/settings/security?already=1");
+  }
+
+  try {
+    const secret = speakeasy.generateSecret({
+      name: `Super Admin (${admin?.email || adminId})`,
+    });
+
+    const otpauth = secret.otpauth_url!;
+    const qrDataUrl = await QRCode.toDataURL(otpauth);
+
+    const token = signTemp({
+      adminId,
+      stage: "2fa_setup",
+      secretBase32: secret.base32,
+      issuer: "Super Admin",
+      accountLabel: admin?.email || adminId,
+      kind: "super",
+      redirectTo: "/superadmin/settings/security?enabled=1",
+    });
+
+    return res.render("auth-2fa-setup", {
+      token,
+      qrDataUrl,
+      secretBase32: secret.base32,
+      accountLabel: admin?.email || adminId,
+      error: "",
+      mode: "super",
+    });
+  } catch (err) {
+    console.error("[superadmin 2fa] start failed", err);
+    const msg = encodeURIComponent("Unable to start two-factor setup.");
+    return res.redirect(`/superadmin/settings/security?error=${msg}`);
+  }
+});
+
+superAdminRouter.post("/settings/security/disable", async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) return res.redirect("/auth/super/login");
+
+  try {
+    await prisma.adminUser.update({
+      where: { id: adminId },
+      data: { superTwoFactorEnabled: false, superTotpSecret: null },
+    });
+    return res.redirect("/superadmin/settings/security?disabled=1");
+  } catch (err) {
+    console.error("[superadmin 2fa] disable failed", err);
+    const msg = encodeURIComponent("Unable to disable two-factor authentication.");
+    return res.redirect(`/superadmin/settings/security?error=${msg}`);
+  }
+});
 
 const SUPERADMIN_DEPOSIT_EXPORT_COLUMNS: PaymentExportColumn[] = [
   { key: "txnId", label: "TRANSACTION ID" },
@@ -751,7 +856,12 @@ superAdminRouter.post("/admins/:id/edit", async (req, res) => {
 superAdminRouter.post("/admins/:id/reset-2fa", async (req, res) => {
   await prisma.adminUser.update({
     where: { id: req.params.id },
-    data: { twoFactorEnabled: false, totpSecret: null },
+    data: {
+      twoFactorEnabled: false,
+      totpSecret: null,
+      superTwoFactorEnabled: false,
+      superTotpSecret: null,
+    },
   });
   await auditAdmin(req, "admin.2fa.reset", "ADMIN", req.params.id);
   res.redirect("/superadmin/admins");

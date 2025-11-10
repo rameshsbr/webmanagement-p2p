@@ -26,10 +26,23 @@ router.get('/settings/security', async (req: any, res: Response) => {
 
   const enabled = !!(admin?.twoFactorEnabled && admin?.totpSecret);
 
+  const { enabled: justEnabled, disabled: justDisabled, already, error } = req.query || {};
+  let flash: { message: string; variant?: 'error' } | null = null;
+  if (typeof error === 'string' && error) {
+    flash = { message: error, variant: 'error' };
+  } else if (typeof already !== 'undefined') {
+    flash = { message: 'Two-factor authentication is already enabled.' };
+  } else if (typeof justEnabled !== 'undefined') {
+    flash = { message: 'Two-factor authentication enabled.' };
+  } else if (typeof justDisabled !== 'undefined') {
+    flash = { message: 'Two-factor authentication disabled.' };
+  }
+
   return res.render('admin-settings-security', {
     title: 'Security',
     twoFactorEnabled: enabled,
     email: admin?.email || '',
+    flash,
   });
 });
 
@@ -40,8 +53,12 @@ router.post('/settings/security/start', async (req: any, res: Response) => {
 
   const admin = await prisma.adminUser.findUnique({
     where: { id: adminId },
-    select: { email: true },
+    select: { email: true, twoFactorEnabled: true, totpSecret: true },
   });
+
+  if (admin?.twoFactorEnabled && admin?.totpSecret) {
+    return res.redirect('/admin/settings/security?already=1');
+  }
 
   const secret = speakeasy.generateSecret({
     name: `Payments Admin (${admin?.email || adminId})`,
@@ -56,6 +73,8 @@ router.post('/settings/security/start', async (req: any, res: Response) => {
     secretBase32: secret.base32,
     issuer: 'Payments Admin',
     accountLabel: admin?.email || adminId,
+    kind: 'admin',
+    redirectTo: '/admin/settings/security?enabled=1',
   });
 
   return res.render('auth-2fa-setup', {
@@ -64,6 +83,7 @@ router.post('/settings/security/start', async (req: any, res: Response) => {
     secretBase32: secret.base32,
     accountLabel: admin?.email || adminId,
     error: '',
+    mode: 'admin',
   });
 });
 
@@ -77,7 +97,7 @@ router.post('/settings/security/disable', async (req: any, res: Response) => {
     data: { twoFactorEnabled: false, totpSecret: null },
   });
 
-  return res.redirect('/admin/settings/security');
+  return res.redirect('/admin/settings/security?disabled=1');
 });
 
 export const adminSecurityRouter = router;

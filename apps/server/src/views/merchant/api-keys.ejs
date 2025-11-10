@@ -33,9 +33,9 @@
             <td><%= `${k.prefix}.••••••••••••••••••••••••${k.last4}` %></td>
             <td><%= k.active ? 'Active' : 'Revoked' %></td>
             <td><%= k.scopes.join(', ') || '-' %></td>
-            <td><%= k.createdAt.toISOString() %></td>
-            <td><%= k.lastUsedAt ? k.lastUsedAt.toISOString() : '—' %></td>
-            <td><%= k.expiresAt ? k.expiresAt.toISOString() : '—' %></td>
+            <td><%- renderDateTime(k.createdAt) %></td>
+            <td><%- k.lastUsedAt ? renderDateTime(k.lastUsedAt) : '—' %></td>
+            <td><%- k.expiresAt ? renderDateTime(k.expiresAt) : '—' %></td>
             <td class="actions">
               <% if (k.active) { %>
                 <form method="post" action="/merchant/keys/<%= k.id %>/rotate" style="display:inline" onsubmit="return confirm('Rotate this key? Old one will be revoked.')">

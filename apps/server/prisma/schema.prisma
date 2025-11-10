@@ -21,6 +21,7 @@ model Merchant {
   bankAccounts BankAccount[]
   paymentReqs  PaymentRequest[]
   ledger       LedgerEntry[]
+  accountEntries MerchantAccountEntry[]
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
   channels     NotificationChannel[]
@@ -131,6 +132,8 @@ model ReceiptFile {
   paymentId String?
   paymentV2 PaymentRequest? @relation("PaymentReceipts", fields: [paymentId], references: [id], onDelete: Cascade)
 
+  accountEntry   MerchantAccountEntry? @relation("AccountEntryReceipt")
+
   @@index([paymentId, createdAt])
 }
 
@@ -231,6 +234,29 @@ model LedgerEntry {
   createdAt   DateTime @default(now())
 }
 
+enum MerchantAccountEntryType {
+  TOPUP
+  SETTLEMENT
+}
+
+model MerchantAccountEntry {
+  id             String                    @id @default(cuid())
+  merchantId     String
+  merchant       Merchant                  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  type           MerchantAccountEntryType
+  method         String?
+  amountCents    Int
+  note           String?
+  receiptFileId  String?                 @unique
+  receiptFile    ReceiptFile?              @relation("AccountEntryReceipt", fields: [receiptFileId], references: [id], onDelete: SetNull)
+  createdById    String?
+  createdBy      AdminUser?                @relation("AccountEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime                  @default(now())
+
+  @@index([merchantId, type, createdAt])
+  @@index([createdAt])
+}
+
 /**
  * ───────── NEW / UPDATED FOR SUPER ADMIN ─────────
  */
@@ -252,6 +278,9 @@ model AdminUser {
   updatedAt        DateTime  @default(now()) @updatedAt // ← add default so backfill works
   twoFactorEnabled Boolean   @default(false)
   totpSecret       String?
+  superTwoFactorEnabled Boolean @default(false)
+  superTotpSecret       String?
+  timezone         String?
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
 
@@ -259,6 +288,7 @@ model AdminUser {
   loginLogs   AdminLoginLog[]
   resetTokens AdminPasswordReset[]
   processedPayments PaymentRequest[] @relation("PaymentProcessedBy")
+  accountEntries    MerchantAccountEntry[] @relation("AccountEntryCreatedBy")
 }
 
 model AdminLoginLog {
@@ -306,6 +336,7 @@ model MerchantUser {
   active           Boolean      @default(true)
   twoFactorEnabled Boolean      @default(false)
   totpSecret       String?
+  timezone         String?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   lastLoginAt      DateTime?

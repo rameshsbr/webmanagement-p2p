@@ -25,7 +25,8 @@
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
   defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', merchants: 'Merchants', didit: 'Didit profile' }
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', merchants: 'Merchants', didit: 'Didit profile' },
+  columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
 <div class="table-wrap">
@@ -52,7 +53,7 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No users found</td></tr>
+        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>

@@ -1,7 +1,7 @@
 <% layout('admin/layout') -%>
 
 <% const q3 = Object.assign({}, query, { status:'PENDING,SUBMITTED' }); %>
-<%- include('partials/filters-bar', { query: q3, type: 'WITHDRAWAL', exportBase: 'withdrawals' }) %>
+<%- include('partials/filters-bar', { query: q3, type: 'WITHDRAWAL', exportBase: 'withdrawals', storageKey: 'admin.withdrawals.pending' }) %>
 <%- include('partials/column-settings', {
   key: 'admin.columns.withdrawals',
   labelMap: {

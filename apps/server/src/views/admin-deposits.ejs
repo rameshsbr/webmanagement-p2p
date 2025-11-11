@@ -1,6 +1,6 @@
 <% layout('admin/layout') -%>
 
-<%- include('partials/filters-bar', { query, type: 'DEPOSIT', exportBase: 'deposits' }) %>
+<%- include('partials/filters-bar', { query, type: 'DEPOSIT', exportBase: 'deposits', storageKey: 'admin.deposits' }) %>
 <%- include('partials/column-settings', {
   key: 'admin.columns.deposits',
   labelMap: {

@@ -24,6 +24,7 @@
   }
 
   var basePath = (type === 'DEPOSIT' ? '/superadmin/deposits' : '/superadmin/withdrawals');
+  var filtersStorageKey = (type === 'DEPOSIT' ? 'superadmin.payments.deposits' : 'superadmin.payments.withdrawals');
 %>
 
 <style>
@@ -34,23 +35,23 @@
   .pay-tabs .tab.active { background: var(--fore); color: var(--back); }
 
   /* FILTERS — 4 rows × 3 columns on desktop; uniform control widths */
-  .filters {
+  .filters-grid-3 {
     display: grid;
     gap: 10px;
     align-items: center;
-    grid-template-columns: repeat(3, minmax(240px, 1fr));  /* desktop: 3 columns */
+    grid-template-columns: repeat(3, minmax(240px, 1fr));
   }
   @media (max-width: 1100px) {
-    .filters { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
+    .filters-grid-3 { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
   }
   @media (max-width: 700px) {
-    .filters { grid-template-columns: 1fr; }
+    .filters-grid-3 { grid-template-columns: 1fr; }
   }
-  .filters > * { min-width: 0; }
-  .filters .input,
-  .filters select { height: 36px; width: 100%; box-sizing: border-box; }
+  .filters-grid-3 > * { min-width: 0; }
+  .filters-grid-3 .input,
+  .filters-grid-3 select { height: 36px; width: 100%; box-sizing: border-box; }
 
-  .filters .actions { grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 8px; }
+  .filters .actions { display: flex; justify-content: flex-end; gap: 8px; }
   .filters .actions .btn { height: 36px; padding: 0 14px; }
 
   /* Column settings (collapsible) */
@@ -91,47 +92,55 @@
 </div>
 
 <!-- Filters (12 cells: 4 rows × 3 cols on desktop) -->
-<form class="card filters" method="GET" action="<%= basePath %>">
-  <!-- Row 1 -->
-  <input class="input" name="q" placeholder="Search (ref, merchant, email, phone)" value="<%= query.q || '' %>"/>
-  <input class="input" name="id" placeholder="Payment ID" value="<%= query.id || '' %>"/>
-  <input class="input" name="merchantId" placeholder="Merchant ID" value="<%= query.merchantId || '' %>"/>
+<form class="card filters" method="GET" action="<%= basePath %>" data-filters data-filters-key="<%= filtersStorageKey %>">
+  <div class="filters-head">
+    <span class="filters-title">Filters</span>
+    <button type="button" class="filters-toggle" data-filters-toggle aria-expanded="true" aria-label="Collapse filters">−</button>
+  </div>
+  <div class="filters-body" data-filters-body>
+    <div class="filters-grid filters-grid-3">
+      <!-- Row 1 -->
+      <input class="input" name="q" placeholder="Search (ref, merchant, email, phone)" value="<%= query.q || '' %>"/>
+      <input class="input" name="id" placeholder="Payment ID" value="<%= query.id || '' %>"/>
+      <input class="input" name="merchantId" placeholder="Merchant ID" value="<%= query.merchantId || '' %>"/>
 
-  <!-- Row 2 -->
-  <input class="input" name="currency" placeholder="Currency" value="<%= query.currency || '' %>"/>
-  <select class="input" name="status">
-    <option value="">Any status</option>
-    <% ["PENDING","SUBMITTED","APPROVED","REJECTED"].forEach(function(s){ %>
-      <option value="<%= s %>" <%= (String(query.status||'').toUpperCase()===s ? 'selected' : '') %>><%= s %></option>
-    <% }) %>
-  </select>
-  <input class="input" type="date" name="from" value="<%= query.from || '' %>"/>
+      <!-- Row 2 -->
+      <input class="input" name="currency" placeholder="Currency" value="<%= query.currency || '' %>"/>
+      <select class="input" name="status">
+        <option value="">Any status</option>
+        <% ["PENDING","SUBMITTED","APPROVED","REJECTED"].forEach(function(s){ %>
+          <option value="<%= s %>" <%= (String(query.status||'').toUpperCase()===s ? 'selected' : '') %>><%= s %></option>
+        <% }) %>
+      </select>
+      <input class="input" type="date" name="from" value="<%= query.from || '' %>"/>
 
-  <!-- Row 3 -->
-  <input class="input" type="date" name="to" value="<%= query.to || '' %>"/>
-  <select class="input" name="dateField">
-    <option value="createdAt" <%= (query.dateField||'')==='createdAt' ? 'selected' : '' %>>By created</option>
-    <option value="updatedAt" <%= (query.dateField||'')==='updatedAt' ? 'selected' : '' %>>By updated</option>
-  </select>
-  <select class="input" name="sort">
-    <% var sorts = ['createdAt:desc','createdAt:asc','processedAt:desc','processedAt:asc','amountCents:desc','amountCents:asc','status:asc','status:desc','currency:asc','currency:desc','referenceCode:asc','referenceCode:desc']; %>
-    <% sorts.forEach(function(s){ %>
-      <option value="<%= s %>" <%= (query.sort||'')===s ? 'selected' : '' %>><%= s %></option>
-    <% }) %>
-  </select>
+      <!-- Row 3 -->
+      <input class="input" type="date" name="to" value="<%= query.to || '' %>"/>
+      <select class="input" name="dateField">
+        <option value="createdAt" <%= (query.dateField||'')==='createdAt' ? 'selected' : '' %>>By created</option>
+        <option value="updatedAt" <%= (query.dateField||'')==='updatedAt' ? 'selected' : '' %>>By updated</option>
+      </select>
+      <select class="input" name="sort">
+        <% var sorts = ['createdAt:desc','createdAt:asc','processedAt:desc','processedAt:asc','amountCents:desc','amountCents:asc','status:asc','status:desc','currency:asc','currency:desc','referenceCode:asc','referenceCode:desc']; %>
+        <% sorts.forEach(function(s){ %>
+          <option value="<%= s %>" <%= (query.sort||'')===s ? 'selected' : '' %>><%= s %></option>
+        <% }) %>
+      </select>
 
-  <!-- Row 4: replaced Page/Per page with Has receipt + amount range -->
-  <select class="input" name="hasReceipt">
-    <option value="">Receipt: Any</option>
-    <option value="yes" <%= (query.hasReceipt||'')==='yes' ? 'selected' : '' %>>Receipt: Yes</option>
-    <option value="no"  <%= (query.hasReceipt||'')==='no'  ? 'selected' : '' %>>Receipt: No</option>
-  </select>
-  <input class="input" type="number" step="1" name="amountMin" placeholder="Min cents" value="<%= query.amountMin || '' %>"/>
-  <input class="input" type="number" step="1" name="amountMax" placeholder="Max cents" value="<%= query.amountMax || '' %>"/>
+      <!-- Row 4: replaced Page/Per page with Has receipt + amount range -->
+      <select class="input" name="hasReceipt">
+        <option value="">Receipt: Any</option>
+        <option value="yes" <%= (query.hasReceipt||'')==='yes' ? 'selected' : '' %>>Receipt: Yes</option>
+        <option value="no"  <%= (query.hasReceipt||'')==='no'  ? 'selected' : '' %>>Receipt: No</option>
+      </select>
+      <input class="input" type="number" step="1" name="amountMin" placeholder="Min cents" value="<%= query.amountMin || '' %>"/>
+      <input class="input" type="number" step="1" name="amountMax" placeholder="Max cents" value="<%= query.amountMax || '' %>"/>
+    </div>
 
-  <!-- Apply (full-width row) -->
-  <div class="actions">
-    <button class="btn primary">Apply</button>
+    <!-- Apply (full-width row) -->
+    <div class="actions">
+      <button class="btn primary">Apply</button>
+    </div>
   </div>
 </form>
 

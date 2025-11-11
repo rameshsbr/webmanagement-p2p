@@ -1,7 +1,7 @@
 <% layout('admin/layout') -%>
 
 <% const q2 = Object.assign({}, query, { status:'PENDING,SUBMITTED' }); %>
-<%- include('partials/filters-bar', { query: q2, type: 'DEPOSIT', exportBase: 'deposits' }) %>
+<%- include('partials/filters-bar', { query: q2, type: 'DEPOSIT', exportBase: 'deposits', storageKey: 'admin.deposits.pending' }) %>
 <%- include('partials/column-settings', {
   key: 'admin.columns.deposits',
   labelMap: {

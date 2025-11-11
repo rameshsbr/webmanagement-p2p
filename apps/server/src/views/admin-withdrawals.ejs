@@ -1,6 +1,6 @@
 <% layout('admin/layout') -%>
 
-<%- include('partials/filters-bar', { query, type: 'WITHDRAWAL', exportBase: 'withdrawals' }) %>
+<%- include('partials/filters-bar', { query, type: 'WITHDRAWAL', exportBase: 'withdrawals', storageKey: 'admin.withdrawals' }) %>
 <%- include('partials/column-settings', {
   key: 'admin.columns.withdrawals',
   labelMap: {

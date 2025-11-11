@@ -1,6 +1,6 @@
 <% layout('merchant/layout') -%>
 
-<%- include('../partials/filters-bar', { query }) %>
+<%- include('../partials/filters-bar', { query, storageKey: 'merchant.payments' }) %>
 
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.payments',

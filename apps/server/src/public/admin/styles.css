@@ -290,6 +290,16 @@ textarea{
 }
 
 /* Filters */
+.filters[data-filters]{ position:relative; }
+.filters-head{ display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:12px; }
+.filters-title{ font-size:13px; letter-spacing:0.08em; text-transform:uppercase; font-weight:600; color:var(--ink-dim, rgba(0,0,0,0.6)); }
+.filters-toggle{ border:none; background:transparent; display:inline-flex; align-items:center; justify-content:center; width:28px; height:28px; border-radius:6px; font-size:18px; line-height:1; color:var(--ink, #111); cursor:pointer; transition:background-color .2s ease,color .2s ease; }
+.filters-toggle:hover{ background-color:var(--panel-hover, rgba(0,0,0,0.05)); }
+.filters-toggle:focus-visible{ outline:2px solid var(--brand, #2563eb); outline-offset:2px; }
+.filters-body{ display:flex; flex-direction:column; gap:16px; overflow:hidden; max-height:var(--filters-body-max, 1600px); transition:max-height .28s ease, opacity .24s ease; }
+.filters-body.filters-animating{ will-change:max-height, opacity; }
+.filters[data-filters-collapsed="true"] .filters-body{ max-height:0px; opacity:0; pointer-events:none; margin-bottom:0; }
+.filters[data-filters-collapsed="true"] .filters-head{ margin-bottom:0; }
 .filters-grid{ display:grid; gap:12px }
 .filters-grid.grid-4{ grid-template-columns: repeat(4, minmax(0,1fr)) }
 .filters-grid.grid-5{ grid-template-columns: repeat(5, minmax(0,1fr)); gap:14px }

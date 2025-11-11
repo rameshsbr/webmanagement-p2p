@@ -1,6 +1,12 @@
 <% /* Filters Bar aligned with admin/merchant queries */ %>
 <% const statusSelected = new Set(String(query.status||'').split(',').map(s=>s.trim()).filter(Boolean)); %>
-<form class="card filters" method="GET" action="">
+<% const filtersKey = typeof storageKey !== 'undefined' ? String(storageKey || '') : ''; %>
+<form class="card filters" method="GET" action="" data-filters data-filters-key="<%= filtersKey %>">
+  <div class="filters-head">
+    <span class="filters-title">Filters</span>
+    <button type="button" class="filters-toggle" data-filters-toggle aria-expanded="true" aria-label="Collapse filters">−</button>
+  </div>
+  <div class="filters-body" data-filters-body>
   <div class="filters-grid grid-4">
     <!-- Date range -->
     <div class="f-item">
@@ -151,5 +157,6 @@
       <input type="hidden" name="type" value="<%= type %>">
     <% } %>
     <button type="submit" class="btn primary">APPLY</button>
+  </div>
   </div>
 </form>

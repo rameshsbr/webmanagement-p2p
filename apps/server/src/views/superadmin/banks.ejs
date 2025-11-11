@@ -58,7 +58,7 @@
           <td><%= b.accountNo %></td>
           <td><%= b.active ? 'Yes' : 'No' %></td>
           <td><%= b._count.payments %></td>
-          <td><%= b.createdAt.toISOString().slice(0,19).replace('T',' ') %></td>
+          <td><%- renderDateTime(b.createdAt) %></td>
           <td style="white-space: nowrap;">
             <a class="btn" href="/superadmin/banks/<%= b.id %>/edit">Edit</a>
             <form action="/superadmin/banks/<%= b.id %>/toggle" method="post" style="display:inline;">

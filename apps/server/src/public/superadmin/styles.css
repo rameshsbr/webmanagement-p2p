@@ -33,7 +33,7 @@
   color: var(--ink);
 }
 
-/* Slightly wider actions column so Edit/Users never push the card edge */
+/* Slightly wider actions column so Edit/Clients never push the card edge */
 .table-merchants col.col-name     { width: 24%; }
 .table-merchants col.col-email    { width: 24%; }
 .table-merchants col.col-status   { width: 12%; }
@@ -93,3 +93,141 @@
 .tabs .tab.active { background: var(--panel); font-weight:600; }
 
 .page-actions { display:flex; justify-content:flex-end; margin-bottom:12px }
+
+/* Accounts section */
+.account-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.account-toolbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.account-filter {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.account-filter label {
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.account-filter select {
+  min-width: 180px;
+  height: 32px;
+  padding: 4px 10px;
+}
+
+.account-table-wrap {
+  margin-top: 12px;
+}
+
+.account-table th,
+.account-table td {
+  vertical-align: middle;
+}
+
+.account-table .note-cell {
+  max-width: 320px;
+  white-space: normal;
+}
+
+.amount-negative {
+  color: var(--tone-danger);
+}
+
+.amount-positive {
+  color: var(--tone-success);
+}
+
+.account-modal-card {
+  max-width: 520px;
+  width: 100%;
+}
+
+.account-form__body {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.account-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 0.92rem;
+}
+
+.account-field > span {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.account-field input,
+.account-field select,
+.account-field textarea {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.account-field textarea {
+  min-height: 90px;
+}
+
+.account-field-file {
+  gap: 8px;
+}
+
+.account-field-file input[type="file"] {
+  display: none;
+}
+
+.account-file-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.account-file-actions .btn {
+  flex-shrink: 0;
+}
+
+.account-file-name {
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+}
+
+.account-form__footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .account-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .account-toolbar__actions {
+    justify-content: space-between;
+  }
+
+  .account-filter {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .account-filter select {
+    flex: 1 1 auto;
+  }
+}

@@ -1,9 +1,31 @@
 -- Add permission flags and reveal logs
-ALTER TABLE "MerchantUser"
-  ADD COLUMN IF NOT EXISTS "canRevealApiKeys" BOOLEAN NOT NULL DEFAULT false;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'MerchantUser'
+      AND column_name = 'canRevealApiKeys'
+  ) THEN
+    ALTER TABLE "MerchantUser"
+      ADD COLUMN "canRevealApiKeys" BOOLEAN NOT NULL DEFAULT false;
+  END IF;
+END $$;
 
-ALTER TABLE "AdminUser"
-  ADD COLUMN IF NOT EXISTS "canRevealMerchantApiKeys" BOOLEAN NOT NULL DEFAULT false;
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM information_schema.columns
+    WHERE table_schema = 'public'
+      AND table_name = 'AdminUser'
+      AND column_name = 'canRevealMerchantApiKeys'
+  ) THEN
+    ALTER TABLE "AdminUser"
+      ADD COLUMN "canRevealMerchantApiKeys" BOOLEAN NOT NULL DEFAULT false;
+  END IF;
+END $$;
 
 UPDATE "MerchantUser"
   SET "canRevealApiKeys" = TRUE

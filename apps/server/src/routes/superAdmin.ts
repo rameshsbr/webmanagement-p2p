@@ -7,7 +7,7 @@ import QRCode from "qrcode";
 import { prisma } from "../lib/prisma.js";
 import { requireRole } from "../middleware/roles.js";
 import crypto from "node:crypto";
-import { auditAdmin } from "../services/audit.js";
+import { auditAdmin, ipFromReq, uaFromReq } from "../services/audit.js";
 import * as XLSX from "xlsx";
 import multer from "multer";
 import path from "node:path";
@@ -32,6 +32,8 @@ import {
 } from "../services/merchantAccounts.js";
 import type { MerchantAccountEntryType } from "@prisma/client";
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
+import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
+import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 
 export const superAdminRouter = Router();
 
@@ -48,7 +50,14 @@ superAdminRouter.use(async (req: any, res: any, next) => {
     try {
       adminRecord = await prisma.adminUser.findUnique({
         where: { id: adminId },
-        select: { id: true, email: true, displayName: true, timezone: true },
+        select: {
+          id: true,
+          email: true,
+          displayName: true,
+          timezone: true,
+          canRevealMerchantApiKeys: true,
+          superTwoFactorEnabled: true,
+        },
       });
       if (adminRecord) {
         timezone = resolveTimezone(adminRecord.timezone);
@@ -61,6 +70,9 @@ superAdminRouter.use(async (req: any, res: any, next) => {
   res.locals.admin = adminRecord
     ? { ...session, ...adminRecord }
     : session || null;
+
+  res.locals.adminCanRevealMerchantKeys = !!adminRecord?.canRevealMerchantApiKeys;
+  res.locals.adminRequiresTotp = !!adminRecord?.superTwoFactorEnabled;
 
   if (session) {
     session.timezone = timezone;
@@ -1042,6 +1054,13 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
   const notifModel = (prisma as any).notificationChannel;
   const keysModel = (prisma as any).merchantApiKey;
 
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  const revealConfig = getApiKeyRevealConfig();
+  const adminPermission = !!res.locals.adminCanRevealMerchantKeys;
+  const policyEnabled = revealConfig.allow;
+  const adminCanReveal = adminPermission && policyEnabled;
+  const adminRequiresTotp = !!res.locals.adminRequiresTotp;
+
   const channels =
     notifModel && typeof notifModel.findMany === "function"
       ? await notifModel.findMany({
@@ -1062,6 +1081,23 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
     }
   }
 
+  const revealMap: Record<string, string> = {};
+  if (adminId && apiKeys.length && revealConfig.allow) {
+    const logs = await prisma.merchantApiKeyRevealLog.findMany({
+      where: {
+        merchantApiKeyId: { in: apiKeys.map((k: any) => k.id) },
+        adminUserId: adminId,
+        outcome: "SUCCESS",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    for (const log of logs) {
+      if (log.merchantApiKeyId && !revealMap[log.merchantApiKeyId]) {
+        revealMap[log.merchantApiKeyId] = log.createdAt.toISOString();
+      }
+    }
+  }
+
   res.render("superadmin/merchant-edit", {
     title: "Edit Merchant",
     merchant,
@@ -1071,6 +1107,16 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
     newCreds,
     apiKeys,
     newApiKey,
+    allowReveal: adminCanReveal,
+    adminRevealPermission: adminPermission,
+    revealPolicyEnabled: policyEnabled,
+    revealConfig,
+    revealState: {
+      requireTotp: adminRequiresTotp,
+      requirePassword: !adminRequiresTotp,
+      stepStorage: "super.keyReveal.step",
+      lastRevealed: revealMap,
+    },
   });
 });
 
@@ -1680,6 +1726,7 @@ superAdminRouter.get("/merchants/:id/users", async (req, res) => {
       createdAt: true,
       lastLoginAt: true,
       canViewUserDirectory: true,
+      canRevealApiKeys: true,
     },
   });
 
@@ -1721,7 +1768,7 @@ superAdminRouter.get("/merchants/:id/users/new", async (req, res) => {
 // create
 superAdminRouter.post("/merchants/:id/users/new", async (req, res) => {
   const merchantId = req.params.id;
-  const { email, password, role, active, generate, canViewUsers } = req.body || {};
+  const { email, password, role, active, generate, canViewUsers, canRevealKeys } = req.body || {};
 
   const safeRole = MERCHANT_ROLES.has(String(role).toUpperCase())
     ? String(role).toUpperCase()
@@ -1736,6 +1783,9 @@ superAdminRouter.post("/merchants/:id/users/new", async (req, res) => {
   const passwordHash = bcrypt.hashSync(tempPassword, 10);
 
   const allowUsers = canViewUsers === "on";
+  const allowReveal = typeof canRevealKeys === "undefined"
+    ? safeRole === "OWNER"
+    : canRevealKeys === "on";
 
   const u = await prisma.merchantUser.create({
     data: {
@@ -1745,6 +1795,7 @@ superAdminRouter.post("/merchants/:id/users/new", async (req, res) => {
       role: safeRole as any,
       active: active === "on",
       canViewUserDirectory: allowUsers,
+      canRevealApiKeys: allowReveal,
     },
   });
 
@@ -1754,6 +1805,7 @@ superAdminRouter.post("/merchants/:id/users/new", async (req, res) => {
     role: safeRole,
     active: !!active,
     canViewUsers: allowUsers,
+    canRevealApiKeys: allowReveal,
     autoGenerated: willGenerate,
   });
 
@@ -1793,11 +1845,12 @@ superAdminRouter.get("/merchants/:id/users/:uid/edit", async (req, res) => {
 superAdminRouter.post("/merchants/:id/users/:uid/edit", async (req, res) => {
   const merchantId = req.params.id;
   const userId = req.params.uid;
-  const { email, role, active, password, canViewUsers } = req.body || {};
+  const { email, role, active, password, canViewUsers, canRevealKeys } = req.body || {};
   const safeRole = MERCHANT_ROLES.has(String(role).toUpperCase())
     ? String(role).toUpperCase()
     : "MANAGER";
   const allowUsers = canViewUsers === "on";
+  const allowReveal = typeof canRevealKeys === "undefined" ? null : canRevealKeys === "on";
 
   const data: any = {
     email: String(email || "").trim().toLowerCase(),
@@ -1805,6 +1858,7 @@ superAdminRouter.post("/merchants/:id/users/:uid/edit", async (req, res) => {
     active: active === "on",
     canViewUserDirectory: allowUsers,
   };
+  if (allowReveal !== null) data.canRevealApiKeys = allowReveal;
   if (password) data.passwordHash = bcrypt.hashSync(password, 10);
 
   const before = await prisma.merchantUser.findUnique({
@@ -1814,7 +1868,12 @@ superAdminRouter.post("/merchants/:id/users/:uid/edit", async (req, res) => {
 
   await auditAdmin(req, "merchantUser.update", "MERCHANT_USER", userId, {
     changed: Object.keys(data),
-    previous: { role: before?.role, active: before?.active, canViewUsers: before?.canViewUserDirectory },
+    previous: {
+      role: before?.role,
+      active: before?.active,
+      canViewUsers: before?.canViewUserDirectory,
+      canRevealApiKeys: (before as any)?.canRevealApiKeys,
+    },
   });
 
   res.redirect(`/superadmin/merchants/${merchantId}/users`);
@@ -1924,6 +1983,105 @@ superAdminRouter.post("/merchants/:id/keys/new", async (req, res) => {
   );
   res.redirect(`/superadmin/merchants/${merchantId}/edit?apiKey=${apiKeyParam}`);
 });
+
+superAdminRouter.post(
+  "/merchants/:id/keys/:kid/reveal",
+  async (req: any, res) => {
+    const config = getApiKeyRevealConfig();
+    if (!config.allow) {
+      return res
+        .status(403)
+        .json({ ok: false, error: "disabled", message: "API key reveal is disabled." });
+    }
+
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    if (!adminId) {
+      return res
+        .status(403)
+        .json({ ok: false, error: "forbidden", message: "Not authorized." });
+    }
+
+    if (!res.locals.adminCanRevealMerchantKeys) {
+      return res
+        .status(403)
+        .json({ ok: false, error: "forbidden", message: "Reveal permission denied." });
+    }
+
+    const merchantId = req.params.id;
+    const keyId = req.params.kid;
+    const reasonRaw = typeof req.body?.reason === "string" ? req.body.reason.trim() : "";
+    if (!reasonRaw) {
+      return res
+        .status(400)
+        .json({ ok: false, error: "reason_required", message: "Reason is required to reveal an API key." });
+    }
+
+    const keyRecord = await prisma.merchantApiKey.findUnique({
+      where: { id: keyId },
+      select: { merchantId: true },
+    });
+    if (!keyRecord || keyRecord.merchantId !== merchantId) {
+      return res
+        .status(404)
+        .json({ ok: false, error: "not_found", message: "API key not found." });
+    }
+
+    const password = typeof req.body?.password === "string" ? req.body.password : undefined;
+    const totp = typeof req.body?.totp === "string" ? req.body.totp : undefined;
+    const stepToken = typeof req.body?.stepToken === "string" ? req.body.stepToken : undefined;
+
+    try {
+      const result = await revealApiKey({
+        kind: "admin",
+        keyId,
+        adminId,
+        password,
+        totp,
+        stepToken,
+        reason: reasonRaw,
+        ip: ipFromReq(req) || req.ip || null,
+        userAgent: uaFromReq(req),
+      });
+
+      await auditAdmin(req, "merchant.apiKey.reveal", "MERCHANT_API_KEY", result.keyId, {
+        merchantId: result.merchantId,
+        reason: reasonRaw,
+        outcome: "SUCCESS",
+      });
+
+      return res.json({
+        ok: true,
+        keyId: result.keyId,
+        secret: result.secret,
+        prefix: result.prefix,
+        stepToken: result.stepToken,
+        stepExpiresIn: result.stepExpiresIn,
+        previousSuccessAt: result.previousSuccessAt
+          ? result.previousSuccessAt.toISOString()
+          : null,
+        autoHideSeconds: config.autoHideSeconds,
+      });
+    } catch (err: any) {
+      if (err instanceof ApiKeyRevealError) {
+        if (err.code !== "disabled") {
+          await auditAdmin(req, "merchant.apiKey.reveal", "MERCHANT_API_KEY", keyId, {
+            merchantId,
+            reason: reasonRaw || null,
+            outcome: err.code,
+          }).catch(() => undefined);
+        }
+        const body: any = { ok: false, error: err.code, message: err.message };
+        if (err.needsStepUp) body.needsStepUp = true;
+        if (err.retryAt instanceof Date) body.retryAt = err.retryAt.toISOString();
+        return res.status(err.status).json(body);
+      }
+      console.error("[superadmin api key reveal] unexpected", err);
+      return res
+        .status(500)
+        .json({ ok: false, error: "server_error", message: "Unable to reveal API key." });
+    }
+  }
+);
 
 // Revoke an API key (set active=false)
 superAdminRouter.post(

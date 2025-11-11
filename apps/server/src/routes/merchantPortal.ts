@@ -20,6 +20,9 @@ import {
 } from "../services/paymentExports.js";
 import { listAccountEntries } from "../services/merchantAccounts.js";
 import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
+import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
+import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
+import { ipFromReq, uaFromReq } from "../services/audit.js";
 
 const router = Router();
 
@@ -50,6 +53,62 @@ function currentMerchantUserId(req: any): string | null {
     if (!merchantId || auth.sub !== merchantId) return auth.sub;
   }
   return null;
+}
+
+type RenderKeysOptions = {
+  error?: string | null;
+  justCreated?: string | null;
+};
+
+async function renderMerchantApiKeys(req: any, res: any, options: RenderKeysOptions = {}) {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.redirect("/public/merchant/login");
+
+  const keys = await listMerchantApiKeys(merchantId);
+
+  const merchantUser = req.merchantUser || null;
+  const config = getApiKeyRevealConfig();
+  const allowSelfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  const policyEnabled = config.allow;
+  const permissionGranted = !!merchantUser?.canRevealApiKeys;
+  const revealAllowed = permissionGranted && policyEnabled;
+  const requireTotp = !!merchantUser?.twoFactorEnabled;
+
+  const revealMap: Record<string, string> = {};
+  if (revealAllowed && merchantUser?.id && keys.length) {
+    const logs = await prisma.merchantApiKeyRevealLog.findMany({
+      where: {
+        merchantApiKeyId: { in: keys.map((k) => k.id) },
+        merchantUserId: merchantUser.id,
+        outcome: "SUCCESS",
+      },
+      orderBy: { createdAt: "desc" },
+    });
+    for (const log of logs) {
+      if (!log.merchantApiKeyId) continue;
+      if (!revealMap[log.merchantApiKeyId]) {
+        revealMap[log.merchantApiKeyId] = log.createdAt.toISOString();
+      }
+    }
+  }
+
+  res.render("merchant/api-keys", {
+    title: "API Keys",
+    keys,
+    justCreated: options.justCreated ?? null,
+    error: options.error ?? null,
+    selfService: allowSelfService,
+    revealAllowed,
+    revealPolicyEnabled: policyEnabled,
+    revealPermissionGranted: permissionGranted,
+    revealConfig: config,
+    revealState: {
+      requireTotp,
+      requirePassword: !requireTotp,
+      stepStorage: "merchant.keyReveal.step",
+      lastRevealed: revealMap,
+    },
+  });
 }
 
 async function loadCurrentMerchantUser(req: any) {
@@ -156,7 +215,14 @@ router.use(async (req: any, res, next) => {
   if (!req.merchantUser && merchantUserId) {
     req.merchantUser = await prisma.merchantUser.findUnique({
       where: { id: merchantUserId },
-      select: { id: true, email: true, role: true, canViewUserDirectory: true },
+      select: {
+        id: true,
+        email: true,
+        role: true,
+        canViewUserDirectory: true,
+        canRevealApiKeys: true,
+        twoFactorEnabled: true,
+      },
     });
   }
 
@@ -175,6 +241,8 @@ router.use(async (req: any, res, next) => {
   res.locals.merchantUser = merchantUser;
   res.locals.merchantAuth = authPayload;
   res.locals.merchantFeatures = { usersEnabled: canViewUsers };
+  res.locals.merchantCanRevealKeys = !!req.merchantUser?.canRevealApiKeys;
+  res.locals.merchantRequiresTotp = !!req.merchantUser?.twoFactorEnabled;
   const timezoneSource = merchantUser?.timezone ?? (authPayload && typeof authPayload === "object" ? (authPayload as any).timezone : null);
   const timezone = resolveTimezone(timezoneSource);
   res.locals.timezone = timezone;
@@ -802,16 +870,7 @@ async function listMerchantApiKeys(merchantId: string) {
 }
 
 router.get("/keys", async (req: any, res) => {
-  const merchantId = req.merchant?.sub as string;
-  const keys = await listMerchantApiKeys(merchantId);
-  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
-  res.render("merchant/api-keys", {
-    title: "API Keys",
-    keys,
-    justCreated: null,
-    selfService,
-    error: null,
-  });
+  await renderMerchantApiKeys(req, res);
 });
 
 router.post("/prefs/theme", (req, res) => {
@@ -857,28 +916,74 @@ router.post("/keys/create", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
   if (!selfService) {
-    const keys = await listMerchantApiKeys(merchantId);
-    return res.status(403).render("merchant/api-keys", {
-      title: "API Keys",
-      keys,
-      justCreated: null,
+    res.status(403);
+    await renderMerchantApiKeys(req, res, {
       error: "Self-service API key creation is disabled by your administrator.",
-      selfService,
     });
+    return;
   }
   const prefix = genPrefix();
   const secret = genSecret();
   await prisma.merchantApiKey.create({
     data: { merchantId, prefix, secretEnc: seal(secret), last4: secret.slice(-4), scopes: ["read:payments"] }
   });
-  const keys = await listMerchantApiKeys(merchantId);
-  res.render("merchant/api-keys", {
-    title: "API Keys",
-    keys,
-    justCreated: `${prefix}.${secret}`,
-    selfService,
-    error: null,
-  });
+  await renderMerchantApiKeys(req, res, { justCreated: `${prefix}.${secret}` });
+});
+
+router.post("/keys/:id/reveal", async (req: any, res) => {
+  const config = getApiKeyRevealConfig();
+  if (!config.allow) {
+    return res.status(403).json({ ok: false, error: "disabled", message: "API key reveal is disabled." });
+  }
+
+  const merchantId = req.merchant?.sub as string;
+  const user = req.merchantUser || null;
+  if (!merchantId || !user?.id) {
+    return res.status(403).json({ ok: false, error: "forbidden", message: "Not authorized." });
+  }
+
+  if (!user.canRevealApiKeys) {
+    return res.status(403).json({ ok: false, error: "forbidden", message: "You do not have permission to reveal API keys." });
+  }
+
+  const payload = req.body || {};
+  const password = typeof payload.password === "string" ? payload.password : undefined;
+  const totp = typeof payload.totp === "string" ? payload.totp : undefined;
+  const stepToken = typeof payload.stepToken === "string" ? payload.stepToken : undefined;
+
+  try {
+    const result = await revealApiKey({
+      kind: "merchant",
+      keyId: String(req.params.id || ""),
+      merchantId,
+      merchantUserId: user.id,
+      password,
+      totp,
+      stepToken,
+      ip: ipFromReq(req) || req.ip || null,
+      userAgent: uaFromReq(req),
+    });
+
+    return res.json({
+      ok: true,
+      keyId: result.keyId,
+      secret: result.secret,
+      prefix: result.prefix,
+      stepToken: result.stepToken,
+      stepExpiresIn: result.stepExpiresIn,
+      previousSuccessAt: result.previousSuccessAt ? result.previousSuccessAt.toISOString() : null,
+      autoHideSeconds: config.autoHideSeconds,
+    });
+  } catch (err: any) {
+    if (err instanceof ApiKeyRevealError) {
+      const body: any = { ok: false, error: err.code, message: err.message };
+      if (err.needsStepUp) body.needsStepUp = true;
+      if (err.retryAt instanceof Date) body.retryAt = err.retryAt.toISOString();
+      return res.status(err.status).json(body);
+    }
+    console.error("[merchant api key reveal] unexpected", err);
+    return res.status(500).json({ ok: false, error: "server_error", message: "Unable to reveal API key right now." });
+  }
 });
 
 router.post("/keys/:id/revoke", async (req: any, res) => {
@@ -891,14 +996,11 @@ router.post("/keys/:id/rotate", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
   if (!selfService) {
-    const keys = await listMerchantApiKeys(merchantId);
-    return res.status(403).render("merchant/api-keys", {
-      title: "API Keys",
-      keys,
-      justCreated: null,
-      selfService,
+    res.status(403);
+    await renderMerchantApiKeys(req, res, {
       error: "Self-service API key rotation is disabled by your administrator.",
     });
+    return;
   }
   await prisma.merchantApiKey.updateMany({ where: { id: req.params.id, merchantId }, data: { active: false } });
   const prefix = genPrefix(); const secret = genSecret();

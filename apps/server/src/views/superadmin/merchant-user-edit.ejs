@@ -61,6 +61,11 @@
         May view Clients directory
       </label>
 
+      <label class="chk" style="margin-top:6px">
+        <input type="checkbox" name="canRevealKeys" <%= (user ? user.canRevealApiKeys === true || user.role === 'OWNER' : true) ? 'checked' : '' %> />
+        May reveal API keys
+      </label>
+
       <div class="row" style="gap:8px; margin-top:12px">
         <a class="btn" href="/superadmin/merchants/<%= merchant.id %>/users">Cancel</a>
         <button class="btn primary">Save</button>

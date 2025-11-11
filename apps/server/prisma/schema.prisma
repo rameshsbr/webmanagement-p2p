@@ -22,6 +22,7 @@ model Merchant {
   paymentReqs  PaymentRequest[]
   ledger       LedgerEntry[]
   accountEntries MerchantAccountEntry[]
+  apiKeyRevealLogs MerchantApiKeyRevealLog[]
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
   channels     NotificationChannel[]
@@ -58,6 +59,7 @@ model MerchantApiKey {
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
   expiresAt  DateTime?
+  revealLogs MerchantApiKeyRevealLog[]
 
   @@index([merchantId])
 }
@@ -285,12 +287,14 @@ model AdminUser {
   timezone         String?
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
+  canRevealMerchantApiKeys Boolean @default(false)
 
   auditLogs   AdminAuditLog[]
   loginLogs   AdminLoginLog[]
   resetTokens AdminPasswordReset[]
   processedPayments PaymentRequest[] @relation("PaymentProcessedBy")
   accountEntries    MerchantAccountEntry[] @relation("AccountEntryCreatedBy")
+  apiKeyRevealLogs  MerchantApiKeyRevealLog[]
 }
 
 model AdminLoginLog {
@@ -343,9 +347,11 @@ model MerchantUser {
   updatedAt        DateTime     @updatedAt
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
+  canRevealApiKeys     Boolean @default(false)
 
   loginLogs   MerchantLoginLog[]
   resetTokens MerchantPasswordReset[]
+  apiKeyRevealLogs MerchantApiKeyRevealLog[]
 
   @@index([merchantId])
 }
@@ -411,6 +417,29 @@ model MerchantPasswordReset {
   createdAt      DateTime     @default(now())
 
   @@index([merchantUserId])
+}
+
+model MerchantApiKeyRevealLog {
+  id               String         @id @default(cuid())
+  merchantApiKeyId String
+  merchantApiKey   MerchantApiKey @relation(fields: [merchantApiKeyId], references: [id], onDelete: Cascade)
+  merchantId       String
+  merchant         Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  actorType        String
+  merchantUserId   String?
+  merchantUser     MerchantUser?  @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
+  adminUserId      String?
+  adminUser        AdminUser?     @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
+  reason           String?
+  outcome          String
+  ip               String?
+  userAgent        String?
+  createdAt        DateTime       @default(now())
+
+  @@index([merchantApiKeyId, createdAt])
+  @@index([merchantUserId, createdAt])
+  @@index([adminUserId, createdAt])
+  @@index([merchantId, createdAt])
 }
 
 model IdempotencyKey {

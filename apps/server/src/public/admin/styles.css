@@ -691,6 +691,122 @@ textarea{
   display: none;
 }
 
+/* API key reveal modal */
+.modal-backdrop[data-api-key-reveal-modal] {
+  position: fixed;
+  inset: 0;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: rgba(17, 24, 39, 0.55);
+  z-index: 1600;
+  padding: 16px;
+}
+
+.modal-backdrop[data-api-key-reveal-modal].open {
+  display: flex;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .modal {
+  background: var(--surface, #fff);
+  color: var(--ink, #111827);
+  border-radius: 12px;
+  width: min(420px, 100%);
+  padding: 24px;
+  box-shadow: 0 18px 48px rgba(15, 23, 42, 0.35);
+  position: relative;
+  max-height: 90vh;
+  overflow-y: auto;
+}
+
+:root[data-theme="dark"] .modal-backdrop[data-api-key-reveal-modal] .modal {
+  background: #1f2a37;
+  color: #f8fafc;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .modal-title {
+  margin: 0 0 12px;
+  font-size: 1.25rem;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .muted {
+  margin-bottom: 12px;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  border: none;
+  background: transparent;
+  font-size: 1.25rem;
+  cursor: pointer;
+  color: inherit;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .form-field {
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] input,
+.modal-backdrop[data-api-key-reveal-modal] textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--border, rgba(0,0,0,0.2));
+  border-radius: 6px;
+  background: var(--surface-elevated, #fff);
+  color: inherit;
+}
+
+:root[data-theme="dark"] .modal-backdrop[data-api-key-reveal-modal] input,
+:root[data-theme="dark"] .modal-backdrop[data-api-key-reveal-modal] textarea {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.modal-backdrop[data-api-key-reveal-modal] textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .form-error {
+  color: #f97316;
+  min-height: 20px;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .secret-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.08);
+}
+
+:root[data-theme="dark"] .modal-backdrop[data-api-key-reveal-modal] .secret-box {
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.modal-backdrop[data-api-key-reveal-modal] .secret {
+  font-family: var(--font-mono);
+  word-break: break-all;
+}
+
+.modal-backdrop[data-api-key-reveal-modal] [data-reveal-countdown],
+.modal-backdrop[data-api-key-reveal-modal] [data-reveal-last] {
+  font-size: 0.85rem;
+  color: var(--ink-dim);
+  margin: 6px 0;
+}
+
+body.modal-open {
+  overflow: hidden;
+}
+
 .notification-permission-banner {
   position: fixed;
   bottom: 20px;

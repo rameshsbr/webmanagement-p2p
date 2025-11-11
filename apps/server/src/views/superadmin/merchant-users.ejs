@@ -40,32 +40,35 @@
 <div class="card">
   <table class="table-merchants">
     <colgroup>
-      <col style="width:36%"/>
-      <col style="width:18%"/>
-      <col style="width:14%"/>
-      <col style="width:14%"/>
-      <col style="width:18%"/>
-      <col style="width:18%"/>
-    </colgroup>
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Role</th>
-        <th>Active</th>
-        <th>2FA</th>
-        <th>Clients access</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
+    <col style="width:36%"/>
+    <col style="width:18%"/>
+    <col style="width:14%"/>
+    <col style="width:14%"/>
+    <col style="width:18%"/>
+    <col style="width:18%"/>
+    <col style="width:18%"/>
+  </colgroup>
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Role</th>
+      <th>Active</th>
+      <th>2FA</th>
+      <th>Clients access</th>
+      <th>API key reveal</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
       <% (users || []).forEach(u => { %>
         <tr>
           <td class="truncate" title="<%= u.email %>"><%= u.email %></td>
-          <td><%= u.role %></td>
-          <td><%= u.active ? 'yes' : 'no' %></td>
-          <td><%= u.twoFactorEnabled ? 'enabled' : '—' %></td>
-          <td><%= u.canViewUserDirectory !== false ? 'yes' : 'no' %></td>
-          <td class="nowrap">
+        <td><%= u.role %></td>
+        <td><%= u.active ? 'yes' : 'no' %></td>
+        <td><%= u.twoFactorEnabled ? 'enabled' : '—' %></td>
+        <td><%= u.canViewUserDirectory !== false ? 'yes' : 'no' %></td>
+        <td><%= u.canRevealApiKeys ? 'yes' : 'no' %></td>
+        <td class="nowrap">
             <a class="btn small" href="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/edit">Edit</a>
             <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/force-reset" style="display:inline">
               <button class="btn small" type="submit">Force reset</button>

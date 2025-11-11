@@ -4,6 +4,18 @@
   <div class="callout callout-success callout-floating">Saved ✅</div>
 <% } %>
 
+<% const policyEnabled = typeof revealPolicyEnabled === 'undefined' ? true : !!revealPolicyEnabled; %>
+<% const permissionGranted = typeof adminRevealPermission === 'undefined' ? false : !!adminRevealPermission; %>
+<% const allowRevealFlag = typeof allowReveal === 'undefined' ? (policyEnabled && permissionGranted) : !!allowReveal; %>
+<% const revealCfg = typeof revealConfig === 'undefined' || !revealConfig ? {} : revealConfig; %>
+<% const revealStateData = typeof revealState === 'undefined' || !revealState ? {} : revealState; %>
+<% const lastRevealMap = revealStateData.lastRevealed || {}; %>
+<% const requireTotp = !!revealStateData.requireTotp; %>
+<% const requirePassword = !!revealStateData.requirePassword; %>
+<% const stepStorageKey = revealStateData.stepStorage || 'super.keyReveal.step'; %>
+<% const autoHideSeconds = Number.isFinite(revealCfg.autoHideSeconds) ? revealCfg.autoHideSeconds : 60; %>
+<% const allowRevokedReveal = !!revealCfg.adminCanRevealRevoked; %>
+
 <form method="post" action="<%= merchant ? '/superadmin/merchants/'+merchant.id+'/edit' : '/superadmin/merchants/new' %>" class="card">
   <div class="f-item"><label>Name</label><input name="name" value="<%= merchant?.name||'' %>" required/></div>
 
@@ -37,6 +49,11 @@
 
   <label class="chk" style="margin-top:6px">
     <input type="checkbox" name="userDirectoryEnabled" <%= merchant?.userDirectoryEnabled?'checked':'' %>/> User directory enabled
+  </label>
+
+  <label class="chk" style="margin-top:6px">
+    <input type="checkbox" name="apiKeysSelfServiceEnabled" <%= (merchant?.apiKeysSelfServiceEnabled ?? true) ? 'checked' : '' %>/>
+    Allow merchant to manage API keys (self-service)
   </label>
 
   <div class="row" style="margin-top:12px"><button class="btn primary">Save</button></div>
@@ -120,6 +137,16 @@
   <div class="card">
     <div class="title">API keys</div>
 
+    <% if (!policyEnabled) { %>
+      <div class="card" style="margin-bottom:12px; background:var(--row); border-color:rgba(255,168,0,0.4)">
+        <div class="muted">API key reveal is disabled by platform policy in this environment.</div>
+      </div>
+    <% } else if (!permissionGranted) { %>
+      <div class="card" style="margin-bottom:12px; background:var(--row); border-color:rgba(248,113,113,0.4)">
+        <div class="muted">Your account does not have permission to reveal merchant API keys.</div>
+      </div>
+    <% } %>
+
     <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/new" class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px">
       <input name="label" placeholder="Label (optional)" style="min-width:200px"/>
       <input name="scopes" placeholder="Scopes (csv, e.g. payments:read,payments:write)" style="min-width:360px; flex:1"/>
@@ -138,10 +165,12 @@
         </tr>
       </thead>
       <tbody>
-      <% (apiKeys||[]).forEach(k => { 
+      <% (apiKeys||[]).forEach(k => {
            const prefix = k.prefix || (k.id ? String(k.id).slice(0,8) : 'key');
            const last4 = k.last4 || '';
            const revoked = (k.active === false);
+           const revealAllowed = allowRevealFlag && (allowRevokedReveal || !revoked);
+           const lastSeen = lastRevealMap[k.id] || '';
         %>
         <tr style="<%= revoked ? 'opacity:.6' : '' %>">
           <td class="mono">
@@ -150,9 +179,23 @@
           </td>
           <td><%= k.label || '—' %></td>
           <td class="mini"><%= Array.isArray(k.scopes) ? k.scopes.join(', ') : (k.scopes || '—') %></td>
-          <td class="mini"><%= k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : '—' %></td>
-          <td class="mini"><%= k.createdAt ? new Date(k.createdAt).toISOString() : '—' %></td>
+          <td class="mini"><%- k.lastUsedAt ? renderDateTime(k.lastUsedAt) : '—' %></td>
+          <td class="mini"><%- k.createdAt ? renderDateTime(k.createdAt) : '—' %></td>
           <td class="nowrap">
+            <button
+              type="button"
+              class="btn small"
+              data-api-key-reveal-trigger
+              data-endpoint="/superadmin/merchants/<%= merchant.id %>/keys/<%= k.id %>/reveal"
+              data-key-id="<%= k.id %>"
+              data-key-prefix="<%= prefix %>"
+              data-key-last4="<%= last4 %>"
+              data-last-revealed="<%= lastSeen %>"
+              data-allow="<%= revealAllowed ? '1' : '0' %>"
+              title="<%= revealAllowed ? 'View key' : 'Reveal unavailable' %>"
+              <%= revealAllowed ? '' : 'disabled aria-disabled="true"' %>>
+              👁
+            </button>
             <% if (!revoked) { %>
             <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/<%= k.id %>/revoke" style="display:inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">
               <button class="btn small">Revoke</button>
@@ -184,9 +227,68 @@
       <label class="chk" title="Generate a strong temporary password">
         <input type="checkbox" name="generate" checked/> Auto-generate password
       </label>
+      <label class="chk" title="Allow viewing API keys">
+        <input type="checkbox" name="canRevealKeys" checked/> API key reveal access
+      </label>
       <button class="btn small">Create user</button>
       <a class="btn small" href="/superadmin/merchants/<%= merchant.id %>/users" style="margin-left:auto">Manage users…</a>
     </form>
   </div>
 
 <% } %>
+
+<div
+  class="modal-backdrop"
+  data-api-key-reveal-modal
+  hidden
+  data-scope="super"
+  data-require-totp="<%= requireTotp ? '1' : '0' %>"
+  data-require-password="<%= requirePassword ? '1' : '0' %>"
+  data-step-storage="<%= stepStorageKey %>"
+  data-auto-hide="<%= autoHideSeconds %>"
+>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="reveal-title">
+    <button type="button" class="modal-close" data-reveal-close aria-label="Close">×</button>
+    <div data-reveal-view="step">
+      <h2 class="modal-title" id="reveal-title">Verify before reveal</h2>
+      <p class="muted">
+        <% if (requireTotp) { %>
+          Enter your authenticator code and provide a reason to reveal this key.
+        <% } else { %>
+          Enter your password and provide a reason to reveal this key.
+        <% } %>
+      </p>
+      <div class="form-field" data-reveal-password-field <%= requireTotp && !requirePassword ? 'hidden' : '' %>>
+        <label for="reveal-password">Password</label>
+        <input id="reveal-password" type="password" autocomplete="current-password" data-reveal-password />
+      </div>
+      <div class="form-field" data-reveal-totp-field <%= requireTotp ? '' : 'hidden' %>>
+        <label for="reveal-totp">Authenticator code</label>
+        <input id="reveal-totp" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="one-time-code" data-reveal-totp />
+      </div>
+      <div class="form-field" data-reveal-reason-field>
+        <label for="reveal-reason">Reason</label>
+        <textarea id="reveal-reason" rows="3" data-reveal-reason placeholder="Explain why the key is being revealed" required></textarea>
+      </div>
+      <div class="form-error" data-reveal-error role="alert"></div>
+      <div class="row" style="gap:8px; justify-content:flex-end">
+        <button type="button" class="btn" data-reveal-cancel>Cancel</button>
+        <button type="button" class="btn primary" data-reveal-submit>Continue</button>
+      </div>
+    </div>
+    <div data-reveal-view="result" hidden>
+      <h2 class="modal-title">API key revealed</h2>
+      <p class="muted">Key: <code data-reveal-key></code></p>
+      <div class="secret-box" data-secret-wrapper>
+        <code class="secret" data-secret-value>••••••</code>
+        <button type="button" class="btn small" data-secret-toggle>Show</button>
+      </div>
+      <div class="row" style="gap:8px; justify-content:flex-end">
+        <button type="button" class="btn" data-reveal-done>Close</button>
+        <button type="button" class="btn primary" data-secret-copy>Copy</button>
+      </div>
+      <p class="muted" data-reveal-countdown></p>
+      <p class="muted" data-reveal-last></p>
+    </div>
+  </div>
+</div>

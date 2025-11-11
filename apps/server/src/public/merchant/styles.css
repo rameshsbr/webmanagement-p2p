@@ -29,3 +29,68 @@
 .page .card { margin-top: 24px; }
 
 /* Namespace merchant preferences if desired — not required for CSS */
+
+/* Accounts pages */
+.account-summary {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.account-summary__item {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 12px 16px;
+  min-width: 200px;
+}
+
+.account-summary__label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--ink-dim);
+}
+
+.account-summary__value {
+  font-size: 1.3rem;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.account-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.account-table-wrap {
+  margin-top: 12px;
+}
+
+.account-table th,
+.account-table td {
+  vertical-align: middle;
+}
+
+.account-table .note-cell {
+  max-width: 320px;
+  white-space: normal;
+}
+
+.amount-negative {
+  color: var(--tone-danger);
+}
+
+.amount-positive {
+  color: var(--tone-success);
+}
+
+@media (max-width: 640px) {
+  .account-toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

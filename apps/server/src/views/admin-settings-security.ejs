@@ -16,3 +16,17 @@
     </form>
   <% } %>
 </div>
+
+<% if (flash && flash.message) { %>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      if (window.toast) {
+        <% if (flash.variant === 'error') { %>
+          toast.error(<%- JSON.stringify(flash.message) %>);
+        <% } else { %>
+          toast(<%- JSON.stringify(flash.message) %>);
+        <% } %>
+      }
+    });
+  </script>
+<% } %>

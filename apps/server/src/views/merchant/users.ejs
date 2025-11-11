@@ -16,7 +16,8 @@
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
   defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity' }
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity' },
+  columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
 <div class="table-wrap">
@@ -41,7 +42,7 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="7" style="text-align:center;color:var(--ink-dim)">No users found</td></tr>
+        <tr><td colspan="7" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>

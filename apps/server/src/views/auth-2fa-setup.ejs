@@ -13,8 +13,9 @@
 // default to admin if not provided
 const _mode = (typeof mode !== 'undefined' ? mode : 'admin');
 const isMerchant = _mode === 'merchant';
+const isSuper = _mode === 'super';
 const postAction = isMerchant ? '/auth/merchant/2fa/setup' : '/auth/2fa/setup';
-const cancelHref = isMerchant ? '/auth/merchant/login' : '/admin';
+const cancelHref = isMerchant ? '/auth/merchant/login' : (isSuper ? '/superadmin/settings/security' : '/admin');
 %>
 
 <div class="login-card">

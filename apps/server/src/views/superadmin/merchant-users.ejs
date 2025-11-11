@@ -1,10 +1,10 @@
 <% layout('superadmin/layout') -%>
 
 <div class="row between" style="margin-bottom:12px">
-  <div class="title">Merchant Users – <%= merchant.name %></div>
+  <div class="title">Merchant Clients – <%= merchant.name %></div>
   <div class="row" style="gap:8px">
     <a class="btn" href="/superadmin/merchants/<%= merchant.id %>/edit">Back to Merchant</a>
-    <a class="btn primary" href="/superadmin/merchants/<%= merchant.id %>/users/new">New user</a>
+    <a class="btn primary" href="/superadmin/merchants/<%= merchant.id %>/users/new">New client</a>
   </div>
 </div>
 
@@ -20,7 +20,7 @@
 
 <% if (credsBlock) { %>
   <div class="card tone-success" style="margin-bottom:12px">
-    <div class="title">User created</div>
+    <div class="title">Client created</div>
     <p>Temporary credentials (shown once):</p>
     <div class="row" style="gap:8px; align-items:center;">
       <input readonly value="<%= credsBlock.email %>" style="max-width:300px"/>
@@ -40,44 +40,47 @@
 <div class="card">
   <table class="table-merchants">
     <colgroup>
-      <col style="width:36%"/>
-      <col style="width:18%"/>
-      <col style="width:14%"/>
-      <col style="width:14%"/>
-      <col style="width:18%"/>
-      <col style="width:18%"/>
-    </colgroup>
-    <thead>
-      <tr>
-        <th>Email</th>
-        <th>Role</th>
-        <th>Active</th>
-        <th>2FA</th>
-        <th>Users access</th>
-        <th></th>
-      </tr>
-    </thead>
-    <tbody>
+    <col style="width:36%"/>
+    <col style="width:18%"/>
+    <col style="width:14%"/>
+    <col style="width:14%"/>
+    <col style="width:18%"/>
+    <col style="width:18%"/>
+    <col style="width:18%"/>
+  </colgroup>
+  <thead>
+    <tr>
+      <th>Email</th>
+      <th>Role</th>
+      <th>Active</th>
+      <th>2FA</th>
+      <th>Clients access</th>
+      <th>API key reveal</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
       <% (users || []).forEach(u => { %>
         <tr>
           <td class="truncate" title="<%= u.email %>"><%= u.email %></td>
-          <td><%= u.role %></td>
-          <td><%= u.active ? 'yes' : 'no' %></td>
-          <td><%= u.twoFactorEnabled ? 'enabled' : '—' %></td>
-          <td><%= u.canViewUserDirectory !== false ? 'yes' : 'no' %></td>
-          <td class="nowrap">
+        <td><%= u.role %></td>
+        <td><%= u.active ? 'yes' : 'no' %></td>
+        <td><%= u.twoFactorEnabled ? 'enabled' : '—' %></td>
+        <td><%= u.canViewUserDirectory !== false ? 'yes' : 'no' %></td>
+        <td><%= u.canRevealApiKeys ? 'yes' : 'no' %></td>
+        <td class="nowrap">
             <a class="btn small" href="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/edit">Edit</a>
             <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/force-reset" style="display:inline">
               <button class="btn small" type="submit">Force reset</button>
             </form>
-            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this user?')">
+            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this client?')">
               <button class="btn small" type="submit">Delete</button>
             </form>
           </td>
         </tr>
       <% }) %>
       <% if (!users || users.length === 0) { %>
-        <tr><td colspan="5" style="opacity:.7">No users yet.</td></tr>
+        <tr><td colspan="6" style="opacity:.7">No clients yet.</td></tr>
       <% } %>
     </tbody>
   </table>

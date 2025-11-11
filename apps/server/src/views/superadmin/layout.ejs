@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/admin/styles.css"/>
   <link rel="stylesheet" href="/static/superadmin/styles.css"/>
 </head>
-<body>
+<body data-timezone="<%= timezone || '' %>">
   <header class="header">
     <button class="btn btn-icon sb-toggle" type="button">☰</button>
     <div class="brand"><span class="brand-accent">SUPER&nbsp;</span>ADMIN</div>
@@ -27,6 +27,10 @@
     </main>
   </div>
 
+  <script src="/static/shared/toast.js" defer></script>
+  <script src="/static/shared/filters.js" defer></script>
+  <script src="/static/shared/timezone.js" defer></script>
+  <script src="/static/shared/api-key-reveal.js" defer></script>
   <script src="/static/superadmin/superadmin.js" defer></script>
 </body>
 </html>

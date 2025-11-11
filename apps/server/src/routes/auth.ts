@@ -178,7 +178,7 @@ router.post('/admin/login', enforceTurnstile, async (req, res) => {
   }
 
   if (admin.twoFactorEnabled && admin.totpSecret) {
-    const token = signTemp({ adminId: admin.id, stage: '2fa_verify' as PendingStage });
+    const token = signTemp({ adminId: admin.id, stage: '2fa_verify' as PendingStage, kind: 'admin', redirectTo: '/admin' });
     res.cookie('pre2fa', token, { httpOnly: true, sameSite: 'lax', path: '/auth', secure: !IS_LOCAL });
     return res.render('auth-2fa-verify', { token, error: '', mode: 'admin' });
   }
@@ -191,7 +191,9 @@ router.post('/admin/login', enforceTurnstile, async (req, res) => {
     stage: '2fa_setup' as PendingStage,
     secretBase32: secret.base32,
     issuer: 'Payments Admin',
-    accountLabel: admin.email
+    accountLabel: admin.email,
+    kind: 'admin',
+    redirectTo: '/admin',
   });
   return res.render('auth-2fa-setup', { token, qrDataUrl, secretBase32: secret.base32, accountLabel: admin.email, error: '', mode: 'admin' });
 });
@@ -200,25 +202,68 @@ router.post('/2fa/setup', async (req, res) => {
   const rawToken = req.body?.token;
   const code = String(req.body?.code || '').replace(/\s+/g, '');
   if (!rawToken || !code) {
-    return res.status(400).render('auth-2fa-setup', { token: rawToken || '', qrDataUrl: null, secretBase32: '', accountLabel: '', error: 'Missing code.', mode: 'admin' });
+    const tokenVal = Array.isArray(rawToken) ? rawToken[0] : rawToken;
+    let mode: 'admin' | 'super' = 'admin';
+    let secretBase32 = '';
+    let accountLabel = '';
+    let issuer = '';
+    if (tokenVal) {
+      try {
+        const decoded: any = jwt.decode(tokenVal);
+        if (decoded?.kind === 'super') mode = 'super';
+        secretBase32 = decoded?.secretBase32 || '';
+        accountLabel = decoded?.accountLabel || '';
+        issuer = decoded?.issuer || '';
+      } catch {}
+    }
+    let qrDataUrl: string | null = null;
+    if (secretBase32 && accountLabel) {
+      const fallbackIssuer = mode === 'super' ? 'Super Admin' : 'Payments Admin';
+      const otpauth = speakeasy.otpauthURL({ secret: secretBase32, label: `${issuer || fallbackIssuer} (${accountLabel})`, issuer: issuer || fallbackIssuer });
+      qrDataUrl = await QRCode.toDataURL(otpauth);
+    }
+    return res.status(400).render('auth-2fa-setup', {
+      token: tokenVal || '',
+      qrDataUrl,
+      secretBase32,
+      accountLabel,
+      error: 'Missing code.',
+      mode,
+    });
   }
 
   try {
-    const payload = verifyTemp<{ adminId:string; stage:PendingStage; secretBase32:string; accountLabel:string; redirectTo?: string }>(
+    const payload = verifyTemp<{
+      adminId: string;
+      stage: PendingStage;
+      secretBase32: string;
+      accountLabel: string;
+      redirectTo?: string;
+      kind?: 'admin' | 'super';
+      issuer?: string;
+    }>(
       Array.isArray(rawToken) ? rawToken[0] : rawToken
     );
     if (payload.stage !== '2fa_setup') throw new Error('bad-stage');
 
+    const kind = payload.kind === 'super' ? 'super' : 'admin';
+    const mode = kind === 'super' ? 'super' : 'admin';
+    const issuer = payload.issuer || (kind === 'super' ? 'Super Admin' : 'Payments Admin');
+
     const ok = speakeasy.totp.verify({ secret: payload.secretBase32, encoding: 'base32', token: code, window: 2 });
     if (!ok) {
-      const otpauth = speakeasy.otpauthURL({ secret: payload.secretBase32, label: `Payments Admin (${payload.accountLabel})`, issuer: 'Payments Admin' });
+      const otpauth = speakeasy.otpauthURL({ secret: payload.secretBase32, label: `${issuer} (${payload.accountLabel})`, issuer });
       const qrDataUrl = await QRCode.toDataURL(otpauth);
-      return res.status(400).render('auth-2fa-setup', { token: rawToken, qrDataUrl, secretBase32: payload.secretBase32, accountLabel: payload.accountLabel, error: 'Invalid or expired code.', mode: 'admin' });
+      return res.status(400).render('auth-2fa-setup', { token: rawToken, qrDataUrl, secretBase32: payload.secretBase32, accountLabel: payload.accountLabel, error: 'Invalid or expired code.', mode });
     }
+
+    const update = kind === 'super'
+      ? { superTwoFactorEnabled: true, superTotpSecret: payload.secretBase32, lastLoginAt: new Date() }
+      : { twoFactorEnabled: true, totpSecret: payload.secretBase32, lastLoginAt: new Date() };
 
     await prisma.adminUser.update({
       where: { id: payload.adminId },
-      data: { twoFactorEnabled: true, totpSecret: payload.secretBase32, lastLoginAt: new Date() }
+      data: update,
     });
 
     const fresh = await prisma.adminUser.findUnique({
@@ -234,9 +279,15 @@ router.post('/2fa/setup', async (req, res) => {
     }
     await recordLogin({ adminId: payload.adminId, email: null, success: true, req });
     res.clearCookie('pre2fa', { path: '/auth' });
-    return res.redirect(payload.redirectTo || '/admin');
+    const fallback = kind === 'super' ? '/superadmin' : '/admin';
+    return res.redirect(payload.redirectTo || fallback);
   } catch {
-    return res.status(400).render('auth-2fa-setup', { token: rawToken, qrDataUrl: null, secretBase32: '', accountLabel: '', error: 'Setup error.', mode: 'admin' });
+    let mode: 'admin' | 'super' = 'admin';
+    try {
+      const decoded: any = jwt.decode(Array.isArray(rawToken) ? rawToken[0] : rawToken);
+      if (decoded?.kind === 'super') mode = 'super';
+    } catch {}
+    return res.status(400).render('auth-2fa-setup', { token: rawToken, qrDataUrl: null, secretBase32: '', accountLabel: '', error: 'Setup error.', mode });
   }
 });
 
@@ -246,22 +297,33 @@ router.post('/2fa/verify', async (req, res) => {
   const code = String(req.body?.code || '').replace(/\s+/g, '');
 
   if (!token || !code) {
-    return res.status(400).render('auth-2fa-verify', { token: token || '', error: 'Missing code.', mode: 'admin' });
+    let mode: 'admin' | 'super' = 'admin';
+    if (token) {
+      try {
+        const decoded: any = jwt.decode(token);
+        if (decoded?.kind === 'super') mode = 'super';
+      } catch {}
+    }
+    return res.status(400).render('auth-2fa-verify', { token: token || '', error: 'Missing code.', mode });
   }
 
   try {
-    const payload = verifyTemp<{ adminId:string; stage:PendingStage; redirectTo?: string }>(token);
+    const payload = verifyTemp<{ adminId:string; stage:PendingStage; redirectTo?: string; kind?: 'admin' | 'super' }>(token);
     if (payload.stage !== '2fa_verify') throw new Error('bad-stage');
 
+    const kind = payload.kind === 'super' ? 'super' : 'admin';
+    const mode = kind === 'super' ? 'super' : 'admin';
+
     const admin = await prisma.adminUser.findUnique({ where: { id: payload.adminId } });
-    if (!admin || !admin.totpSecret) {
-      return res.status(400).render('auth-2fa-verify', { token, error: '2FA not set up.', mode: 'admin' });
+    const secret = kind === 'super' ? admin?.superTotpSecret : admin?.totpSecret;
+    if (!admin || !secret) {
+      return res.status(400).render('auth-2fa-verify', { token, error: '2FA not set up.', mode });
     }
 
-    const ok = speakeasy.totp.verify({ secret: admin.totpSecret, encoding: 'base32', token: code, window: 2 });
+    const ok = speakeasy.totp.verify({ secret, encoding: 'base32', token: code, window: 2 });
     if (!ok) {
       await recordLogin({ adminId: admin.id, email: admin.email, success: false, req });
-      return res.status(400).render('auth-2fa-verify', { token, error: 'Invalid or expired code. Ensure your phone time is automatic.', mode: 'admin' });
+      return res.status(400).render('auth-2fa-verify', { token, error: 'Invalid or expired code. Ensure your phone time is automatic.', mode });
     }
 
     await prisma.adminUser.update({ where: { id: admin.id }, data: { lastLoginAt: new Date() } });
@@ -272,14 +334,24 @@ router.post('/2fa/verify', async (req, res) => {
     });
     await recordLogin({ adminId: admin.id, email: admin.email, success: true, req });
     res.clearCookie('pre2fa', { path: '/auth' });
-    return res.redirect(302, payload.redirectTo || '/admin');
+    const fallback = kind === 'super' ? '/superadmin' : '/admin';
+    return res.redirect(302, payload.redirectTo || fallback);
   } catch (e: any) {
     const name = e?.name || '';
     if (name === 'TokenExpiredError' || name === 'JsonWebTokenError') {
       res.clearCookie('pre2fa', { path: '/auth' });
-      return res.redirect('/auth/admin/login?reason=pre2fa-expired');
+      let decoded: any = null;
+      try { decoded = jwt.decode(token); } catch {}
+      const kind = decoded?.kind === 'super' ? 'super' : 'admin';
+      const loginPath = kind === 'super' ? '/auth/super/login' : '/auth/admin/login';
+      return res.redirect(`${loginPath}?reason=pre2fa-expired`);
     }
-    return res.status(400).render('auth-2fa-verify', { token, error: 'Verification error.', mode: 'admin' });
+    let mode: 'admin' | 'super' = 'admin';
+    try {
+      const decoded: any = jwt.decode(token);
+      if (decoded?.kind === 'super') mode = 'super';
+    } catch {}
+    return res.status(400).render('auth-2fa-verify', { token, error: 'Verification error.', mode });
   }
 });
 
@@ -308,10 +380,10 @@ router.post('/super/login', enforceTurnstile, async (req, res) => {
     return res.status(401).render('superadmin-login', { title: 'Super Admin Login', siteKey: SITE_KEY, error: 'Invalid credentials.' });
   }
 
-  if (admin.twoFactorEnabled && admin.totpSecret) {
-    const token = signTemp({ adminId: admin.id, stage: '2fa_verify' as PendingStage, redirectTo: '/superadmin' });
+  if (admin.superTwoFactorEnabled && admin.superTotpSecret) {
+    const token = signTemp({ adminId: admin.id, stage: '2fa_verify' as PendingStage, redirectTo: '/superadmin', kind: 'super' });
     res.cookie('pre2fa', token, { httpOnly: true, sameSite: 'lax', path: '/auth', secure: !IS_LOCAL });
-    return res.render('auth-2fa-verify', { token, error: '', mode: 'admin' });
+    return res.render('auth-2fa-verify', { token, error: '', mode: 'super' });
   }
 
   const secret = speakeasy.generateSecret({ name: `Super Admin (${admin.email})` });
@@ -324,8 +396,9 @@ router.post('/super/login', enforceTurnstile, async (req, res) => {
     issuer: 'Super Admin',
     accountLabel: admin.email,
     redirectTo: '/superadmin',
+    kind: 'super',
   });
-  return res.render('auth-2fa-setup', { token, qrDataUrl, secretBase32: secret.base32, accountLabel: admin.email, error: '', mode: 'admin' });
+  return res.render('auth-2fa-setup', { token, qrDataUrl, secretBase32: secret.base32, accountLabel: admin.email, error: '', mode: 'super' });
 });
 
 router.get('/super/logout', (_req, res) => {
@@ -358,16 +431,22 @@ router.get('/merchant/login', (req, res) => {
   res.render('merchant-login', {
     title: 'Merchant Login',
     error: '',
-    reset: req.query?.reset === 'ok'
+    reset: req.query?.reset === 'ok',
+    siteKey: SITE_KEY,
   });
 });
 
-router.post('/merchant/login', async (req, res) => {
+router.post('/merchant/login', enforceTurnstile, async (req, res) => {
   const email = String(req.body?.email || '').trim().toLowerCase();
   const password = String(req.body?.password || '');
 
   if (!email || !password) {
-    return res.status(400).render('merchant-login', { title: 'Merchant Login', error: 'Missing email or password.', reset: false });
+    return res.status(400).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Missing email or password.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   const user = await prisma.merchantUser.findUnique({
@@ -376,18 +455,33 @@ router.post('/merchant/login', async (req, res) => {
   });
 
   if (!user || !user.active || !user.merchant) {
-    return res.status(401).render('merchant-login', { title: 'Merchant Login', error: 'Invalid credentials.', reset: false });
+    return res.status(401).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Invalid credentials.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   const m = user.merchant as any;
   const status = String(m.status || '').toLowerCase();
   if (!m.active || status === 'suspended' || status === 'closed') {
-    return res.status(403).render('merchant-login', { title: 'Merchant Login', error: 'Merchant account is not active.', reset: false });
+    return res.status(403).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Merchant account is not active.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   const ok = await bcrypt.compare(password, user.passwordHash);
   if (!ok) {
-    return res.status(401).render('merchant-login', { title: 'Merchant Login', error: 'Invalid credentials.', reset: false });
+    return res.status(401).render('merchant-login', {
+      title: 'Merchant Login',
+      error: 'Invalid credentials.',
+      reset: false,
+      siteKey: SITE_KEY,
+    });
   }
 
   // 2FA
@@ -439,7 +533,7 @@ router.post('/merchant/2fa/setup', async (req, res) => {
       canViewUsers,
     });
     res.clearCookie('m_pre2fa', { path: '/auth/merchant' });
-    return res.redirect('/merchant');
+    return res.redirect(payload.redirectTo || '/merchant');
   } catch {
     return res.status(400).render('auth-2fa-setup', { token: rawToken, qrDataUrl: null, secretBase32: '', accountLabel: '', error: 'Setup error.', mode: 'merchant' });
   }
@@ -465,7 +559,7 @@ router.post('/merchant/2fa/verify', async (req, res) => {
       canViewUsers: user.canViewUserDirectory !== false,
     });
     res.clearCookie('m_pre2fa', { path: '/auth/merchant' });
-    return res.redirect('/merchant');
+    return res.redirect(payload.redirectTo || '/merchant');
   } catch {
     return res.status(400).render('auth-2fa-verify', { token: rawToken, error: 'Verification error.', mode: 'merchant' });
   }

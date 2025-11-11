@@ -240,7 +240,7 @@ function chunkLines(lines: string[], perPage: number): string[][] {
   for (let i = 0; i < lines.length; i += perPage) {
     pages.push(lines.slice(i, i + perPage));
   }
-  return pages.length ? pages : [["No user records available."]];
+  return pages.length ? pages : [["No client records available."]];
 }
 
 function buildContentStream(lines: string[]): string {
@@ -261,11 +261,11 @@ function buildContentStream(lines: string[]): string {
 export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
   const lines: string[] = [];
   const exportedAt = new Date().toISOString();
-  lines.push(`User directory export — ${exportedAt}`);
+  lines.push(`Client directory export — ${exportedAt}`);
   lines.push("");
 
   if (!items.length) {
-    lines.push("No user records available.");
+    lines.push("No client records available.");
   }
 
   items.forEach((user) => {

@@ -75,15 +75,197 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
-// Toast helper
-function toast(msg) {
-  let t = document.createElement('div');
-  t.className = 'toast';
-  t.textContent = msg;
-  document.body.appendChild(t);
-  requestAnimationFrame(() => t.classList.add('show'));
-  setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 250); }, 1400);
-}
+(function () {
+  const controls = document.querySelectorAll('[data-export-control]');
+  if (!controls.length) return;
+
+  const notify = (message) => {
+    if (typeof toast === 'function') toast(message);
+    else if (message) console.warn(message);
+  };
+
+  controls.forEach((control) => {
+    const mainBtn = control.querySelector('[data-export-main]');
+    const toggleBtn = control.querySelector('[data-export-toggle]');
+    const menu = control.querySelector('[data-export-menu]');
+    const label = control.querySelector('[data-export-label]');
+    if (!mainBtn || !toggleBtn || !menu || !label) return;
+
+    const endpoint = control.getAttribute('data-export-endpoint');
+    if (!endpoint) return;
+
+    const tableSelector = control.getAttribute('data-export-table') || '';
+    const columnsRootSelector = control.getAttribute('data-export-columns-root') || '';
+    const storageKey = control.getAttribute('data-export-storage') || 'admin.export.default';
+
+    const readStoredType = () => {
+      try { return localStorage.getItem(storageKey) || 'csv'; } catch { return 'csv'; }
+    };
+    const storeType = (type) => {
+      try { localStorage.setItem(storageKey, type); } catch {}
+    };
+
+    let currentType = readStoredType();
+
+    const updateLabel = () => {
+      label.textContent = currentType ? `${currentType.toUpperCase()} Export` : 'Export';
+    };
+
+    updateLabel();
+
+    const closeMenu = () => {
+      menu.hidden = true;
+      control.removeAttribute('data-open');
+      document.removeEventListener('click', onDocClick, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+
+    const openMenu = () => {
+      if (!menu.hidden) return;
+      menu.hidden = false;
+      control.setAttribute('data-open', '1');
+      document.addEventListener('click', onDocClick, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    };
+
+    const onDocClick = (event) => {
+      if (!control.contains(event.target)) closeMenu();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu();
+      }
+    };
+
+    toggleBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (menu.hidden) openMenu();
+      else closeMenu();
+    });
+
+    menu.querySelectorAll('[data-export-option]').forEach((optionBtn) => {
+      optionBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        const next = (optionBtn.getAttribute('data-export-option') || '').toLowerCase();
+        if (!next) return;
+        currentType = next;
+        storeType(currentType);
+        updateLabel();
+        closeMenu();
+      });
+    });
+
+    const collectColumns = () => {
+      const table = tableSelector ? document.querySelector(tableSelector) : null;
+      if (!table) return [];
+
+      const headerCells = Array.from(table.querySelectorAll('thead th[data-col]'));
+      const toggleMap = new Map();
+      if (columnsRootSelector) {
+        const root = document.querySelector(columnsRootSelector);
+        if (root) {
+          root.querySelectorAll('[data-col-toggle]').forEach((cb) => {
+            const col = cb.getAttribute('data-col-toggle');
+            if (col) toggleMap.set(col, cb.checked);
+          });
+          root.querySelectorAll('.col-toggle').forEach((cb) => {
+            const col = cb.getAttribute('data-col');
+            if (col) toggleMap.set(col, cb.checked);
+          });
+        }
+      }
+
+      const columns = headerCells
+        .map((th) => {
+          const key = th.getAttribute('data-col');
+          if (!key) return null;
+          const isVisible = toggleMap.has(key) ? toggleMap.get(key) : th.offsetParent !== null;
+          if (!isVisible) return null;
+          const text = th.textContent ? th.textContent.replace(/\s+/g, ' ').trim() : '';
+          return { key, label: text || key };
+        })
+        .filter(Boolean);
+
+      if (columns.length) return columns;
+      return headerCells
+        .map((th) => {
+          const key = th.getAttribute('data-col');
+          if (!key) return null;
+          const text = th.textContent ? th.textContent.replace(/\s+/g, ' ').trim() : '';
+          return { key, label: text || key };
+        })
+        .filter(Boolean);
+    };
+
+    const buildFilters = () => {
+      const filters = {};
+      const params = new URLSearchParams(window.location.search || '');
+      params.forEach((value, key) => {
+        filters[key] = value;
+      });
+      return filters;
+    };
+
+    const parseFilename = (disposition, fallback) => {
+      if (!disposition) return fallback;
+      const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+      if (match) {
+        return decodeURIComponent(match[1] || match[2]);
+      }
+      return fallback;
+    };
+
+    const triggerExport = async () => {
+      if (control.dataset.exporting === '1') return;
+      control.dataset.exporting = '1';
+      const columns = collectColumns();
+      const filters = buildFilters();
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/octet-stream' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ type: currentType, columns, filters }),
+        });
+        if (!res.ok) {
+          let message = 'Export failed';
+          const ct = res.headers.get('Content-Type') || '';
+          if (ct.includes('application/json')) {
+            try {
+              const data = await res.json();
+              if (data && data.error) message = data.error;
+            } catch {}
+          }
+          throw new Error(message);
+        }
+
+        const blob = await res.blob();
+        const fallbackName = `export.${currentType}`;
+        const filename = parseFilename(res.headers.get('Content-Disposition'), fallbackName);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      } catch (err) {
+        notify((err && err.message) || 'Unable to export');
+      } finally {
+        control.dataset.exporting = '0';
+      }
+    };
+
+    mainBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      triggerExport();
+    });
+  });
+})();
 
 // Theme switch + persist (no DOM injection; uses the iOS switch in markup)
 (() => {
@@ -106,15 +288,9 @@ function toast(msg) {
 
 // Time zones list
 (() => {
-  const tz = document.getElementById('pref-tz');
-  if (!tz || tz.dataset.filled) return;
-  let zones = [];
-  try { if (Intl.supportedValuesOf) zones = Intl.supportedValuesOf('timeZone'); } catch {}
-  if (!zones.length) zones = ['UTC','Asia/Kuala_Lumpur','Asia/Jakarta','Asia/Singapore','Asia/Bangkok','Europe/London','America/New_York','Australia/Sydney'];
-  zones.sort((a,b) => a.localeCompare(b));
-  zones.forEach(z => { const o=document.createElement('option'); o.value=o.textContent=z; tz.appendChild(o); });
-  tz.value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  tz.dataset.filled = '1';
+  const select = document.getElementById('pref-tz');
+  if (!select || typeof window.timezone?.populate !== 'function') return;
+  window.timezone.populate(select);
 })();
 
 const purgeModals = () => {
@@ -564,11 +740,11 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   const NotificationAPI = 'Notification' in window ? window.Notification : null;
   const hostName = (window.location.hostname || '').toLowerCase();
   const isLocalHost = hostName === 'localhost' || hostName === '127.0.0.1' || hostName === '::1';
-  let lastStamp = Date.now();
+  let lastDepositStamp = Date.now();
+  let lastWithdrawalStamp = Date.now();
   let audioCtx = null;
   let autoReloadScheduled = false;
   let permissionBanner = null;
-  let primed = false;
   let swRegistrationPromise = null;
   let notificationWarningShown = false;
 
@@ -647,13 +823,22 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   ensureServiceWorker();
 
-  const findAutoRefreshContext = () =>
-    document.querySelector('[data-auto-refresh="pending-deposits"]') ||
-    document.querySelector('[data-auto-refresh="pending-withdrawals"]');
+  const findAutoRefreshContext = (queueType) => {
+    if (queueType === 'withdrawal') {
+      return document.querySelector('[data-auto-refresh="pending-withdrawals"]');
+    }
+    if (queueType === 'deposit') {
+      return document.querySelector('[data-auto-refresh="pending-deposits"]');
+    }
+    return (
+      document.querySelector('[data-auto-refresh="pending-deposits"]') ||
+      document.querySelector('[data-auto-refresh="pending-withdrawals"]')
+    );
+  };
 
-  const scheduleReload = () => {
+  const scheduleReload = (queueType) => {
     if (autoReloadScheduled) return;
-    const ctx = findAutoRefreshContext();
+    const ctx = findAutoRefreshContext(queueType);
     if (!ctx) return;
     autoReloadScheduled = true;
     window.setTimeout(() => window.location.reload(), 1500);
@@ -778,15 +963,17 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
     return false;
   };
 
-  const sendNotification = async (label, count) => {
+  const sendNotification = async (queueType, count) => {
     if (count <= 0) return;
+    const isWithdrawal = queueType === 'withdrawal';
+    const label = isWithdrawal ? 'withdrawal request' : 'deposit request';
     const plural = count > 1 ? 's' : '';
     const message = count > 1 ? `${count} new ${label}${plural}` : `New ${label}`;
     toast(message);
-    const targetUrl = label.includes('withdrawal')
+    const targetUrl = isWithdrawal
       ? '/admin/report/withdrawals/pending'
       : '/admin/report/deposits/pending';
-    const ok = await showBrowserNotification('Payments queue update', message, `queue-${label}`, targetUrl).catch(() => false);
+    const ok = await showBrowserNotification('Payments queue update', message, `queue-${queueType}`, targetUrl).catch(() => false);
     if (!ok) {
       const status = notificationStatus();
       if (status === 'default') {
@@ -796,16 +983,21 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
       }
     }
     playChime();
-    scheduleReload();
+    scheduleReload(queueType);
   };
 
   const poll = async () => {
-    if (!primed) {
-      primed = true;
-      lastStamp = Date.now();
-      return;
+    const qs = new URLSearchParams();
+    if (Number.isFinite(lastDepositStamp) && lastDepositStamp > 0) {
+      qs.set('sinceDeposits', String(Math.floor(lastDepositStamp)));
     }
-    const qs = new URLSearchParams({ since: String(lastStamp) });
+    if (Number.isFinite(lastWithdrawalStamp) && lastWithdrawalStamp > 0) {
+      qs.set('sinceWithdrawals', String(Math.floor(lastWithdrawalStamp)));
+    }
+    const baseStamp = Math.min(lastDepositStamp || Date.now(), lastWithdrawalStamp || Date.now());
+    if (Number.isFinite(baseStamp) && baseStamp > 0) {
+      qs.set('since', String(Math.floor(baseStamp)));
+    }
     try {
       const res = await fetch(`/admin/notifications/queue?${qs.toString()}`, {
         credentials: 'same-origin',
@@ -814,16 +1006,42 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
       if (!res.ok) return;
       const data = await res.json();
       if (!data?.ok) return;
-      const latest = typeof data.latest === 'string' ? Date.parse(data.latest) : NaN;
-      if (!Number.isNaN(latest) && latest >= lastStamp) {
-        lastStamp = latest + 1;
-      } else {
-        lastStamp = Date.now();
+      const parseStamp = (value) => {
+        if (!value) return NaN;
+        if (value instanceof Date) return value.getTime();
+        if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+        if (typeof value === 'string') {
+          const num = Number(value);
+          if (Number.isFinite(num)) return num;
+          const parsed = Date.parse(value);
+          if (!Number.isNaN(parsed)) return parsed;
+        }
+        return NaN;
+      };
+
+      const updateStamp = (current, nextRaw) => {
+        const next = parseStamp(nextRaw);
+        if (!Number.isFinite(next)) return current;
+        if (!Number.isFinite(current) || next >= current) return next + 1;
+        return current;
+      };
+
+      if (Object.prototype.hasOwnProperty.call(data, 'latestDeposit')) {
+        lastDepositStamp = updateStamp(lastDepositStamp, data.latestDeposit);
+      }
+      if (Object.prototype.hasOwnProperty.call(data, 'latestWithdrawal')) {
+        lastWithdrawalStamp = updateStamp(lastWithdrawalStamp, data.latestWithdrawal);
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'latestDeposit')) {
+        lastDepositStamp = updateStamp(lastDepositStamp, data.latest);
+      }
+      if (!Object.prototype.hasOwnProperty.call(data, 'latestWithdrawal')) {
+        lastWithdrawalStamp = updateStamp(lastWithdrawalStamp, data.latest);
       }
       ensurePermissionPrompt();
       await Promise.all([
-        sendNotification('deposit request', Number(data.deposits || 0)),
-        sendNotification('withdrawal request', Number(data.withdrawals || 0)),
+        sendNotification('deposit', Number(data.deposits || 0)),
+        sendNotification('withdrawal', Number(data.withdrawals || 0)),
       ]);
     } catch {}
   };
@@ -840,10 +1058,26 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 // Preferences Save / Cancel
 (() => {
   const SAVE_KEY = 'admin.prefs';
-  const read = () => JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
-  const write = (obj) => localStorage.setItem(SAVE_KEY, JSON.stringify(obj));
+  const read = () => {
+    try {
+      return JSON.parse(localStorage.getItem(SAVE_KEY) || '{}') || {};
+    } catch {
+      return {};
+    }
+  };
+  const write = (obj) => {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(obj));
+    } catch {}
+  };
 
   const el = (id) => document.getElementById(id);
+  const ensureTimezoneOption = (value) => {
+    const select = el('pref-tz');
+    if (!select || !value) return value;
+    const options = Array.from(select.options || []);
+    return options.some((opt) => opt.value === value) ? value : '';
+  };
   const fields = {
     email: () => el('pref-email')?.value || '',
     currency: () => el('pref-currency')?.value || '',
@@ -853,7 +1087,12 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
   const apply = (p) => {
     if (el('pref-email')) el('pref-email').value = p.email || '';
     if (el('pref-currency')) el('pref-currency').value = p.currency || '';
-    if (el('pref-tz')) el('pref-tz').value = p.tz || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+    const tzSelect = el('pref-tz');
+    if (tzSelect) {
+      const currentTz = typeof window.timezone?.get === 'function' ? window.timezone.get() : '';
+      const desired = ensureTimezoneOption(p.tz) || currentTz;
+      if (desired) tzSelect.value = desired;
+    }
     if (el('pref-dark')) {
       el('pref-dark').checked = (p.theme || 'light') === 'dark';
       document.documentElement.setAttribute('data-theme', el('pref-dark').checked ? 'dark' : 'light');
@@ -862,20 +1101,43 @@ function openActionModal({ title, submitLabel, contentBuilder, onSubmit }) {
 
   const init = read();
   if (!init.theme) init.theme = (document.documentElement.getAttribute('data-theme') || 'light');
+  if (!init.tz && typeof window.timezone?.get === 'function') init.tz = window.timezone.get();
   apply(init);
 
   const saveBtn = el('prefs-save');
   const cancelBtn = el('prefs-cancel');
-  saveBtn?.addEventListener('click', (e) => {
+  const showError = (message) => {
+    if (!message) return;
+    if (typeof toast?.error === 'function') toast.error(message);
+    else toast(message);
+  };
+
+  saveBtn?.addEventListener('click', async (e) => {
     e.preventDefault();
-    const next = Object.fromEntries(Object.entries(fields).map(([k,f]) => [k, f()]));
-    write(next);
-    toast('Preferences saved');
+    const next = Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, f()]));
+    try {
+      const response = await postJson('/admin/prefs/timezone', { timezone: next.tz });
+      const resolved = response?.timezone || next.tz;
+      if (typeof window.timezone?.set === 'function') {
+        window.timezone.set(resolved);
+      }
+      next.tz = resolved;
+      write(next);
+      toast('Preference saved.');
+    } catch (err) {
+      console.error(err);
+      showError('Failed to save preferences.');
+    }
   });
+
   cancelBtn?.addEventListener('click', (e) => {
     e.preventDefault();
-    apply(read());
-    toast('Changes discarded');
+    const current = read();
+    if (typeof window.timezone?.get === 'function') {
+      current.tz = window.timezone.get();
+    }
+    apply(current);
+    toast('Changes discarded.');
   });
 })();
 

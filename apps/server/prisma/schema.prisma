@@ -21,6 +21,8 @@ model Merchant {
   bankAccounts BankAccount[]
   paymentReqs  PaymentRequest[]
   ledger       LedgerEntry[]
+  accountEntries MerchantAccountEntry[]
+  apiKeyRevealLogs MerchantApiKeyRevealLog[]
   createdAt    DateTime              @default(now())
   updatedAt    DateTime              @updatedAt
   channels     NotificationChannel[]
@@ -29,6 +31,8 @@ model Merchant {
   defaultCurrency String  @default("USD") // NEW: required with default
   active          Boolean @default(true)
   userDirectoryEnabled Boolean @default(false)
+  /// When false, Merchant Portal cannot create/rotate API keys.
+  apiKeysSelfServiceEnabled Boolean @default(true)
 
   // new relations for super-admin features
   users     MerchantUser[]
@@ -55,6 +59,7 @@ model MerchantApiKey {
   createdAt  DateTime  @default(now())
   lastUsedAt DateTime?
   expiresAt  DateTime?
+  revealLogs MerchantApiKeyRevealLog[]
 
   @@index([merchantId])
 }
@@ -130,6 +135,8 @@ model ReceiptFile {
   // NEW multi-receipt relation (Phase 2, nullable for backfill)
   paymentId String?
   paymentV2 PaymentRequest? @relation("PaymentReceipts", fields: [paymentId], references: [id], onDelete: Cascade)
+
+  accountEntry   MerchantAccountEntry? @relation("AccountEntryReceipt")
 
   @@index([paymentId, createdAt])
 }
@@ -231,6 +238,29 @@ model LedgerEntry {
   createdAt   DateTime @default(now())
 }
 
+enum MerchantAccountEntryType {
+  TOPUP
+  SETTLEMENT
+}
+
+model MerchantAccountEntry {
+  id             String                    @id @default(cuid())
+  merchantId     String
+  merchant       Merchant                  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  type           MerchantAccountEntryType
+  method         String?
+  amountCents    Int
+  note           String?
+  receiptFileId  String?                 @unique
+  receiptFile    ReceiptFile?              @relation("AccountEntryReceipt", fields: [receiptFileId], references: [id], onDelete: SetNull)
+  createdById    String?
+  createdBy      AdminUser?                @relation("AccountEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt      DateTime                  @default(now())
+
+  @@index([merchantId, type, createdAt])
+  @@index([createdAt])
+}
+
 /**
  * ───────── NEW / UPDATED FOR SUPER ADMIN ─────────
  */
@@ -252,13 +282,19 @@ model AdminUser {
   updatedAt        DateTime  @default(now()) @updatedAt // ← add default so backfill works
   twoFactorEnabled Boolean   @default(false)
   totpSecret       String?
+  superTwoFactorEnabled Boolean @default(false)
+  superTotpSecret       String?
+  timezone         String?
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
+  canRevealMerchantApiKeys Boolean @default(false)
 
   auditLogs   AdminAuditLog[]
   loginLogs   AdminLoginLog[]
   resetTokens AdminPasswordReset[]
   processedPayments PaymentRequest[] @relation("PaymentProcessedBy")
+  accountEntries    MerchantAccountEntry[] @relation("AccountEntryCreatedBy")
+  apiKeyRevealLogs  MerchantApiKeyRevealLog[]
 }
 
 model AdminLoginLog {
@@ -306,13 +342,16 @@ model MerchantUser {
   active           Boolean      @default(true)
   twoFactorEnabled Boolean      @default(false)
   totpSecret       String?
+  timezone         String?
   createdAt        DateTime     @default(now())
   updatedAt        DateTime     @updatedAt
   lastLoginAt      DateTime?
   canViewUserDirectory Boolean @default(true)
+  canRevealApiKeys     Boolean @default(false)
 
   loginLogs   MerchantLoginLog[]
   resetTokens MerchantPasswordReset[]
+  apiKeyRevealLogs MerchantApiKeyRevealLog[]
 
   @@index([merchantId])
 }
@@ -378,6 +417,29 @@ model MerchantPasswordReset {
   createdAt      DateTime     @default(now())
 
   @@index([merchantUserId])
+}
+
+model MerchantApiKeyRevealLog {
+  id               String         @id @default(cuid())
+  merchantApiKeyId String
+  merchantApiKey   MerchantApiKey @relation(fields: [merchantApiKeyId], references: [id], onDelete: Cascade)
+  merchantId       String
+  merchant         Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  actorType        String
+  merchantUserId   String?
+  merchantUser     MerchantUser?  @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
+  adminUserId      String?
+  adminUser        AdminUser?     @relation(fields: [adminUserId], references: [id], onDelete: SetNull)
+  reason           String?
+  outcome          String
+  ip               String?
+  userAgent        String?
+  createdAt        DateTime       @default(now())
+
+  @@index([merchantApiKeyId, createdAt])
+  @@index([merchantUserId, createdAt])
+  @@index([adminUserId, createdAt])
+  @@index([merchantId, createdAt])
 }
 
 model IdempotencyKey {

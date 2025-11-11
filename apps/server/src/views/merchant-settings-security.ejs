@@ -1,0 +1,32 @@
+<% layout('merchant/layout') -%>
+
+<% const enabled = typeof twoFactorEnabled !== 'undefined' && !!twoFactorEnabled; %>
+
+<div class="card" style="max-width:520px">
+  <h3 class="title">2FA</h3>
+  <% if (enabled) { %>
+    <p style="margin:0 0 12px 0">2FA is <strong>enabled</strong> on your account.</p>
+    <form method="POST" action="/merchant/settings/security/disable" class="foot" style="margin-top:12px">
+      <button class="btn" type="submit">Disable 2FA</button>
+    </form>
+  <% } else { %>
+    <p style="margin:0 0 12px 0">2FA is <strong>not enabled</strong>. We recommend enabling it for extra protection.</p>
+    <form method="POST" action="/merchant/settings/security/start" class="foot" style="margin-top:12px">
+      <button class="btn primary" type="submit">Enable 2FA</button>
+    </form>
+  <% } %>
+</div>
+
+<% if (flash && flash.message) { %>
+  <script>
+    document.addEventListener('DOMContentLoaded', function () {
+      if (window.toast) {
+        <% if (flash.variant === 'error') { %>
+          toast.error(<%- JSON.stringify(flash.message) %>);
+        <% } else { %>
+          toast(<%- JSON.stringify(flash.message) %>);
+        <% } %>
+      }
+    });
+  </script>
+<% } %>

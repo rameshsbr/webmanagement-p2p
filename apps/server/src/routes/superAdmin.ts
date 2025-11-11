@@ -1,5 +1,9 @@
 import { Router } from "express";
+import type { Express } from "express";
 import bcrypt from "bcryptjs";
+import jwt from "jsonwebtoken";
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
 import { prisma } from "../lib/prisma.js";
 import { requireRole } from "../middleware/roles.js";
 import crypto from "node:crypto";
@@ -7,6 +11,7 @@ import { auditAdmin } from "../services/audit.js";
 import * as XLSX from "xlsx";
 import multer from "multer";
 import path from "node:path";
+import fs from "node:fs/promises";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
 import { generateBankPublicId } from "../services/reference.js";
@@ -14,11 +19,91 @@ import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../servic
 import { changePaymentStatus, PaymentStatusError } from "../services/paymentStatus.js";
 import { stringify } from "csv-stringify";
 import ExcelJS from "exceljs";
+import {
+  buildPaymentExportFile,
+  normalizeColumns,
+  PaymentExportColumn,
+  PaymentExportItem,
+} from "../services/paymentExports.js";
+import {
+  createAccountEntry,
+  listAccountEntries,
+  listMerchantBalances,
+} from "../services/merchantAccounts.js";
+import type { MerchantAccountEntryType } from "@prisma/client";
+import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 
 export const superAdminRouter = Router();
 
 // Require SUPER role
 superAdminRouter.use(requireRole(["SUPER"]));
+
+superAdminRouter.use(async (req: any, res: any, next) => {
+  const session = req.admin || null;
+  const adminId = session?.sub ? String(session.sub) : null;
+  let timezone = session?.timezone ? resolveTimezone(session.timezone) : defaultTimezone();
+  let adminRecord: any = null;
+
+  if (adminId) {
+    try {
+      adminRecord = await prisma.adminUser.findUnique({
+        where: { id: adminId },
+        select: { id: true, email: true, displayName: true, timezone: true },
+      });
+      if (adminRecord) {
+        timezone = resolveTimezone(adminRecord.timezone);
+      }
+    } catch {
+      adminRecord = null;
+    }
+  }
+
+  res.locals.admin = adminRecord
+    ? { ...session, ...adminRecord }
+    : session || null;
+
+  if (session) {
+    session.timezone = timezone;
+  }
+
+  res.locals.timezone = timezone;
+  (req as any).activeTimezone = timezone;
+
+  next();
+});
+
+superAdminRouter.post('/prefs/timezone', async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) {
+    return res.status(401).json({ ok: false, error: 'Not authenticated' });
+  }
+
+  const timezoneRaw = normalizeTimezone(req.body?.timezone);
+  const timezone = timezoneRaw ?? null;
+
+  try {
+    await prisma.adminUser.update({
+      where: { id: adminId },
+      data: { timezone },
+    });
+    const resolved = resolveTimezone(timezone);
+    res.locals.timezone = resolved;
+    (req as any).activeTimezone = resolved;
+    if (req.admin && typeof req.admin === 'object') {
+      req.admin.timezone = resolved;
+    }
+    return res.json({ ok: true, timezone: resolved });
+  } catch (err) {
+    console.error('[superadmin prefs] failed to update timezone', err);
+    return res.status(500).json({ ok: false, error: 'Failed to save timezone' });
+  }
+});
+
+const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
+
+function signTemp(payload: object, minutes = 10) {
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: `${minutes}m` });
+}
 
 // ───────────────────────────────────────────────────────────────
 // Small helpers used across pages
@@ -77,10 +162,220 @@ function sortSpec(s?: string) {
   return { [col]: dir } as any;
 }
 
+const PAYMENT_FILTER_KEYS = new Set([
+  "q",
+  "id",
+  "merchantId",
+  "currency",
+  "status",
+  "from",
+  "to",
+  "dateField",
+  "sort",
+  "hasReceipt",
+  "amountMin",
+  "amountMax",
+  "page",
+  "perPage",
+]);
+
+// ───────────────────────────────────────────────────────────────
+// Super Admin 2FA settings
+// ───────────────────────────────────────────────────────────────
+superAdminRouter.get("/settings/security", async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) return res.redirect("/auth/super/login");
+
+  const admin = await prisma.adminUser.findUnique({
+    where: { id: adminId },
+    select: { email: true, superTwoFactorEnabled: true, superTotpSecret: true },
+  });
+
+  const enabled = !!(admin?.superTwoFactorEnabled && admin?.superTotpSecret);
+  const { enabled: justEnabled, disabled: justDisabled, already, error } = req.query || {};
+  let flash: { message: string; variant?: "error" } | null = null;
+  if (typeof error === "string" && error) {
+    flash = { message: error, variant: "error" };
+  } else if (typeof already !== "undefined") {
+    flash = { message: "Two-factor authentication is already enabled." };
+  } else if (typeof justEnabled !== "undefined") {
+    flash = { message: "Two-factor authentication enabled." };
+  } else if (typeof justDisabled !== "undefined") {
+    flash = { message: "Two-factor authentication disabled." };
+  }
+
+  return res.render("superadmin-settings-security", {
+    title: "Security",
+    twoFactorEnabled: enabled,
+    email: admin?.email || "",
+    flash,
+  });
+});
+
+superAdminRouter.post("/settings/security/start", async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) return res.redirect("/auth/super/login");
+
+  const admin = await prisma.adminUser.findUnique({
+    where: { id: adminId },
+    select: { email: true, superTwoFactorEnabled: true, superTotpSecret: true },
+  });
+
+  if (admin?.superTwoFactorEnabled && admin?.superTotpSecret) {
+    return res.redirect("/superadmin/settings/security?already=1");
+  }
+
+  try {
+    const secret = speakeasy.generateSecret({
+      name: `Super Admin (${admin?.email || adminId})`,
+    });
+
+    const otpauth = secret.otpauth_url!;
+    const qrDataUrl = await QRCode.toDataURL(otpauth);
+
+    const token = signTemp({
+      adminId,
+      stage: "2fa_setup",
+      secretBase32: secret.base32,
+      issuer: "Super Admin",
+      accountLabel: admin?.email || adminId,
+      kind: "super",
+      redirectTo: "/superadmin/settings/security?enabled=1",
+    });
+
+    return res.render("auth-2fa-setup", {
+      token,
+      qrDataUrl,
+      secretBase32: secret.base32,
+      accountLabel: admin?.email || adminId,
+      error: "",
+      mode: "super",
+    });
+  } catch (err) {
+    console.error("[superadmin 2fa] start failed", err);
+    const msg = encodeURIComponent("Unable to start two-factor setup.");
+    return res.redirect(`/superadmin/settings/security?error=${msg}`);
+  }
+});
+
+superAdminRouter.post("/settings/security/disable", async (req: any, res) => {
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  if (!adminId) return res.redirect("/auth/super/login");
+
+  try {
+    await prisma.adminUser.update({
+      where: { id: adminId },
+      data: { superTwoFactorEnabled: false, superTotpSecret: null },
+    });
+    return res.redirect("/superadmin/settings/security?disabled=1");
+  } catch (err) {
+    console.error("[superadmin 2fa] disable failed", err);
+    const msg = encodeURIComponent("Unable to disable two-factor authentication.");
+    return res.redirect(`/superadmin/settings/security?error=${msg}`);
+  }
+});
+
+const SUPERADMIN_DEPOSIT_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: "txnId", label: "TRANSACTION ID" },
+  { key: "userId", label: "USER ID" },
+  { key: "merchant", label: "MERCHANT" },
+  { key: "currency", label: "CURRENCY" },
+  { key: "amount", label: "AMOUNT" },
+  { key: "status", label: "STATUS" },
+  { key: "bank", label: "BANK NAME" },
+  { key: "created", label: "DATE OF CREATION" },
+  { key: "processedAt", label: "DATE OF DEPOSIT" },
+  { key: "processingTime", label: "TIME TO PROCESS" },
+  { key: "userInfo", label: "USER INFO" },
+  { key: "comment", label: "COMMENT" },
+  { key: "admin", label: "ADMIN" },
+  { key: "receipts", label: "RECEIPTS" },
+  { key: "actions", label: "ACTIONS" },
+];
+
+const SUPERADMIN_WITHDRAWAL_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: "txnId", label: "TRANSACTION ID" },
+  { key: "userId", label: "USER ID" },
+  { key: "merchant", label: "MERCHANT" },
+  { key: "currency", label: "CURRENCY" },
+  { key: "amount", label: "AMOUNT" },
+  { key: "status", label: "STATUS" },
+  { key: "bank", label: "BANK NAME" },
+  { key: "created", label: "DATE OF CREATION" },
+  { key: "processedAt", label: "DATE OF WITHDRAWAL" },
+  { key: "processingTime", label: "TIME TO PROCESS" },
+  { key: "userInfo", label: "USER INFO" },
+  { key: "comment", label: "COMMENT" },
+  { key: "admin", label: "ADMIN" },
+  { key: "actions", label: "ACTIONS" },
+];
+
+function parseExportFormat(raw: unknown): "csv" | "xlsx" | "pdf" {
+  const value = String(raw || "").toLowerCase();
+  if (value === "csv" || value === "xlsx" || value === "pdf") return value;
+  return "csv";
+}
+
+function coerceExportFilters(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Record<string, string> = {};
+  for (const key of PAYMENT_FILTER_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === "undefined" || value === null) continue;
+    if (typeof value === "string") out[key] = value;
+    else if (Array.isArray(value)) {
+      const last = value[value.length - 1];
+      if (typeof last === "string") out[key] = last;
+    } else {
+      out[key] = String(value);
+    }
+  }
+  return out;
+}
+
+function sanitizeColumns(raw: unknown, fallback: PaymentExportColumn[]): PaymentExportColumn[] {
+  const allowed = new Set(fallback.map((col) => col.key));
+  return normalizeColumns(raw, fallback, allowed);
+}
+
 async function collectUsersForSuperAdmin(merchantIds: string[], search?: string | null) {
   if (!merchantIds.length) return [];
   return getAllUsers({ merchantIds, search: search ?? null });
 }
+
+function parseAmountToCents(raw: unknown): number | null {
+  if (typeof raw === "number" && Number.isFinite(raw) && raw > 0) {
+    return Math.round(raw * 100);
+  }
+  const str = String(raw ?? "").replace(/,/g, "").trim();
+  if (!str) return null;
+  const value = Number(str);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  return Math.round(value * 100);
+}
+
+async function loadAccountPageData(
+  type: MerchantAccountEntryType,
+  merchantId?: string | null
+) {
+  const merchants = await listMerchantBalances();
+  const entries = await listAccountEntries({ type, merchantId: merchantId || null });
+  return { merchants, entries };
+}
+
+// Multer setup (store in /uploads so they're web-accessible via /uploads/*)
+const upload = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => {
+      cb(null, path.join(process.cwd(), "uploads"));
+    },
+    filename: (_req, file, cb) => {
+      const base = file.originalname.replace(/[^\w.\-]+/g, "_").slice(-100);
+      cb(null, `${Date.now()}_${base}`);
+    },
+  }),
+  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+});
 
 function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const where: any = { type };
@@ -152,7 +447,7 @@ function whereFrom(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
 async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const where = whereFrom(q, type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, rawItems] = await Promise.all([
@@ -166,6 +461,9 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         },
         user: { select: { id: true, publicId: true, email: true, phone: true } },
         merchant: { select: { id: true, name: true } },
+        processedByAdmin: {
+          select: { id: true, email: true, displayName: true },
+        },
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -173,15 +471,110 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
     }),
   ]);
 
-  const items = rawItems.map((x: any) => {
-    const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
-    return {
-      ...x,
-      receiptFile: first,
-      _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
-      _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+  const formCache = new Map<string, { deposit: any[]; withdrawal: any[] }>();
+
+  async function ensureFormConfig(
+    merchantId: string,
+    bankAccountId: string | null
+  ) {
+    const key = `${merchantId}::${bankAccountId || "null"}`;
+    if (formCache.has(key)) return formCache.get(key)!;
+
+    let row: any = await prisma.merchantFormConfig.findFirst({
+      where: { merchantId, bankAccountId },
+    });
+
+    if (!row && bankAccountId) {
+      row = await prisma.merchantFormConfig.findFirst({
+        where: { merchantId, bankAccountId: null },
+      });
+    }
+
+    const entry = {
+      deposit: cleanRows(((row as any)?.deposit as any[]) || []),
+      withdrawal: cleanRows(((row as any)?.withdrawal as any[]) || []),
     };
+    formCache.set(key, entry);
+    return entry;
+  }
+
+  const comboList: Array<{ merchantId: string; bankAccountId: string | null }> = [];
+  const comboSeen = new Set<string>();
+
+  rawItems.forEach((x: any) => {
+    const bankKey = type === "DEPOSIT" ? x.bankAccountId || null : null;
+    const key = `${x.merchantId}::${bankKey || "null"}`;
+    if (!comboSeen.has(key)) {
+      comboSeen.add(key);
+      comboList.push({ merchantId: x.merchantId, bankAccountId: bankKey });
+    }
   });
+
+  await Promise.all(
+    comboList.map(({ merchantId, bankAccountId }) =>
+      ensureFormConfig(merchantId, bankAccountId)
+    )
+  );
+
+  const items = await Promise.all(
+    rawItems.map(async (x: any) => {
+      const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
+      const extras =
+        x?.detailsJson && typeof x.detailsJson === "object" && !Array.isArray(x.detailsJson)
+          ? (x.detailsJson as any)?.extras || {}
+          : {};
+
+      const extrasObj =
+        extras && typeof extras === "object" && !Array.isArray(extras)
+          ? (extras as Record<string, any>)
+          : {};
+
+      const seenExtras = new Set<string>();
+      const orderedExtras: Array<{ label: string; value: any }> = [];
+
+      const pushExtra = (label: any, value: any) => {
+        const norm = typeof label === "string" ? label.trim() : "";
+        if (!norm) return;
+        const key = norm.toLowerCase();
+        if (seenExtras.has(key)) return;
+        seenExtras.add(key);
+        orderedExtras.push({ label: norm, value });
+      };
+
+      if (type === "DEPOSIT") {
+        const cfg = await ensureFormConfig(x.merchantId, x.bankAccountId || null);
+        const defined = Array.isArray(cfg.deposit) ? cfg.deposit : [];
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
+      } else {
+        const cfg = await ensureFormConfig(x.merchantId, null);
+        const defined = Array.isArray(cfg.withdrawal) ? cfg.withdrawal : [];
+        defined.forEach((field: any) => {
+          pushExtra(field?.name, extrasObj[field?.name as keyof typeof extrasObj]);
+        });
+      }
+
+      Object.keys(extrasObj).forEach((key) => {
+        pushExtra(key, extrasObj[key]);
+      });
+
+      const extrasLookup: Record<string, true> = {};
+      orderedExtras.forEach((extra) => {
+        const key = typeof extra.label === "string" ? extra.label.trim().toLowerCase() : "";
+        if (key) extrasLookup[key] = true;
+      });
+
+      return {
+        ...x,
+        receiptFile: first,
+        _receipts: (x.receipts || []).map((r: any) => ({ id: r.id, path: r.path })),
+        _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
+        _extrasList: orderedExtras,
+        _extrasLookup: extrasLookup,
+      };
+    })
+  );
 
   return {
     total,
@@ -525,7 +918,12 @@ superAdminRouter.post("/admins/:id/edit", async (req, res) => {
 superAdminRouter.post("/admins/:id/reset-2fa", async (req, res) => {
   await prisma.adminUser.update({
     where: { id: req.params.id },
-    data: { twoFactorEnabled: false, totpSecret: null },
+    data: {
+      twoFactorEnabled: false,
+      totpSecret: null,
+      superTwoFactorEnabled: false,
+      superTotpSecret: null,
+    },
   });
   await auditAdmin(req, "admin.2fa.reset", "ADMIN", req.params.id);
   res.redirect("/superadmin/admins");
@@ -677,7 +1075,7 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
 });
 
 superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
-  const { name, status, email, defaultCurrency, active, userDirectoryEnabled } = req.body || {};
+  const { name, status, email, defaultCurrency, active, userDirectoryEnabled, apiKeysSelfServiceEnabled } = req.body || {};
   const website = (req.body?.webhookUrl || req.body?.website || "").trim();
 
   const before = await prisma.merchant.findUnique({
@@ -694,6 +1092,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
+      apiKeysSelfServiceEnabled: apiKeysSelfServiceEnabled === "on",
     },
   });
 
@@ -706,12 +1105,14 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
+      apiKeysSelfServiceEnabled: apiKeysSelfServiceEnabled === "on",
     },
     previous: {
       name: before?.name,
       status: before?.status,
       active: (before as any)?.active,
       userDirectoryEnabled: (before as any)?.userDirectoryEnabled,
+      apiKeysSelfServiceEnabled: (before as any)?.apiKeysSelfServiceEnabled,
     },
   });
 
@@ -754,7 +1155,7 @@ superAdminRouter.get("/users", async (req, res) => {
     : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
 
   res.render("superadmin/users", {
-    title: "Users",
+    title: "Clients",
     table,
     query,
     merchants,
@@ -769,7 +1170,7 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
   const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
   const items = await collectUsersForSuperAdmin(merchants, query.q || null);
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
     columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","merchants"],
@@ -796,7 +1197,7 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
   const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
   const items = await collectUsersForSuperAdmin(merchants, query.q || null);
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Users");
+  const ws = wb.addWorksheet("Clients");
   ws.columns = [
     { header: "User ID", key: "userId", width: 16 },
     { header: "Full name", key: "fullName", width: 24 },
@@ -820,7 +1221,7 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  res.setHeader("Content-Disposition",'attachment; filename="clients.xlsx"');
   await wb.xlsx.write(res);
   res.end();
 });
@@ -832,7 +1233,7 @@ superAdminRouter.get("/export/users.pdf", async (req, res) => {
   const items = await collectUsersForSuperAdmin(merchants, query.q || null);
   const pdf = renderUserDirectoryPdf(items);
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.pdf"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.pdf"');
   res.end(pdf);
 });
 
@@ -1256,7 +1657,7 @@ superAdminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────
-// Merchant Users (CRUD, 2FA reset, password reset)
+// Merchant Clients (CRUD, 2FA reset, password reset)
 // ───────────────────────────────────────────────────────────────
 const MERCHANT_ROLES = new Set(["OWNER", "MANAGER", "ANALYST"]);
 
@@ -1295,7 +1696,7 @@ superAdminRouter.get("/merchants/:id/users", async (req, res) => {
   }
 
   res.render("superadmin/merchant-users", {
-    title: `Merchant Users – ${merchant.name}`,
+    title: `Merchant Clients – ${merchant.name}`,
     merchant,
     users,
     newCreds,
@@ -1311,7 +1712,7 @@ superAdminRouter.get("/merchants/:id/users/new", async (req, res) => {
   });
   if (!merchant) return res.status(404).send("Not found");
   res.render("superadmin/merchant-user-edit", {
-    title: "New Merchant User",
+    title: "New Merchant Client",
     merchant,
     user: null,
   });
@@ -1382,7 +1783,7 @@ superAdminRouter.get("/merchants/:id/users/:uid/edit", async (req, res) => {
     return res.status(404).send("Not found");
 
   res.render("superadmin/merchant-user-edit", {
-    title: "Edit Merchant User",
+    title: "Edit Merchant Client",
     merchant,
     user,
   });
@@ -1553,22 +1954,262 @@ superAdminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────
-// Payments — pages, edits, exports
+// Accounts — balances, settlements, topups
 // ───────────────────────────────────────────────────────────────
 
-// Multer setup (store in /uploads so they're web-accessible via /uploads/*)
-const upload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => {
-      cb(null, path.join(process.cwd(), "uploads"));
-    },
-    filename: (_req, file, cb) => {
-      const base = file.originalname.replace(/[^\w.\-]+/g, "_").slice(-100);
-      cb(null, `${Date.now()}_${base}`);
-    },
-  }),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10 MB
+superAdminRouter.get("/accounts", (_req, res) => {
+  res.redirect("/superadmin/accounts/balance");
 });
+
+superAdminRouter.get("/accounts/balance", async (_req, res) => {
+  const balances = await listMerchantBalances();
+  res.render("superadmin/accounts-balance", {
+    title: "Accounts · Balance",
+    balances,
+  });
+});
+
+function pickMerchantFilter(raw: unknown): string {
+  if (Array.isArray(raw)) {
+    const last = raw[raw.length - 1];
+    return typeof last === "string" ? last.trim() : "";
+  }
+  if (typeof raw === "string") return raw.trim();
+  return "";
+}
+
+function buildAccountViewModel(opts: {
+  title: string;
+  merchants: Awaited<ReturnType<typeof listMerchantBalances>>;
+  entries: Awaited<ReturnType<typeof listAccountEntries>>;
+  merchantId: string;
+  success?: string | null;
+  error?: string | null;
+  form?: { merchantId?: string; amount?: string; method?: string; note?: string } | null;
+}) {
+  return {
+    title: opts.title,
+    merchants: opts.merchants,
+    entries: opts.entries,
+    filters: { merchantId: opts.merchantId },
+    success: opts.success ?? null,
+    error: opts.error ?? null,
+    form: opts.form ?? null,
+  };
+}
+
+superAdminRouter.get("/accounts/settlements", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId || null);
+  res.render(
+    "superadmin/accounts-settlements",
+    buildAccountViewModel({
+      title: "Accounts · Settlements",
+      merchants,
+      entries,
+      merchantId,
+      success: typeof req.query?.success === "string" ? req.query.success : null,
+    })
+  );
+});
+
+superAdminRouter.post(
+  "/accounts/settlements",
+  upload.single("receipt"),
+  async (req: any, res) => {
+    const merchantId = pickMerchantFilter(req.body?.merchantId);
+    const method = String(req.body?.method || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const amountCents = parseAmountToCents(req.body?.amount ?? req.body?.amountCents);
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!merchantId) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", null);
+      return res.status(400).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId: "",
+          error: "Merchant is required",
+          form: { amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    if (amountCents === null) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId);
+      return res.status(400).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId,
+          error: "Enter a valid amount",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    try {
+      await createAccountEntry({
+        merchantId,
+        type: "SETTLEMENT",
+        amountCents,
+        method,
+        note,
+        adminId,
+        receipt: file
+          ? {
+              path: file.path,
+              mimeType: file.mimetype,
+              original: file.originalname,
+              size: file.size,
+            }
+          : null,
+      });
+
+      await auditAdmin(req, "accounts.settlement.create", "MERCHANT", merchantId, {
+        amountCents,
+        method: method || null,
+      });
+
+      const params = new URLSearchParams();
+      params.set("success", "created");
+      if (merchantId) params.set("merchantId", merchantId);
+
+      return res.redirect(`/superadmin/accounts/settlements?${params.toString()}`);
+    } catch (err) {
+      console.error(err);
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("SETTLEMENT", merchantId);
+      return res.status(500).render(
+        "superadmin/accounts-settlements",
+        buildAccountViewModel({
+          title: "Accounts · Settlements",
+          merchants,
+          entries,
+          merchantId,
+          error: err instanceof Error ? err.message : "Unable to create settlement",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+  }
+);
+
+superAdminRouter.get("/accounts/topups", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId || null);
+  res.render(
+    "superadmin/accounts-topups",
+    buildAccountViewModel({
+      title: "Accounts · Topups",
+      merchants,
+      entries,
+      merchantId,
+      success: typeof req.query?.success === "string" ? req.query.success : null,
+    })
+  );
+});
+
+superAdminRouter.post(
+  "/accounts/topups",
+  upload.single("receipt"),
+  async (req: any, res) => {
+    const merchantId = pickMerchantFilter(req.body?.merchantId);
+    const method = String(req.body?.method || "").trim();
+    const note = String(req.body?.note || "").trim();
+    const amountCents = parseAmountToCents(req.body?.amount ?? req.body?.amountCents);
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const file = req.file as Express.Multer.File | undefined;
+
+    if (!merchantId) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", null);
+      return res.status(400).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId: "",
+          error: "Merchant is required",
+          form: { amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    if (amountCents === null) {
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId);
+      return res.status(400).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId,
+          error: "Enter a valid amount",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+
+    try {
+      await createAccountEntry({
+        merchantId,
+        type: "TOPUP",
+        amountCents,
+        method,
+        note,
+        adminId,
+        receipt: file
+          ? {
+              path: file.path,
+              mimeType: file.mimetype,
+              original: file.originalname,
+              size: file.size,
+            }
+          : null,
+      });
+
+      await auditAdmin(req, "accounts.topup.create", "MERCHANT", merchantId, {
+        amountCents,
+        method: method || null,
+      });
+
+      const params = new URLSearchParams();
+      params.set("success", "created");
+      if (merchantId) params.set("merchantId", merchantId);
+
+      return res.redirect(`/superadmin/accounts/topups?${params.toString()}`);
+    } catch (err) {
+      console.error(err);
+      if (file) await fs.unlink(file.path).catch(() => {});
+      const { merchants, entries } = await loadAccountPageData("TOPUP", merchantId);
+      return res.status(500).render(
+        "superadmin/accounts-topups",
+        buildAccountViewModel({
+          title: "Accounts · Topups",
+          merchants,
+          entries,
+          merchantId,
+          error: err instanceof Error ? err.message : "Unable to create topup",
+          form: { merchantId, amount: String(req.body?.amount || ""), method, note },
+        })
+      );
+    }
+  }
+);
+
+// Payments — pages, edits, exports
+// ───────────────────────────────────────────────────────────────
 
 async function renderPaymentsPage(
   req: any,
@@ -1815,6 +2456,30 @@ superAdminRouter.post("/payments/:id/receipt/remove", async (req, res) => {
 });
 
 // Exports — per type, respect filters
+superAdminRouter.post("/deposits/export", async (req, res) => {
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, SUPERADMIN_DEPOSIT_EXPORT_COLUMNS);
+    const query = Object.keys(filters).length ? filters : {};
+    const { items } = await fetchPayments(query, "DEPOSIT");
+    const timezone = resolveTimezone((req as any).activeTimezone || res.locals.timezone);
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: "superadmin", type: "DEPOSIT" },
+      timezone,
+    });
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "Unable to export deposits" });
+  }
+});
+
 superAdminRouter.get("/deposits/export.csv", async (req, res) => {
   const { items } = await fetchPayments(req.query || {}, "DEPOSIT");
   const csv = toCSVRows(items);
@@ -1825,6 +2490,30 @@ superAdminRouter.get("/deposits/export.csv", async (req, res) => {
     `attachment; filename="deposits_${stamp}.csv"`
   );
   res.send(csv);
+});
+
+superAdminRouter.post("/withdrawals/export", async (req, res) => {
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, SUPERADMIN_WITHDRAWAL_EXPORT_COLUMNS);
+    const query = Object.keys(filters).length ? filters : {};
+    const { items } = await fetchPayments(query, "WITHDRAWAL");
+    const timezone = resolveTimezone((req as any).activeTimezone || res.locals.timezone);
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: "superadmin", type: "WITHDRAWAL" },
+      timezone,
+    });
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "Unable to export withdrawals" });
+  }
 });
 
 superAdminRouter.get("/withdrawals/export.csv", async (req, res) => {

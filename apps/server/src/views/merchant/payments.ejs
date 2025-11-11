@@ -1,6 +1,6 @@
 <% layout('merchant/layout') -%>
 
-<%- include('../partials/filters-bar', { query }) %>
+<%- include('../partials/filters-bar', { query, storageKey: 'merchant.payments' }) %>
 
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.payments',
@@ -29,12 +29,45 @@
   }
 }) %>
 
-<div class="table-wrap">
-  <% const qp = new URLSearchParams(query); %>
-  <div class="row" style="justify-content:flex-end; gap:8px; margin-bottom:8px;">
-    <a class="btn small" href="/merchant/export/payments.csv?<%= qp.toString() %>">Export CSV</a>
-    <a class="btn small" href="/merchant/export/payments.xlsx?<%= qp.toString() %>">Export XLSX</a>
+<%
+  let perPageOptions = [25, 50, 100, 150];
+  const perPageValue = Number(table.perPage || 25);
+  if (!perPageOptions.includes(perPageValue)) {
+    perPageOptions = [...perPageOptions, perPageValue].sort((a, b) => a - b);
+  }
+  const perPageSelectId = 'perPage-merchant-payments';
+  const tableId = 'merchant-payments-table';
+  const columnsSelector = "[data-storage-key='merchant.columns.payments']";
+%>
+<div class="table-toolbar">
+  <div class="export-control" data-export-control data-export-endpoint="/merchant/export/payments" data-export-table="#<%= tableId %>" data-export-columns-root="<%= columnsSelector %>" data-export-storage="merchant.export.payments">
+    <button type="button" class="btn small" data-export-main>
+      <span data-export-label>Export</span>
+    </button>
+    <button type="button" class="btn small btn-icon" data-export-toggle aria-label="Select export format">▾</button>
+    <div class="export-menu" data-export-menu hidden>
+      <button type="button" data-export-option="csv">CSV</button>
+      <button type="button" data-export-option="xlsx">XLSX</button>
+      <button type="button" data-export-option="pdf">PDF</button>
+    </div>
   </div>
+  <form method="get">
+    <% Object.entries(query || {}).forEach(([key, value]) => {
+         if (value === undefined || value === null || value === '' || key === 'perPage' || key === 'page') return;
+    %>
+      <input type="hidden" name="<%= key %>" value="<%= value %>">
+    <% }); %>
+    <input type="hidden" name="page" value="1">
+    <label for="<%= perPageSelectId %>">Rows per page</label>
+    <select id="<%= perPageSelectId %>" name="perPage" onchange="this.form.submit()">
+      <% perPageOptions.forEach((size) => { %>
+        <option value="<%= size %>" <%= perPageValue === size ? 'selected' : '' %>><%= size %></option>
+      <% }); %>
+    </select>
+  </form>
+</div>
+
+<div class="table-wrap">
 
   <% if (typeof checkoutToken !== 'undefined') { %>
     <div id="payx-demo" style="margin: 12px 0 20px 0; padding:12px; border:1px solid var(--muted); border-radius:10px;">
@@ -50,7 +83,7 @@
     </div>
   <% } %>
 
-  <table class="table">
+  <table id="<%= tableId %>" class="table">
     <thead>
       <tr>
         <th data-col="txnId">TRANSACTION ID</th>

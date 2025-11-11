@@ -2,6 +2,7 @@
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { requireMerchantSession } from "../middleware/auth.js";
+import { enforceTurnstile } from "../middleware/turnstile.js";
 import { prisma } from "../lib/prisma.js";
 
 export const publicRouter = Router();
@@ -10,11 +11,15 @@ const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
 
 // Login form (render)
 publicRouter.get("/merchant/login", (_req, res) => {
-  res.render("merchant-login", { title: "Merchant Login", error: null });
+  res.render("merchant-login", {
+    title: "Merchant Login",
+    error: null,
+    siteKey: res.locals.siteKey,
+  });
 });
 
 // Login submit (env-based demo credentials)
-publicRouter.post("/merchant/login", (req, res) => {
+publicRouter.post("/merchant/login", enforceTurnstile, (req, res) => {
   const { email, password } = req.body || {};
   const ok =
     email === process.env.MERCHANT_DEMO_EMAIL &&
@@ -25,6 +30,7 @@ publicRouter.post("/merchant/login", (req, res) => {
     return res.status(401).render("merchant-login", {
       title: "Merchant Login",
       error: "Invalid credentials",
+      siteKey: res.locals.siteKey,
     });
   }
 

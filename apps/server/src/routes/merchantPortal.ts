@@ -7,9 +7,19 @@ import ExcelJS from "exceljs";
 import crypto from "node:crypto";
 import { seal } from "../services/secretBox.js";
 import jwt from "jsonwebtoken";
+import speakeasy from "speakeasy";
+import QRCode from "qrcode";
 // ⬇️ NEW: we’ll mint a short-lived checkout token for the merchant demo
 import { signCheckoutToken } from "../services/checkoutToken.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
+import {
+  buildPaymentExportFile,
+  normalizeColumns,
+  PaymentExportColumn,
+  PaymentExportItem,
+} from "../services/paymentExports.js";
+import { listAccountEntries } from "../services/merchantAccounts.js";
+import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 
 const router = Router();
 
@@ -27,6 +37,35 @@ function usersFeatureEnabled(res: any): boolean {
 
 async function collectMerchantUsersForExport(merchantId: string, search?: string | null) {
   return getAllUsers({ merchantIds: [merchantId], search: search ?? null });
+}
+
+function currentMerchantUserId(req: any): string | null {
+  if (req.merchantUser?.id) return String(req.merchantUser.id);
+  const auth = req.merchantAuth || {};
+  if (typeof auth.merchantUserId === "string" && auth.merchantUserId) {
+    return auth.merchantUserId;
+  }
+  if (typeof auth.sub === "string" && auth.sub) {
+    const merchantId = req.merchant?.sub ? String(req.merchant.sub) : null;
+    if (!merchantId || auth.sub !== merchantId) return auth.sub;
+  }
+  return null;
+}
+
+async function loadCurrentMerchantUser(req: any) {
+  const id = currentMerchantUserId(req);
+  if (!id) return null;
+  return prisma.merchantUser.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      merchantId: true,
+      email: true,
+      twoFactorEnabled: true,
+      totpSecret: true,
+      timezone: true,
+    },
+  });
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -79,13 +118,32 @@ async function requireMerchant(req: any, res: any, next: any) {
 router.use(requireMerchant);
 
 router.use(async (req: any, res, next) => {
-  const merchantId = req.merchant?.sub as string;
+  const merchantId = req.merchant?.sub as string | undefined;
   if (!merchantId) return next();
   if (!req.merchantDetails) {
     req.merchantDetails = await prisma.merchant.findUnique({
       where: { id: merchantId },
-      select: { id: true, name: true, email: true, balanceCents: true, defaultCurrency: true, userDirectoryEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        balanceCents: true,
+        defaultCurrency: true,
+        userDirectoryEnabled: true,
+        apiKeysSelfServiceEnabled: true,
+        active: true,
+        status: true,
+      },
     });
+  }
+  const merchantDetails = req.merchantDetails;
+  const status = String(merchantDetails?.status || "").toLowerCase();
+  if (!merchantDetails?.active || status === "suspended" || status === "closed") {
+    try {
+      res.clearCookie("merchant_jwt", { path: "/" });
+      res.clearCookie("merchant", { path: "/" });
+    } catch {}
+    return res.redirect("/public/merchant/login?reason=merchant-inactive");
   }
   const authPayload = req.merchantAuth || {};
   const tokenSub = typeof authPayload?.sub === "string" ? authPayload.sub : null;
@@ -113,11 +171,98 @@ router.use(async (req: any, res, next) => {
     authPayload.canViewUsers = canViewUsers;
     if (merchantUserId) authPayload.merchantUserId = merchantUserId;
   }
-  res.locals.merchant = req.merchantDetails;
+  res.locals.merchant = merchantDetails;
   res.locals.merchantUser = merchantUser;
   res.locals.merchantAuth = authPayload;
   res.locals.merchantFeatures = { usersEnabled: canViewUsers };
+  const timezoneSource = merchantUser?.timezone ?? (authPayload && typeof authPayload === "object" ? (authPayload as any).timezone : null);
+  const timezone = resolveTimezone(timezoneSource);
+  res.locals.timezone = timezone;
+  (req as any).activeTimezone = timezone;
   next();
+});
+
+// ─────────────────────────────────────────────────────────────
+// Merchant security settings (2FA)
+// ─────────────────────────────────────────────────────────────
+router.get('/settings/security', async (req: any, res) => {
+  const user = await loadCurrentMerchantUser(req);
+  if (!user) return res.redirect('/auth/merchant/login');
+
+  const enabled = !!(user.twoFactorEnabled && user.totpSecret);
+  const { enabled: justEnabled, disabled: justDisabled, already, error } = req.query || {};
+  let flash: { message: string; variant?: 'error' } | null = null;
+  if (typeof error === 'string' && error) {
+    flash = { message: error, variant: 'error' };
+  } else if (typeof already !== 'undefined') {
+    flash = { message: 'Two-factor authentication is already enabled.' };
+  } else if (typeof justEnabled !== 'undefined') {
+    flash = { message: 'Two-factor authentication enabled.' };
+  } else if (typeof justDisabled !== 'undefined') {
+    flash = { message: 'Two-factor authentication disabled.' };
+  }
+
+  return res.render('merchant-settings-security', {
+    title: 'Security',
+    twoFactorEnabled: enabled,
+    email: user.email || '',
+    flash,
+  });
+});
+
+router.post('/settings/security/start', async (req: any, res) => {
+  const user = await loadCurrentMerchantUser(req);
+  if (!user) return res.redirect('/auth/merchant/login');
+
+  if (user.twoFactorEnabled && user.totpSecret) {
+    return res.redirect('/merchant/settings/security?already=1');
+  }
+
+  try {
+    const secret = speakeasy.generateSecret({ name: `Merchant (${user.email || user.id})` });
+    const otpauth = secret.otpauth_url!;
+    const qrDataUrl = await QRCode.toDataURL(otpauth);
+
+    const token = jwt.sign({
+      userId: user.id,
+      merchantId: user.merchantId,
+      stage: '2fa_setup',
+      secretBase32: secret.base32,
+      issuer: 'Merchant',
+      accountLabel: user.email || user.id,
+      redirectTo: '/merchant/settings/security?enabled=1',
+    }, JWT_SECRET, { expiresIn: '10m' });
+
+    return res.render('auth-2fa-setup', {
+      token,
+      qrDataUrl,
+      secretBase32: secret.base32,
+      accountLabel: user.email || user.id,
+      error: '',
+      mode: 'merchant',
+    });
+  } catch (err) {
+    console.error('[merchant 2fa] start failed', err);
+    const msg = encodeURIComponent('Unable to start two-factor setup.');
+    return res.redirect(`/merchant/settings/security?error=${msg}`);
+  }
+});
+
+router.post('/settings/security/disable', async (req: any, res) => {
+  const user = await loadCurrentMerchantUser(req);
+  if (!user) return res.redirect('/auth/merchant/login');
+
+  try {
+    await prisma.merchantUser.update({
+      where: { id: user.id },
+      data: { twoFactorEnabled: false, totpSecret: null },
+    });
+    return res.redirect('/merchant/settings/security?disabled=1');
+  } catch (err) {
+    console.error('[merchant 2fa] disable failed', err);
+    const msg = encodeURIComponent('Unable to disable two-factor authentication.');
+    return res.redirect(`/merchant/settings/security?error=${msg}`);
+  }
 });
 
 const listQuery = z.object({
@@ -135,6 +280,24 @@ const listQuery = z.object({
   perPage: z.string().optional(),
   type: z.enum(["DEPOSIT", "WITHDRAWAL"]).optional(),
 });
+
+const LIST_QUERY_KEYS = new Set(Object.keys((listQuery as any).shape || {}));
+
+const MERCHANT_PAYMENT_EXPORT_COLUMNS: PaymentExportColumn[] = [
+  { key: "txnId", label: "TRANSACTION ID" },
+  { key: "userId", label: "USER ID" },
+  { key: "type", label: "TYPE" },
+  { key: "currency", label: "CURRENCY" },
+  { key: "amount", label: "AMOUNT" },
+  { key: "status", label: "STATUS" },
+  { key: "bank", label: "BANK" },
+  { key: "created", label: "DATE OF CREATION" },
+  { key: "processedAt", label: "DATE PROCESSED" },
+  { key: "processingTime", label: "TIME TO PROCESS" },
+  { key: "userInfo", label: "USER INFO" },
+  { key: "comment", label: "COMMENT" },
+  { key: "admin", label: "PROCESSED BY" },
+];
 
 function int(v: any, d: number) {
   const n = Number(v);
@@ -187,11 +350,17 @@ function whereFrom(q: z.infer<typeof listQuery>, merchantId: string, type?: "DEP
   return where;
 }
 
-async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" | "WITHDRAWAL") {
-  const q = listQuery.parse(req.query);
+type ListQuery = z.infer<typeof listQuery>;
+
+async function fetchPaymentsFromQuery(
+  input: Partial<ListQuery>,
+  merchantId: string,
+  type?: "DEPOSIT" | "WITHDRAWAL"
+) {
+  const q = listQuery.parse(input);
   const where = whereFrom(q, merchantId, type ?? q.type);
   const page = Math.max(1, int(q.page, 1));
-  const perPage = Math.min(100, Math.max(5, int(q.perPage, 25)));
+  const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
 
   const [total, items] = await Promise.all([
@@ -227,6 +396,40 @@ async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" 
   ]);
 
   return { total, items, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
+}
+
+async function fetchPayments(req: Request, merchantId: string, type?: "DEPOSIT" | "WITHDRAWAL") {
+  const q = req.query as Partial<ListQuery>;
+  return fetchPaymentsFromQuery(q, merchantId, type);
+}
+
+function parseExportFormat(raw: unknown): "csv" | "xlsx" | "pdf" {
+  const value = String(raw || "").toLowerCase();
+  if (value === "csv" || value === "xlsx" || value === "pdf") return value;
+  return "csv";
+}
+
+function coerceExportFilters(raw: unknown): Partial<ListQuery> {
+  if (!raw || typeof raw !== "object") return {};
+  const out: Partial<ListQuery> = {};
+  for (const key of LIST_QUERY_KEYS) {
+    const value = (raw as Record<string, unknown>)[key];
+    if (typeof value === "undefined" || value === null) continue;
+    if (typeof value === "string") {
+      (out as any)[key] = value;
+    } else if (Array.isArray(value)) {
+      const last = value[value.length - 1];
+      if (typeof last === "string") (out as any)[key] = last;
+    } else {
+      (out as any)[key] = String(value);
+    }
+  }
+  return out;
+}
+
+function sanitizeColumns(raw: unknown, fallback: PaymentExportColumn[]): PaymentExportColumn[] {
+  const allowed = new Set(fallback.map((col) => col.key));
+  return normalizeColumns(raw, fallback, allowed);
 }
 
 // Dashboard
@@ -324,12 +527,12 @@ router.get("/payments/withdrawals", (_req, res) => res.redirect("/merchant/payme
 
 router.get("/users", async (req: any, res) => {
   if (!usersFeatureEnabled(res)) {
-    return res.status(403).render("merchant/users-disabled", { title: "Users" });
+    return res.status(403).render("merchant/users-disabled", { title: "Clients" });
   }
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const table = await getUserDirectory({ merchantIds: [merchantId], search: query.q || null, page: query.page, perPage: query.perPage });
-  res.render("merchant/users", { title: "Users", table, query });
+  res.render("merchant/users", { title: "Clients", table, query });
 });
 
 // Ledger
@@ -346,7 +549,63 @@ router.get("/ledger", async (req: any, res) => {
   res.render("merchant/ledger", { title: "Ledger", entries });
 });
 
+router.get("/accounts", (_req, res) => res.redirect("/merchant/accounts/settlements"));
+
+router.get("/accounts/settlements", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  const [entries, merchant] = await Promise.all([
+    listAccountEntries({ type: "SETTLEMENT", merchantId }),
+    prisma.merchant.findUnique({ where: { id: merchantId }, select: { name: true, balanceCents: true } }),
+  ]);
+
+  res.render("merchant/accounts-settlements", {
+    title: "Accounts · Settlements",
+    entries,
+    merchant,
+  });
+});
+
+router.get("/accounts/topups", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  const [entries, merchant] = await Promise.all([
+    listAccountEntries({ type: "TOPUP", merchantId }),
+    prisma.merchant.findUnique({ where: { id: merchantId }, select: { name: true, balanceCents: true } }),
+  ]);
+
+  res.render("merchant/accounts-topups", {
+    title: "Accounts · Topups",
+    entries,
+    merchant,
+  });
+});
+
 // EXPORTS
+router.post("/export/payments", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  try {
+    const format = parseExportFormat(req.body?.type);
+    const filters = coerceExportFilters(req.body?.filters);
+    const columns = sanitizeColumns(req.body?.columns, MERCHANT_PAYMENT_EXPORT_COLUMNS);
+    const { items, query } = await fetchPaymentsFromQuery(filters, merchantId);
+    const typeContext: "DEPOSIT" | "WITHDRAWAL" | "ALL" =
+      query.type === "DEPOSIT" ? "DEPOSIT" : query.type === "WITHDRAWAL" ? "WITHDRAWAL" : "ALL";
+    const file = await buildPaymentExportFile({
+      format,
+      columns,
+      items: items as unknown as PaymentExportItem[],
+      context: { scope: "merchant", type: typeContext },
+    });
+    res.setHeader("Content-Type", file.contentType);
+    res.setHeader("Content-Disposition", `attachment; filename="${file.filename}"`);
+    res.send(file.body);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: "Unable to export payments" });
+  }
+});
+
 router.get("/export/payments.csv", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   const { items } = await fetchPayments(req, merchantId);
@@ -445,12 +704,12 @@ router.get("/export/ledger.xlsx", async (req: any, res) => {
 });
 
 router.get("/export/users.csv", async (req: any, res) => {
-  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  if (!usersFeatureEnabled(res)) return res.status(403).send("Client directory disabled");
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const items = await collectMerchantUsersForExport(merchantId, query.q || null);
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
     columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity"],
@@ -471,12 +730,12 @@ router.get("/export/users.csv", async (req: any, res) => {
 });
 
 router.get("/export/users.xlsx", async (req: any, res) => {
-  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  if (!usersFeatureEnabled(res)) return res.status(403).send("Client directory disabled");
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const items = await collectMerchantUsersForExport(merchantId, query.q || null);
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Users");
+  const ws = wb.addWorksheet("Clients");
   ws.columns = [
     { header: "User ID", key: "userId", width: 16 },
     { header: "Full name", key: "fullName", width: 24 },
@@ -498,19 +757,19 @@ router.get("/export/users.xlsx", async (req: any, res) => {
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  res.setHeader("Content-Disposition",'attachment; filename="clients.xlsx"');
   await wb.xlsx.write(res);
   res.end();
 });
 
 router.get("/export/users.pdf", async (req: any, res) => {
-  if (!usersFeatureEnabled(res)) return res.status(403).send("User directory disabled");
+  if (!usersFeatureEnabled(res)) return res.status(403).send("Client directory disabled");
   const merchantId = req.merchant?.sub as string;
   const query = userQuery.parse(req.query);
   const items = await collectMerchantUsersForExport(merchantId, query.q || null);
   const pdf = renderUserDirectoryPdf(items);
   res.setHeader("Content-Type", "application/pdf");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.pdf"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.pdf"');
   res.end(pdf);
 });
 
@@ -525,13 +784,34 @@ function genSecret(): string {
   return crypto.randomBytes(24).toString("base64url");
 }
 
+async function listMerchantApiKeys(merchantId: string) {
+  return prisma.merchantApiKey.findMany({
+    where: { merchantId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      prefix: true,
+      last4: true,
+      active: true,
+      scopes: true,
+      createdAt: true,
+      lastUsedAt: true,
+      expiresAt: true,
+    },
+  });
+}
+
 router.get("/keys", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
-  const keys = await prisma.merchantApiKey.findMany({
-    where: { merchantId }, orderBy: { createdAt: "desc" },
-    select: { id:true, prefix:true, last4:true, active:true, scopes:true, createdAt:true, lastUsedAt:true, expiresAt:true }
+  const keys = await listMerchantApiKeys(merchantId);
+  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  res.render("merchant/api-keys", {
+    title: "API Keys",
+    keys,
+    justCreated: null,
+    selfService,
+    error: null,
   });
-  res.render("merchant/api-keys", { title: "API Keys", keys, justCreated: null });
 });
 
 router.post("/prefs/theme", (req, res) => {
@@ -546,18 +826,59 @@ router.post("/prefs/theme", (req, res) => {
   res.json({ ok: true, mode });
 });
 
+router.post("/prefs/timezone", async (req: any, res) => {
+  const id = currentMerchantUserId(req);
+  if (!id) {
+    return res.status(401).json({ ok: false, error: "Not authenticated" });
+  }
+
+  const timezoneRaw = normalizeTimezone(req.body?.timezone);
+  const timezone = timezoneRaw ?? null;
+
+  try {
+    await prisma.merchantUser.update({
+      where: { id },
+      data: { timezone },
+    });
+    const resolved = resolveTimezone(timezone);
+    res.locals.timezone = resolved;
+    (req as any).activeTimezone = resolved;
+    if (req.merchantAuth && typeof req.merchantAuth === "object") {
+      req.merchantAuth.timezone = resolved;
+    }
+    return res.json({ ok: true, timezone: resolved });
+  } catch (err) {
+    console.error("[merchant prefs] failed to update timezone", err);
+    return res.status(500).json({ ok: false, error: "Failed to save timezone" });
+  }
+});
+
 router.post("/keys/create", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
+  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  if (!selfService) {
+    const keys = await listMerchantApiKeys(merchantId);
+    return res.status(403).render("merchant/api-keys", {
+      title: "API Keys",
+      keys,
+      justCreated: null,
+      error: "Self-service API key creation is disabled by your administrator.",
+      selfService,
+    });
+  }
   const prefix = genPrefix();
   const secret = genSecret();
   await prisma.merchantApiKey.create({
     data: { merchantId, prefix, secretEnc: seal(secret), last4: secret.slice(-4), scopes: ["read:payments"] }
   });
-  const keys = await prisma.merchantApiKey.findMany({
-    where: { merchantId }, orderBy: { createdAt: "desc" },
-    select: { id:true, prefix:true, last4:true, active:true, scopes:true, createdAt:true, lastUsedAt:true, expiresAt:true }
+  const keys = await listMerchantApiKeys(merchantId);
+  res.render("merchant/api-keys", {
+    title: "API Keys",
+    keys,
+    justCreated: `${prefix}.${secret}`,
+    selfService,
+    error: null,
   });
-  res.render("merchant/api-keys", { title: "API Keys", keys, justCreated: `${prefix}.${secret}` });
 });
 
 router.post("/keys/:id/revoke", async (req: any, res) => {
@@ -568,6 +889,17 @@ router.post("/keys/:id/revoke", async (req: any, res) => {
 
 router.post("/keys/:id/rotate", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
+  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  if (!selfService) {
+    const keys = await listMerchantApiKeys(merchantId);
+    return res.status(403).render("merchant/api-keys", {
+      title: "API Keys",
+      keys,
+      justCreated: null,
+      selfService,
+      error: "Self-service API key rotation is disabled by your administrator.",
+    });
+  }
   await prisma.merchantApiKey.updateMany({ where: { id: req.params.id, merchantId }, data: { active: false } });
   const prefix = genPrefix(); const secret = genSecret();
   await prisma.merchantApiKey.create({

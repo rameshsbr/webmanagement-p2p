@@ -39,6 +39,11 @@
     <input type="checkbox" name="userDirectoryEnabled" <%= merchant?.userDirectoryEnabled?'checked':'' %>/> User directory enabled
   </label>
 
+  <label class="chk" style="margin-top:6px">
+    <input type="checkbox" name="apiKeysSelfServiceEnabled" <%= (merchant?.apiKeysSelfServiceEnabled ?? true) ? 'checked' : '' %>/>
+    Allow merchant to manage API keys (self-service)
+  </label>
+
   <div class="row" style="margin-top:12px"><button class="btn primary">Save</button></div>
 </form>
 
@@ -150,8 +155,8 @@
           </td>
           <td><%= k.label || '—' %></td>
           <td class="mini"><%= Array.isArray(k.scopes) ? k.scopes.join(', ') : (k.scopes || '—') %></td>
-          <td class="mini"><%= k.lastUsedAt ? new Date(k.lastUsedAt).toISOString() : '—' %></td>
-          <td class="mini"><%= k.createdAt ? new Date(k.createdAt).toISOString() : '—' %></td>
+          <td class="mini"><%- k.lastUsedAt ? renderDateTime(k.lastUsedAt) : '—' %></td>
+          <td class="mini"><%- k.createdAt ? renderDateTime(k.createdAt) : '—' %></td>
           <td class="nowrap">
             <% if (!revoked) { %>
             <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/<%= k.id %>/revoke" style="display:inline" onsubmit="return confirm('Revoke this API key? This cannot be undone.')">

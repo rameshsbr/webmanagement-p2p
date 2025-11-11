@@ -10,7 +10,7 @@
   <link rel="stylesheet" href="/static/admin/styles.css" />
 </head>
 
-<body>
+<body data-timezone="<%= timezone || '' %>">
   <% var IS_AUTH=(typeof isAuthView !=='undefined' && isAuthView); %>
     <% var ADM=(typeof admin !=='undefined' && admin) ? admin : null; %>
 
@@ -46,6 +46,9 @@
             </main>
       </div>
 
+      <script src="/static/shared/toast.js" defer></script>
+      <script src="/static/shared/filters.js" defer></script>
+      <script src="/static/shared/timezone.js" defer></script>
       <script src="/static/admin/admin.js" defer></script>
 </body>
 

@@ -41,7 +41,10 @@ async function verifyApiKey(req: any): Promise<VerifiedKey | null> {
   const pk = readApiKeyHeader(req);
   if (!pk) return null;
 
-  const rec = await prisma.merchantApiKey.findUnique({ where: { prefix: pk.prefix } });
+  const rec = await prisma.merchantApiKey.findUnique({
+    where: { prefix: pk.prefix },
+    include: { merchant: { select: { id: true, active: true, status: true } } },
+  });
   if (!rec || !rec.active) return null;
   if (rec.expiresAt && rec.expiresAt < new Date()) return null;
 
@@ -52,6 +55,11 @@ async function verifyApiKey(req: any): Promise<VerifiedKey | null> {
     return null;
   }
   if (!tscmp(stored, pk.secret)) return null;
+
+  const merchantStatus = String(rec.merchant?.status || '').toLowerCase();
+  if (!rec.merchant?.active || merchantStatus === 'suspended' || merchantStatus === 'closed') {
+    return null;
+  }
 
   // Optional request HMAC integrity
   const sig = req.get('x-signature');

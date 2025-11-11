@@ -64,6 +64,198 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
+(function () {
+  const controls = document.querySelectorAll('[data-export-control]');
+  if (!controls.length) return;
+
+  const notify = (message, options) => {
+    if (typeof window.toast === 'function') window.toast(message, options);
+    else if (message) console.warn(message);
+  };
+
+  controls.forEach((control) => {
+    const mainBtn = control.querySelector('[data-export-main]');
+    const toggleBtn = control.querySelector('[data-export-toggle]');
+    const menu = control.querySelector('[data-export-menu]');
+    const label = control.querySelector('[data-export-label]');
+    if (!mainBtn || !toggleBtn || !menu || !label) return;
+
+    const endpoint = control.getAttribute('data-export-endpoint');
+    if (!endpoint) return;
+
+    const tableSelector = control.getAttribute('data-export-table') || '';
+    const columnsRootSelector = control.getAttribute('data-export-columns-root') || '';
+    const storageKey = control.getAttribute('data-export-storage') || 'merchant.export.default';
+
+    const readStoredType = () => {
+      try { return localStorage.getItem(storageKey) || 'csv'; } catch { return 'csv'; }
+    };
+    const storeType = (type) => {
+      try { localStorage.setItem(storageKey, type); } catch {}
+    };
+
+    let currentType = readStoredType();
+
+    const updateLabel = () => {
+      label.textContent = currentType ? `${currentType.toUpperCase()} Export` : 'Export';
+    };
+
+    updateLabel();
+
+    const closeMenu = () => {
+      menu.hidden = true;
+      control.removeAttribute('data-open');
+      document.removeEventListener('click', onDocClick, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+    };
+
+    const openMenu = () => {
+      if (!menu.hidden) return;
+      menu.hidden = false;
+      control.setAttribute('data-open', '1');
+      document.addEventListener('click', onDocClick, true);
+      document.addEventListener('keydown', onKeyDown, true);
+    };
+
+    const onDocClick = (event) => {
+      if (!control.contains(event.target)) closeMenu();
+    };
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMenu();
+      }
+    };
+
+    toggleBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (menu.hidden) openMenu();
+      else closeMenu();
+    });
+
+    menu.querySelectorAll('[data-export-option]').forEach((optionBtn) => {
+      optionBtn.addEventListener('click', (event) => {
+        event.preventDefault();
+        const next = (optionBtn.getAttribute('data-export-option') || '').toLowerCase();
+        if (!next) return;
+        currentType = next;
+        storeType(currentType);
+        updateLabel();
+        closeMenu();
+      });
+    });
+
+    const collectColumns = () => {
+      const table = tableSelector ? document.querySelector(tableSelector) : null;
+      if (!table) return [];
+
+      const headerCells = Array.from(table.querySelectorAll('thead th[data-col]'));
+      const toggleMap = new Map();
+      if (columnsRootSelector) {
+        const root = document.querySelector(columnsRootSelector);
+        if (root) {
+          root.querySelectorAll('[data-col-toggle]').forEach((cb) => {
+            const col = cb.getAttribute('data-col-toggle');
+            if (col) toggleMap.set(col, cb.checked);
+          });
+          root.querySelectorAll('.col-toggle').forEach((cb) => {
+            const col = cb.getAttribute('data-col');
+            if (col) toggleMap.set(col, cb.checked);
+          });
+        }
+      }
+
+      const columns = headerCells
+        .map((th) => {
+          const key = th.getAttribute('data-col');
+          if (!key) return null;
+          const isVisible = toggleMap.has(key) ? toggleMap.get(key) : th.offsetParent !== null;
+          if (!isVisible) return null;
+          const text = th.textContent ? th.textContent.replace(/\s+/g, ' ').trim() : '';
+          return { key, label: text || key };
+        })
+        .filter(Boolean);
+
+      if (columns.length) return columns;
+      return headerCells
+        .map((th) => {
+          const key = th.getAttribute('data-col');
+          if (!key) return null;
+          const text = th.textContent ? th.textContent.replace(/\s+/g, ' ').trim() : '';
+          return { key, label: text || key };
+        })
+        .filter(Boolean);
+    };
+
+    const buildFilters = () => {
+      const filters = {};
+      const params = new URLSearchParams(window.location.search || '');
+      params.forEach((value, key) => {
+        filters[key] = value;
+      });
+      return filters;
+    };
+
+    const parseFilename = (disposition, fallback) => {
+      if (!disposition) return fallback;
+      const match = /filename\*=UTF-8''([^;]+)|filename="?([^";]+)"?/i.exec(disposition);
+      if (match) {
+        return decodeURIComponent(match[1] || match[2]);
+      }
+      return fallback;
+    };
+
+    const triggerExport = async () => {
+      if (control.dataset.exporting === '1') return;
+      control.dataset.exporting = '1';
+      const columns = collectColumns();
+      const filters = buildFilters();
+      try {
+        const res = await fetch(endpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/octet-stream' },
+          credentials: 'same-origin',
+          body: JSON.stringify({ type: currentType, columns, filters }),
+        });
+        if (!res.ok) {
+          let message = 'Export failed';
+          const ct = res.headers.get('Content-Type') || '';
+          if (ct.includes('application/json')) {
+            try {
+              const data = await res.json();
+              if (data && data.error) message = data.error;
+            } catch {}
+          }
+          throw new Error(message);
+        }
+
+        const blob = await res.blob();
+        const fallbackName = `export.${currentType}`;
+        const filename = parseFilename(res.headers.get('Content-Disposition'), fallbackName);
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = filename;
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 1500);
+      } catch (err) {
+        notify((err && err.message) || 'Unable to export');
+      } finally {
+        control.dataset.exporting = '0';
+      }
+    };
+
+    mainBtn.addEventListener('click', (event) => {
+      event.preventDefault();
+      triggerExport();
+    });
+  });
+})();
+
 // Sidebar section toggle
 (() => {
   const show = section => {
@@ -154,24 +346,34 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 
 // Time zones dropdown
 (() => {
-  const tz = document.getElementById('pref-tz');
-  if (!tz || tz.dataset.filled) return;
-  let zones = [];
-  try { if (Intl.supportedValuesOf) zones = Intl.supportedValuesOf('timeZone'); } catch {}
-  if (!zones.length) zones = ['UTC','Asia/Kuala_Lumpur','Asia/Jakarta','Asia/Singapore','Asia/Bangkok','Europe/London','America/New_York','Australia/Sydney'];
-  zones.sort((a,b)=>a.localeCompare(b));
-  zones.forEach(z => { const o=document.createElement('option'); o.value=o.textContent=z; tz.appendChild(o); });
-  tz.value = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
-  tz.dataset.filled = '1';
+  const select = document.getElementById('pref-tz');
+  if (!select || typeof window.timezone?.populate !== 'function') return;
+  window.timezone.populate(select);
 })();
 
 // Save/Cancel prefs (keep, but also mirror theme on body/html)
 (() => {
   const SAVE_KEY = 'merchant.prefs';
-  const read = () => JSON.parse(localStorage.getItem(SAVE_KEY) || '{}');
-  const write = (obj) => localStorage.setItem(SAVE_KEY, JSON.stringify(obj));
+  const read = () => {
+    try {
+      return JSON.parse(localStorage.getItem(SAVE_KEY) || '{}') || {};
+    } catch {
+      return {};
+    }
+  };
+  const write = (obj) => {
+    try {
+      localStorage.setItem(SAVE_KEY, JSON.stringify(obj));
+    } catch {}
+  };
 
   const el = id => document.getElementById(id);
+  const ensureTimezoneOption = (value) => {
+    const select = el('pref-tz');
+    if (!select || !value) return value;
+    const options = Array.from(select.options || []);
+    return options.some((opt) => opt.value === value) ? value : '';
+  };
   const fields = {
     email:    () => el('pref-email')?.value || '',
     currency: () => el('pref-currency')?.value || '',
@@ -181,7 +383,12 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   const apply = p => {
     if (el('pref-email')) el('pref-email').value = p.email || el('pref-email').value || '';
     if (el('pref-currency')) el('pref-currency').value = p.currency || '';
-    if (el('pref-tz')) el('pref-tz').value = p.tz || (Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC');
+    const tzSelect = el('pref-tz');
+    if (tzSelect) {
+      const currentTz = typeof window.timezone?.get === 'function' ? window.timezone.get() : '';
+      const desired = ensureTimezoneOption(p.tz) || currentTz;
+      if (desired) tzSelect.value = desired;
+    }
     if (el('pref-dark')) {
       const dark = (p.theme || 'light') === 'dark';
       el('pref-dark').checked = dark;
@@ -192,20 +399,60 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     }
   };
 
-  apply(read());
+  const initial = read();
+  if (!initial.tz && typeof window.timezone?.get === 'function') initial.tz = window.timezone.get();
+  apply(initial);
 
   const saveBtn = el('prefs-save');
   const cancelBtn = el('prefs-cancel');
-  saveBtn?.addEventListener('click', (e) => {
+  const showToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast === 'function') window.toast(message);
+    else console.info(message);
+  };
+  const showErrorToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast?.error === 'function') window.toast.error(message);
+    else if (typeof window.toast === 'function') window.toast(message);
+    else console.error(message);
+  };
+  async function persistTimezone(timezone) {
+    const res = await fetch('/merchant/prefs/timezone', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ timezone }),
+    });
+    let data = null;
+    try { data = await res.json(); } catch {}
+    if (!res.ok || !data?.ok) {
+      throw new Error((data && data.error) || 'Failed to save timezone');
+    }
+    return data.timezone || timezone;
+  }
+
+  saveBtn?.addEventListener('click', async (e) => {
     e.preventDefault();
     const next = Object.fromEntries(Object.entries(fields).map(([k,f]) => [k, f()]));
-    write(next);
-    alert('Preferences saved');
+    try {
+      const resolved = await persistTimezone(next.tz);
+      if (typeof window.timezone?.set === 'function') window.timezone.set(resolved);
+      next.tz = resolved;
+      write(next);
+      showToast('Preference saved.');
+    } catch (err) {
+      console.error(err);
+      showErrorToast('Failed to save preferences.');
+    }
   });
   cancelBtn?.addEventListener('click', (e) => {
     e.preventDefault();
-    apply(read());
-    alert('Changes discarded');
+    const current = read();
+    if (typeof window.timezone?.get === 'function') {
+      current.tz = window.timezone.get();
+    }
+    apply(current);
+    showToast('Changes discarded.');
   });
 })();
 

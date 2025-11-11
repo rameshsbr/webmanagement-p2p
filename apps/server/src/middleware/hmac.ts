@@ -21,7 +21,10 @@ export async function merchantHmacAuth(req: Request, res: Response, next: NextFu
   const timestamp = req.header('X-Timestamp');
   if (!prefix || !signature || !timestamp) return res.unauthorized('Missing auth headers');
 
-  const apiKey = await prisma.merchantApiKey.findUnique({ where: { prefix } });
+  const apiKey = await prisma.merchantApiKey.findUnique({
+    where: { prefix },
+    include: { merchant: { select: { active: true, status: true } } },
+  });
   if (!apiKey || !apiKey.active) return res.unauthorized('Invalid key');
   if (apiKey.expiresAt && apiKey.expiresAt < new Date()) return res.unauthorized('Key expired');
 
@@ -42,6 +45,11 @@ export async function merchantHmacAuth(req: Request, res: Response, next: NextFu
   const expected = crypto.createHmac('sha256', secret).update(`${timestamp}.${rawBody}`).digest('hex');
   if (!tscmp(signature, expected)) {
     return res.unauthorized('Bad signature');
+  }
+
+  const merchantStatus = String(apiKey.merchant?.status || '').toLowerCase();
+  if (!apiKey.merchant?.active || merchantStatus === 'suspended' || merchantStatus === 'closed') {
+    return res.unauthorized('Merchant inactive');
   }
 
   req.merchantId = apiKey.merchantId;

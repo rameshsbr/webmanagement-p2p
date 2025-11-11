@@ -1,0 +1,63 @@
+<% layout('merchant/layout') -%>
+
+<%
+  function formatAmount(cents) {
+    if (typeof cents !== 'number' || !isFinite(cents)) return '-';
+    var amount = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return '+' + amount;
+  }
+  function formatBalance(cents) {
+    if (typeof cents !== 'number' || !isFinite(cents)) return '-';
+    return (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  }
+  var balanceValue = merchant && typeof merchant.balanceCents === 'number' ? merchant.balanceCents : null;
+%>
+
+<div class="panel account-summary">
+  <div class="account-summary__item">
+    <div class="account-summary__label">Current balance</div>
+    <div class="account-summary__value"><span class="mono"><%= formatBalance(balanceValue) %></span></div>
+  </div>
+</div>
+
+<div class="panel table-toolbar account-toolbar">
+  <div class="table-toolbar__spacer mini">Showing <%= entries.length %> topup<%= entries.length === 1 ? '' : 's' %></div>
+</div>
+
+<div class="table-wrap account-table-wrap">
+  <table class="table account-table">
+    <thead>
+      <tr>
+        <th style="width:200px">DATE</th>
+        <th>METHOD</th>
+        <th style="text-align:right">AMOUNT</th>
+        <th>ADMIN</th>
+        <th>NOTE</th>
+        <th style="width:120px">RECEIPT</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (!entries.length) { %>
+        <tr>
+          <td colspan="6" style="text-align:center;color:var(--ink-dim)">No topups recorded</td>
+        </tr>
+      <% } %>
+      <% entries.forEach(function(entry){ %>
+        <tr>
+          <td><%- renderDateTime(entry.createdAt) %></td>
+          <td><%= entry.method ? entry.method : '—' %></td>
+          <td style="text-align:right"><span class="mono amount-positive"><%= formatAmount(entry.amountCents) %></span></td>
+          <td><%= entry.admin || '—' %></td>
+          <td class="note-cell"><%= entry.note && entry.note.trim() ? entry.note : '—' %></td>
+          <td>
+            <% if (entry.receipt) { %>
+              <a class="link" href="<%= entry.receipt.path %>" target="_blank" rel="noreferrer">Receipt</a>
+            <% } else { %>
+              —
+            <% } %>
+          </td>
+        </tr>
+      <% }) %>
+    </tbody>
+  </table>
+</div>

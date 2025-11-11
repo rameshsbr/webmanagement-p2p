@@ -1075,7 +1075,7 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
 });
 
 superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
-  const { name, status, email, defaultCurrency, active, userDirectoryEnabled } = req.body || {};
+  const { name, status, email, defaultCurrency, active, userDirectoryEnabled, apiKeysSelfServiceEnabled } = req.body || {};
   const website = (req.body?.webhookUrl || req.body?.website || "").trim();
 
   const before = await prisma.merchant.findUnique({
@@ -1092,6 +1092,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
+      apiKeysSelfServiceEnabled: apiKeysSelfServiceEnabled === "on",
     },
   });
 
@@ -1104,12 +1105,14 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
+      apiKeysSelfServiceEnabled: apiKeysSelfServiceEnabled === "on",
     },
     previous: {
       name: before?.name,
       status: before?.status,
       active: (before as any)?.active,
       userDirectoryEnabled: (before as any)?.userDirectoryEnabled,
+      apiKeysSelfServiceEnabled: (before as any)?.apiKeysSelfServiceEnabled,
     },
   });
 

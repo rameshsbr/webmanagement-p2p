@@ -30,6 +30,8 @@ model Merchant {
   defaultCurrency String  @default("USD") // NEW: required with default
   active          Boolean @default(true)
   userDirectoryEnabled Boolean @default(false)
+  /// When false, Merchant Portal cannot create/rotate API keys.
+  apiKeysSelfServiceEnabled Boolean @default(true)
 
   // new relations for super-admin features
   users     MerchantUser[]

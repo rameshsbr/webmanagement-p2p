@@ -118,13 +118,32 @@ async function requireMerchant(req: any, res: any, next: any) {
 router.use(requireMerchant);
 
 router.use(async (req: any, res, next) => {
-  const merchantId = req.merchant?.sub as string;
+  const merchantId = req.merchant?.sub as string | undefined;
   if (!merchantId) return next();
   if (!req.merchantDetails) {
     req.merchantDetails = await prisma.merchant.findUnique({
       where: { id: merchantId },
-      select: { id: true, name: true, email: true, balanceCents: true, defaultCurrency: true, userDirectoryEnabled: true },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        balanceCents: true,
+        defaultCurrency: true,
+        userDirectoryEnabled: true,
+        apiKeysSelfServiceEnabled: true,
+        active: true,
+        status: true,
+      },
     });
+  }
+  const merchantDetails = req.merchantDetails;
+  const status = String(merchantDetails?.status || "").toLowerCase();
+  if (!merchantDetails?.active || status === "suspended" || status === "closed") {
+    try {
+      res.clearCookie("merchant_jwt", { path: "/" });
+      res.clearCookie("merchant", { path: "/" });
+    } catch {}
+    return res.redirect("/public/merchant/login?reason=merchant-inactive");
   }
   const authPayload = req.merchantAuth || {};
   const tokenSub = typeof authPayload?.sub === "string" ? authPayload.sub : null;
@@ -152,7 +171,7 @@ router.use(async (req: any, res, next) => {
     authPayload.canViewUsers = canViewUsers;
     if (merchantUserId) authPayload.merchantUserId = merchantUserId;
   }
-  res.locals.merchant = req.merchantDetails;
+  res.locals.merchant = merchantDetails;
   res.locals.merchantUser = merchantUser;
   res.locals.merchantAuth = authPayload;
   res.locals.merchantFeatures = { usersEnabled: canViewUsers };
@@ -765,13 +784,34 @@ function genSecret(): string {
   return crypto.randomBytes(24).toString("base64url");
 }
 
+async function listMerchantApiKeys(merchantId: string) {
+  return prisma.merchantApiKey.findMany({
+    where: { merchantId },
+    orderBy: { createdAt: "desc" },
+    select: {
+      id: true,
+      prefix: true,
+      last4: true,
+      active: true,
+      scopes: true,
+      createdAt: true,
+      lastUsedAt: true,
+      expiresAt: true,
+    },
+  });
+}
+
 router.get("/keys", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
-  const keys = await prisma.merchantApiKey.findMany({
-    where: { merchantId }, orderBy: { createdAt: "desc" },
-    select: { id:true, prefix:true, last4:true, active:true, scopes:true, createdAt:true, lastUsedAt:true, expiresAt:true }
+  const keys = await listMerchantApiKeys(merchantId);
+  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  res.render("merchant/api-keys", {
+    title: "API Keys",
+    keys,
+    justCreated: null,
+    selfService,
+    error: null,
   });
-  res.render("merchant/api-keys", { title: "API Keys", keys, justCreated: null });
 });
 
 router.post("/prefs/theme", (req, res) => {
@@ -815,16 +855,30 @@ router.post("/prefs/timezone", async (req: any, res) => {
 
 router.post("/keys/create", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
+  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  if (!selfService) {
+    const keys = await listMerchantApiKeys(merchantId);
+    return res.status(403).render("merchant/api-keys", {
+      title: "API Keys",
+      keys,
+      justCreated: null,
+      error: "Self-service API key creation is disabled by your administrator.",
+      selfService,
+    });
+  }
   const prefix = genPrefix();
   const secret = genSecret();
   await prisma.merchantApiKey.create({
     data: { merchantId, prefix, secretEnc: seal(secret), last4: secret.slice(-4), scopes: ["read:payments"] }
   });
-  const keys = await prisma.merchantApiKey.findMany({
-    where: { merchantId }, orderBy: { createdAt: "desc" },
-    select: { id:true, prefix:true, last4:true, active:true, scopes:true, createdAt:true, lastUsedAt:true, expiresAt:true }
+  const keys = await listMerchantApiKeys(merchantId);
+  res.render("merchant/api-keys", {
+    title: "API Keys",
+    keys,
+    justCreated: `${prefix}.${secret}`,
+    selfService,
+    error: null,
   });
-  res.render("merchant/api-keys", { title: "API Keys", keys, justCreated: `${prefix}.${secret}` });
 });
 
 router.post("/keys/:id/revoke", async (req: any, res) => {
@@ -835,6 +889,17 @@ router.post("/keys/:id/revoke", async (req: any, res) => {
 
 router.post("/keys/:id/rotate", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
+  const selfService = req.merchantDetails?.apiKeysSelfServiceEnabled !== false;
+  if (!selfService) {
+    const keys = await listMerchantApiKeys(merchantId);
+    return res.status(403).render("merchant/api-keys", {
+      title: "API Keys",
+      keys,
+      justCreated: null,
+      selfService,
+      error: "Self-service API key rotation is disabled by your administrator.",
+    });
+  }
   await prisma.merchantApiKey.updateMany({ where: { id: req.params.id, merchantId }, data: { active: false } });
   const prefix = genPrefix(); const secret = genSecret();
   await prisma.merchantApiKey.create({

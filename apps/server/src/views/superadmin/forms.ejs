@@ -158,8 +158,12 @@
   }
   .grid{ display:grid; grid-template-columns: 160px 1fr; gap:14px; align-items:center; }
   .full { grid-column: 1 / -1; }
-  .digits-wrap{ display:none; gap:8px; align-items:center; margin-top:8px; }
+  .digits-wrap{ display:none; flex-direction:column; gap:8px; margin-top:8px; }
+  .digits-grid{ display:flex; flex-wrap:wrap; gap:12px; }
+  .digits-col{ display:flex; flex-direction:column; gap:4px; min-width:140px; }
   .digits-input{ width:120px; }
+  .digits-helper{ font-size:12px; opacity:.75; }
+  .digits-error{ font-size:12px; color:#dc2626; }
   .field-card > .grid{ margin-bottom:16px; }
   .field-card > .grid:last-child{ margin-bottom:0; }
   .block-actions{ position:static; display:flex; gap:8px; }
@@ -278,11 +282,18 @@
   const wdrList = document.getElementById('wdrList');
   const addDep = document.getElementById('addDep');
   const addWdr = document.getElementById('addWdr');
+  const saveBtn = document.querySelector('.save-panel button[type="submit"]');
+
+  function refreshSaveState(){
+    if (!saveBtn) return;
+    const invalid = document.querySelector('.field-card[data-digits-invalid="1"]');
+    saveBtn.disabled = !!invalid;
+  }
 
   const modes = [['input','Input'],['file','File'],['select','Select']];
 
   function normalizeRow(r){
-    if (!r) return { name:"", display:"input", field:"text", placeholder:"", required:false, digits:0, options:[] };
+    if (!r) return { name:"", display:"input", field:"text", placeholder:"", required:false, minDigits:0, maxDigits:null, options:[] };
     const name = String(r.name ?? r.key ?? r.label ?? "").trim();
     const displayRaw = String(r.display ?? r.mode ?? "input").toLowerCase();
     const display = (displayRaw==="file"||displayRaw==="select") ? displayRaw : "input";
@@ -297,8 +308,32 @@
     let options = [];
     if (Array.isArray(r.options)) options = r.options.map(String);
     else if (typeof r.data === "string") options = r.data.split(",").map(s=>s.trim()).filter(Boolean);
-    const digits = Number.isFinite(+r.digits) ? Math.max(0,+r.digits) : 0;
-    return { name, display, field, placeholder: r.placeholder ?? "", required: !!r.required, digits, options };
+
+    const clamp = (n) => Math.max(0, Math.min(64, Math.floor(n)));
+    const hasMin = r && Object.prototype.hasOwnProperty.call(r, "minDigits");
+    const hasMax = r && Object.prototype.hasOwnProperty.call(r, "maxDigits");
+    const legacyDigits = Number.isFinite(+r?.digits) && +r.digits > 0 ? clamp(+r.digits) : null;
+
+    let minDigits = Number.isFinite(+r?.minDigits) ? clamp(+r.minDigits) : 0;
+    let maxDigits = null;
+    if (hasMax) {
+      const raw = (r as any).maxDigits;
+      if (raw === null || raw === "" || typeof raw === "undefined") maxDigits = null;
+      else if (Number.isFinite(+raw)) maxDigits = clamp(+raw);
+    } else if (legacyDigits) {
+      maxDigits = legacyDigits;
+    }
+    if (!hasMin && legacyDigits) {
+      minDigits = 0;
+    }
+
+    if (maxDigits !== null && maxDigits < minDigits) maxDigits = minDigits;
+    if (!(display === "input" && field === "number")) {
+      minDigits = 0;
+      maxDigits = null;
+    }
+
+    return { name, display, field, placeholder: r.placeholder ?? "", required: !!r.required, minDigits, maxDigits, options };
   }
 
   function el(tag, attrs={}, children){
@@ -348,18 +383,97 @@
     const card = el('div',{class:'field-card', draggable:'true'});
 
     const actions = el('div',{class:'block-actions'},[
-      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const clone = makeCard(kind,{display:'input',field:'text',required:true}); card.parentElement.insertBefore(clone, card.nextSibling); clone.querySelector('.i-name').focus(); }},'＋'),
-      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const list=card.parentElement; if(list.querySelectorAll('.field-card').length>1) card.remove(); }},'－')
+      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const clone = makeCard(kind,{display:'input',field:'text',required:true}); card.parentElement.insertBefore(clone, card.nextSibling); clone.querySelector('.i-name').focus(); refreshSaveState(); }},'＋'),
+      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const list=card.parentElement; if(list.querySelectorAll('.field-card').length>1) { card.remove(); refreshSaveState(); } }},'－')
     ]);
 
     const name = el('input',{type:'text', class:'i-name', value:d.name||'', placeholder:'Field name'});
     const display = el('select',{class:'i-display'});
     modes.forEach(([v,t])=> display.appendChild(new Option(t,v, false, d.display===v)));
     const field = el('select',{class:'i-field'});
+    const minInput = el('input',{type:'number', min:'0', max:'64', step:'1', class:'digits-input i-min-digits', value: (Number.isFinite(d.minDigits) ? d.minDigits : 0) || 0});
+    const maxInput = el('input',{type:'number', min:'0', max:'64', step:'1', placeholder:'Unlimited', class:'digits-input i-max-digits'});
+    if (Number.isFinite(d.maxDigits)) maxInput.value = String(d.maxDigits);
+    const digitsError = el('div',{class:'digits-error', role:'alert'});
     const digitsWrap = el('div',{class:'digits-wrap'},[
-      el('span',{class:'muted'},'Number of digits. 0 - unlimited.'),
-      el('input',{type:'number', min:'0', step:'1', class:'digits-input i-digits', value: d.digits||0})
+      el('div',{class:'digits-grid'},[
+        el('label',{class:'digits-col'},[
+          el('span',{class:'muted'},'Min digits'),
+          minInput
+        ]),
+        el('label',{class:'digits-col'},[
+          el('span',{class:'muted'},'Max digits'),
+          Object.assign(maxInput,{placeholder:'Unlimited'})
+        ]),
+      ]),
+      el('div',{class:'digits-helper'},'Accepted length must be between Min and Max digits (inclusive). Leave Max empty for unlimited.'),
+      digitsError
     ]);
+    function readDigits(){
+      const minRaw = minInput.value.trim();
+      const maxRaw = maxInput.value.trim();
+      const minVal = minRaw === '' ? 0 : Number(minRaw);
+      const maxVal = maxRaw === '' ? null : Number(maxRaw);
+      return { minRaw, maxRaw, minVal, maxVal };
+    }
+
+    function normalizeDigits(){
+      const { minVal, maxVal } = readDigits();
+      if (!Number.isFinite(minVal) || minVal < 0) {
+        minInput.value = '0';
+      } else {
+        minInput.value = String(Math.max(0, Math.min(64, Math.floor(minVal))));
+      }
+      if (maxVal === null){
+        maxInput.value = '';
+      } else if (!Number.isFinite(maxVal) || maxVal < 0){
+        maxInput.value = '';
+      } else {
+        maxInput.value = String(Math.max(0, Math.min(64, Math.floor(maxVal))));
+      }
+    }
+
+    function validateDigits(){
+      const active = display.value === 'input' && field.value === 'number';
+      if (!active){
+        digitsError.textContent = '';
+        card.removeAttribute('data-digits-invalid');
+        return true;
+      }
+      const { minVal, maxVal } = readDigits();
+      let min = 0;
+      let max = null;
+      if (Number.isFinite(minVal) && minVal >= 0) min = Math.max(0, Math.min(64, Math.floor(minVal)));
+      else return setDigitsError('Min digits must be 0 or greater.');
+
+      if (maxVal === null || maxVal === ''){
+        max = null;
+      } else if (Number.isFinite(maxVal) && maxVal >= 0){
+        max = Math.max(0, Math.min(64, Math.floor(maxVal)));
+      } else {
+        return setDigitsError('Max digits must be 0 or greater.');
+      }
+
+      if (max !== null && max < min){
+        return setDigitsError('Max digits must be at least the Min digits.');
+      }
+
+      digitsError.textContent = '';
+      card.removeAttribute('data-digits-invalid');
+      return true;
+
+      function setDigitsError(msg){
+        digitsError.textContent = msg;
+        card.setAttribute('data-digits-invalid','1');
+        return false;
+      }
+    }
+
+    [minInput, maxInput].forEach(input => {
+      input.addEventListener('input', ()=>{ validateDigits(); refreshSaveState(); });
+      input.addEventListener('blur', ()=>{ normalizeDigits(); validateDigits(); refreshSaveState(); });
+    });
+
     const fieldRow = el('div',{class:'grid'},[
       el('div',{class:'muted'},'Field:'),
       el('div',{},[field, digitsWrap])
@@ -387,6 +501,15 @@
     card.appendChild(reqRow);
     card.appendChild(dataWrap);
 
+    function syncDigitsVisibility(){
+      const active = display.value === 'input' && field.value === 'number';
+      digitsWrap.style.display = active ? 'flex' : 'none';
+      if (!active){
+        digitsError.textContent = '';
+        card.removeAttribute('data-digits-invalid');
+      }
+    }
+
     function syncByDisplay(){
       const mode = display.value;
       field.innerHTML = '';
@@ -402,24 +525,24 @@
         ];
         opts.forEach(([v,t]) => field.appendChild(new Option(t, v)));
         field.value = (d.field && opts.some(o=>o[0]===d.field)) ? d.field : 'text';
-        digitsWrap.style.display = (field.value==='number') ? 'flex' : 'none';
         dataWrap.style.display = 'none';
       } else if (mode==='file'){
         field.appendChild(new Option('null','null'));
         field.value = 'null'; field.disabled = true;
-        digitsWrap.style.display = 'none';
         dataWrap.style.display = 'none';
       } else { // select
         field.appendChild(new Option('null','null'));
         field.value = 'null'; field.disabled = true;
-        digitsWrap.style.display = 'none';
         dataWrap.style.display = '';
         const list = card.querySelector('.i-data-list');
         if (!list.children.length) optionRow(list,'');
       }
+      syncDigitsVisibility();
+      validateDigits();
+      refreshSaveState();
     }
     display.addEventListener('change', syncByDisplay);
-    field.addEventListener('change', ()=>{ digitsWrap.style.display = (field.value==='number') ? 'flex' : 'none'; });
+    field.addEventListener('change', ()=>{ syncDigitsVisibility(); validateDigits(); refreshSaveState(); });
 
     // init
     syncByDisplay();
@@ -452,13 +575,18 @@
     (cfg.withdrawal||[]).map(normalizeRow).forEach(x=> wdrList.appendChild(makeCard('withdrawal', x)));
     if (!depList.children.length) depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true}));
     if (!wdrList.children.length) wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true}));
+    refreshSaveState();
   }
-  addDep.addEventListener('click', ()=> depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true})));
-  addWdr.addEventListener('click', ()=> wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true})));
+  addDep.addEventListener('click', ()=> { depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true})); refreshSaveState(); });
+  addWdr.addEventListener('click', ()=> { wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true})); refreshSaveState(); });
   load();
 
   // Pack JSON and include the bank scope; skip blank-name rows to avoid server-side validation errors
-  document.getElementById('forms-editor').addEventListener('submit', ()=>{
+  document.getElementById('forms-editor').addEventListener('submit', (ev)=>{
+    if (saveBtn && saveBtn.disabled){
+      ev.preventDefault();
+      return false;
+    }
     function pack(list){
       const rows = [];
       list.querySelectorAll('.field-card').forEach(card=>{
@@ -468,7 +596,25 @@
         const fieldSel = card.querySelector('.i-field').value;
         const placeholder = card.querySelector('.i-placeholder').value;
         const required = card.querySelector('.i-required').checked;
-        const digits = Number(card.querySelector('.i-digits')?.value || 0);
+        const minDigitsInput = card.querySelector('.i-min-digits');
+        const maxDigitsInput = card.querySelector('.i-max-digits');
+        const readDigits = () => {
+          let min = 0;
+          let max = null;
+          if (minDigitsInput){
+            const raw = String(minDigitsInput.value || '').trim();
+            if (raw !== '' && Number.isFinite(+raw)) min = Math.max(0, Math.min(64, Math.floor(+raw)));
+          }
+          if (maxDigitsInput){
+            const raw = String(maxDigitsInput.value || '').trim();
+            if (raw !== '' && Number.isFinite(+raw)) {
+              max = Math.max(0, Math.min(64, Math.floor(+raw)));
+            }
+          }
+          if (max !== null && max < min) max = min;
+          return { min, max };
+        };
+        const digitsCfg = readDigits();
         const row = {
           name,
           display,
@@ -477,7 +623,8 @@
           placeholder,
           required,
           // digits only meaningful for number
-          digits: (display==='input' && fieldSel==='number') ? (Number.isFinite(digits) ? digits : 0) : 0,
+          minDigits: (display==='input' && fieldSel==='number') ? digitsCfg.min : 0,
+          maxDigits: (display==='input' && fieldSel==='number') ? digitsCfg.max : null,
           options: []
         };
         if (display==='select'){

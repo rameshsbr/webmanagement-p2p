@@ -2,7 +2,6 @@
 import { prisma } from './lib/prisma.js';
 import { hash } from './services/crypto.js';
 import { seal } from './services/secretBox.js';
-import { generateBankPublicId } from './services/reference.js';
 
 async function main() {
   const adminExists = await prisma.adminUser.findFirst();
@@ -40,8 +39,9 @@ async function main() {
   });
   if (!bank) {
     await prisma.bankAccount.create({
+      // Cast through `any` so we can rely on the database default for publicId.
       data: {
-        publicId: generateBankPublicId(),
+        merchantId: null,
         currency: 'USD',
         holderName: 'ACME Payments Ltd',
         bankName: 'Bank of Nowhere',
@@ -49,7 +49,7 @@ async function main() {
         iban: 'US00B0N000112233',
         instructions: 'Use your reference code in transfer notes',
         active: true
-      }
+      } as any
     });
   }
 

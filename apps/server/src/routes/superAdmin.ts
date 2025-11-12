@@ -14,7 +14,7 @@ import path from "node:path";
 import fs from "node:fs/promises";
 import { seal } from "../services/secretBox.js";
 import { z } from "zod";
-import { generateBankPublicId } from "../services/reference.js";
+import { formatBankPublicId } from "../services/reference.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
 import { changePaymentStatus, PaymentStatusError } from "../services/paymentStatus.js";
 import { stringify } from "csv-stringify";
@@ -1363,6 +1363,52 @@ function coerceByInputType(input: PromotedCol["input"], raw: any) {
   return s === "" ? null : s;
 }
 
+async function predictNextBankPublicId() {
+  let nextNumeric: number | null = null;
+
+  try {
+    const seqRows = (await prisma.$queryRaw<
+      { last_value: bigint | number; is_called: boolean }[]
+    >`SELECT last_value, is_called FROM "bank_public_id_seq" LIMIT 1`)
+      .map((row) => ({
+        lastValue: Number(row.last_value),
+        isCalled: !!row.is_called,
+      }));
+
+    if (seqRows.length) {
+      const { lastValue, isCalled } = seqRows[0];
+      if (Number.isFinite(lastValue)) {
+        nextNumeric = isCalled ? lastValue + 1 : lastValue;
+      }
+    }
+  } catch (err: any) {
+    const code = err?.meta?.code || err?.code;
+    if (code && String(code) !== "42P01") {
+      console.warn("[superadmin] bank_public_id_seq preview fallback", err);
+    }
+  }
+
+  if (!Number.isFinite(nextNumeric ?? NaN)) {
+    try {
+      const fallbackRows = await prisma.$queryRaw<
+        { max_id: bigint | number | null }[]
+      >`SELECT MAX(CAST(SUBSTRING("publicId", 2) AS INTEGER)) AS max_id FROM "BankAccount" WHERE "publicId" ~ '^B[0-9]+$'`;
+      const maxVal = fallbackRows.length ? Number(fallbackRows[0]?.max_id ?? 0) : 0;
+      if (Number.isFinite(maxVal)) {
+        nextNumeric = maxVal + 1;
+      }
+    } catch (err) {
+      console.warn("[superadmin] bank publicId preview max fallback failed", err);
+    }
+  }
+
+  if (!Number.isFinite(nextNumeric ?? NaN) || (nextNumeric ?? 0) < 1) {
+    nextNumeric = 1;
+  }
+
+  return formatBankPublicId(nextNumeric!);
+}
+
 // List
 superAdminRouter.get("/banks", async (req: any, res: any) => {
   const qMerchant = (req.query.merchantId as string) || "";
@@ -1430,6 +1476,19 @@ superAdminRouter.get("/banks", async (req: any, res: any) => {
 });
 
 // New
+superAdminRouter.get("/banks/public-id/preview", async (_req: any, res: any) => {
+  try {
+    const preview = await predictNextBankPublicId();
+    return res.json({
+      preview,
+      note: "Final value is assigned at save and may change if another bank is created first.",
+    });
+  } catch (err) {
+    console.error("[superadmin] failed to build bank publicId preview", err);
+    return res.status(503).json({ error: "Preview unavailable" });
+  }
+});
+
 superAdminRouter.get("/banks/new", async (_req: any, res: any) => {
   const [merchants, promotedCols] = await Promise.all([
     prisma.merchant.findMany({
@@ -1478,14 +1537,64 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
     }
   }
 
-  const created = await prisma.bankAccount.create({
-    data: {
-      publicId: generateBankPublicId(),
-      ...data,
-      ...promotedData,
-      fields,
-    } as any,
-  });
+  const { merchantId, ...rest } = data as typeof data & {
+    merchantId?: string | null;
+  };
+
+  const payload: any = { ...rest, ...promotedData, fields };
+  if (merchantId) {
+    payload.merchant = { connect: { id: merchantId } };
+  }
+
+  // Ensure we never send publicId even if the client attempted to provide one.
+  delete payload.publicId;
+
+  let created: any = null;
+  try {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        created = await prisma.bankAccount.create({ data: payload });
+        break;
+      } catch (err: any) {
+        if (err?.code === "P2002" && attempt === 0) {
+          continue; // retry once on unique collisions
+        }
+        throw err;
+      }
+    }
+  } catch (err: any) {
+    console.error("[superadmin] failed to create bank", err);
+    const merchants = await prisma.merchant.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+    return res.status(500).render("superadmin/bank-edit", {
+      title: "New Bank",
+      bank: { ...req.body, fields },
+      merchants,
+      errors: [
+        {
+          message:
+            "Failed to assign a Public ID automatically. Please verify database migrations and try again.",
+        },
+      ],
+      promotedCols,
+    });
+  }
+
+  if (!created) {
+    const merchants = await prisma.merchant.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+    return res.status(500).render("superadmin/bank-edit", {
+      title: "New Bank",
+      bank: { ...req.body, fields },
+      merchants,
+      errors: [{ message: "Unable to create bank account." }],
+      promotedCols,
+    });
+  }
   try {
     await auditAdmin(req, "super:banks.create", "BANK", created.id, {
       ...data,
@@ -2941,18 +3050,41 @@ superAdminRouter.get("/login-logs.xlsx", async (_req, res) => {
 // NEW: Forms (per-merchant and per-bank) — configure deposit/withdrawal inputs
 // Matches UI payload; backward compatible with legacy rows
 // ───────────────────────────────────────────────────────────────
-const FieldRow = z.object({
-  name: z.string().min(1).max(60),
-  display: z.enum(["input", "file", "select"]),
-  // NEW allowed field types for "input"
-  field: z
-    .enum(["text", "number", "phone", "email", "phone_email"])
-    .nullable(), // null for file/select
-  placeholder: z.string().max(200).optional().nullable(),
-  required: z.boolean().optional().default(false),
-  digits: z.number().int().nonnegative().max(64).optional().default(0), // 0 = unlimited (number only)
-  options: z.array(z.string().min(1).max(200)).optional().default([]), // for select
-});
+const FieldRow = z
+  .object({
+    name: z.string().min(1).max(60),
+    display: z.enum(["input", "file", "select"]),
+    // NEW allowed field types for "input"
+    field: z
+      .enum(["text", "number", "phone", "email", "phone_email"])
+      .nullable(), // null for file/select
+    placeholder: z.string().max(200).optional().nullable(),
+    required: z.boolean().optional().default(false),
+    minDigits: z.number().int().min(0).max(64).optional().default(0),
+    maxDigits: z
+      .number()
+      .int()
+      .min(0)
+      .max(64)
+      .nullable()
+      .optional()
+      .default(null),
+    options: z.array(z.string().min(1).max(200)).optional().default([]), // for select
+  })
+  .superRefine((val, ctx) => {
+    if (val.display === "input" && val.field === "number") {
+      const min = Number.isFinite(val.minDigits) ? Math.max(0, Math.min(64, val.minDigits ?? 0)) : 0;
+      const maxRaw = val.maxDigits;
+      const max = maxRaw == null ? null : Math.max(0, Math.min(64, maxRaw));
+      if (max !== null && max < min) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Max digits must be greater than or equal to min digits.",
+          path: ["maxDigits"],
+        });
+      }
+    }
+  });
 
 const FormPayload = z.object({
   deposit: z.array(FieldRow).optional().default([]),
@@ -3006,12 +3138,29 @@ function normalizeRow(r: any): z.infer<typeof FieldRow> {
   const placeholder = (r?.placeholder ?? "") as string;
   const required = !!r?.required;
 
-  const digitsNum = Number(r?.digits);
-  // digits only meaningful for number inputs
-  const digits =
-    display === "input" && field === "number" && Number.isFinite(digitsNum)
-      ? Math.max(0, digitsNum)
-      : 0;
+  const clamp = (n: number) => Math.max(0, Math.min(64, Math.floor(n)));
+  const hasMin = r && Object.prototype.hasOwnProperty.call(r, "minDigits");
+  const hasMax = r && Object.prototype.hasOwnProperty.call(r, "maxDigits");
+  const legacyDigits = Number.isFinite(Number(r?.digits)) && Number(r?.digits) > 0 ? clamp(Number(r?.digits)) : null;
+
+  let minDigits = Number.isFinite(Number(r?.minDigits)) ? clamp(Number(r?.minDigits)) : 0;
+  let maxDigits: number | null = null;
+  if (hasMax) {
+    const raw = (r as any).maxDigits;
+    if (raw === null || raw === "" || typeof raw === "undefined") maxDigits = null;
+    else if (Number.isFinite(Number(raw))) maxDigits = clamp(Number(raw));
+  } else if (legacyDigits) {
+    maxDigits = legacyDigits;
+  }
+  if (!hasMin && legacyDigits) {
+    minDigits = 0;
+  }
+
+  if (maxDigits !== null && maxDigits < minDigits) maxDigits = minDigits;
+  if (!(display === "input" && field === "number")) {
+    minDigits = 0;
+    maxDigits = null;
+  }
 
   let options: string[] = [];
   if (Array.isArray(r?.options))
@@ -3025,19 +3174,32 @@ function normalizeRow(r: any): z.infer<typeof FieldRow> {
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  return { name, display, field, placeholder, required, digits, options };
+  return { name, display, field, placeholder, required, minDigits, maxDigits, options };
 }
 
 // helper: strip blank names and collapse dup options
 function cleanRows(arr: any[]): Array<z.infer<typeof FieldRow>> {
   const normed = (Array.isArray(arr) ? arr : []).map(normalizeRow);
   const nonEmpty = normed.filter((r) => r.name && r.name.trim().length > 0);
-  return nonEmpty.map((r) => ({
-    ...r,
-    options: Array.from(
-      new Set((r.options || []).map((s) => s.trim()).filter(Boolean))
-    ),
-  }));
+  return nonEmpty.map((r) => {
+    const isNumber = r.display === "input" && r.field === "number";
+    const min = Number.isFinite(r.minDigits)
+      ? Math.max(0, Math.min(64, Math.floor(r.minDigits ?? 0)))
+      : 0;
+    let max: number | null = null;
+    if (r.maxDigits != null && Number.isFinite(r.maxDigits)) {
+      max = Math.max(0, Math.min(64, Math.floor(r.maxDigits ?? 0)));
+      if (max < min) max = min;
+    }
+    return {
+      ...r,
+      minDigits: isNumber ? min : 0,
+      maxDigits: isNumber ? max : null,
+      options: Array.from(
+        new Set((r.options || []).map((s) => s.trim()).filter(Boolean))
+      ),
+    };
+  });
 }
 
 // GET: forms editor — supports bank selection under a merchant

@@ -67,20 +67,6 @@
   </form>
 </div>
 
-<% const testSubject = ((query.subject || query.diditSubject || '') || '').trim(); %>
-
-<div class="panel" data-test-payments data-subject="<%= testSubject %>">
-  <div class="row" style="align-items:center; gap:10px; flex-wrap:wrap;">
-    <div style="font-weight:600;">Test payments</div>
-    <div style="opacity:.7;">Subject:</div>
-    <code data-test-subject><%= testSubject || '—' %></code>
-    <span style="flex:1"></span>
-    <button type="button" class="btn small" data-action="test-deposit">Test Deposit</button>
-    <button type="button" class="btn small" data-action="test-withdrawal">Test Withdrawal</button>
-  </div>
-  <p class="hint" data-test-status style="margin:8px 0 0 0; font-size:12px; opacity:.75;">Creates a pending payment entry for quick testing. When no subject is provided a temporary one will be generated for you.</p>
-</div>
-
 <div class="table-wrap">
 
   <% if (typeof checkoutToken !== 'undefined') { %>

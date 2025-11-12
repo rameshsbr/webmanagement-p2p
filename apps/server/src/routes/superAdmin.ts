@@ -3050,18 +3050,41 @@ superAdminRouter.get("/login-logs.xlsx", async (_req, res) => {
 // NEW: Forms (per-merchant and per-bank) — configure deposit/withdrawal inputs
 // Matches UI payload; backward compatible with legacy rows
 // ───────────────────────────────────────────────────────────────
-const FieldRow = z.object({
-  name: z.string().min(1).max(60),
-  display: z.enum(["input", "file", "select"]),
-  // NEW allowed field types for "input"
-  field: z
-    .enum(["text", "number", "phone", "email", "phone_email"])
-    .nullable(), // null for file/select
-  placeholder: z.string().max(200).optional().nullable(),
-  required: z.boolean().optional().default(false),
-  digits: z.number().int().nonnegative().max(64).optional().default(0), // 0 = unlimited (number only)
-  options: z.array(z.string().min(1).max(200)).optional().default([]), // for select
-});
+const FieldRow = z
+  .object({
+    name: z.string().min(1).max(60),
+    display: z.enum(["input", "file", "select"]),
+    // NEW allowed field types for "input"
+    field: z
+      .enum(["text", "number", "phone", "email", "phone_email"])
+      .nullable(), // null for file/select
+    placeholder: z.string().max(200).optional().nullable(),
+    required: z.boolean().optional().default(false),
+    minDigits: z.number().int().min(0).max(64).optional().default(0),
+    maxDigits: z
+      .number()
+      .int()
+      .min(0)
+      .max(64)
+      .nullable()
+      .optional()
+      .default(null),
+    options: z.array(z.string().min(1).max(200)).optional().default([]), // for select
+  })
+  .superRefine((val, ctx) => {
+    if (val.display === "input" && val.field === "number") {
+      const min = Number.isFinite(val.minDigits) ? Math.max(0, Math.min(64, val.minDigits ?? 0)) : 0;
+      const maxRaw = val.maxDigits;
+      const max = maxRaw == null ? null : Math.max(0, Math.min(64, maxRaw));
+      if (max !== null && max < min) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: "Max digits must be greater than or equal to min digits.",
+          path: ["maxDigits"],
+        });
+      }
+    }
+  });
 
 const FormPayload = z.object({
   deposit: z.array(FieldRow).optional().default([]),
@@ -3115,12 +3138,29 @@ function normalizeRow(r: any): z.infer<typeof FieldRow> {
   const placeholder = (r?.placeholder ?? "") as string;
   const required = !!r?.required;
 
-  const digitsNum = Number(r?.digits);
-  // digits only meaningful for number inputs
-  const digits =
-    display === "input" && field === "number" && Number.isFinite(digitsNum)
-      ? Math.max(0, digitsNum)
-      : 0;
+  const clamp = (n: number) => Math.max(0, Math.min(64, Math.floor(n)));
+  const hasMin = r && Object.prototype.hasOwnProperty.call(r, "minDigits");
+  const hasMax = r && Object.prototype.hasOwnProperty.call(r, "maxDigits");
+  const legacyDigits = Number.isFinite(Number(r?.digits)) && Number(r?.digits) > 0 ? clamp(Number(r?.digits)) : null;
+
+  let minDigits = Number.isFinite(Number(r?.minDigits)) ? clamp(Number(r?.minDigits)) : 0;
+  let maxDigits: number | null = null;
+  if (hasMax) {
+    const raw = (r as any).maxDigits;
+    if (raw === null || raw === "" || typeof raw === "undefined") maxDigits = null;
+    else if (Number.isFinite(Number(raw))) maxDigits = clamp(Number(raw));
+  } else if (legacyDigits) {
+    maxDigits = legacyDigits;
+  }
+  if (!hasMin && legacyDigits) {
+    minDigits = 0;
+  }
+
+  if (maxDigits !== null && maxDigits < minDigits) maxDigits = minDigits;
+  if (!(display === "input" && field === "number")) {
+    minDigits = 0;
+    maxDigits = null;
+  }
 
   let options: string[] = [];
   if (Array.isArray(r?.options))
@@ -3134,19 +3174,32 @@ function normalizeRow(r: any): z.infer<typeof FieldRow> {
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  return { name, display, field, placeholder, required, digits, options };
+  return { name, display, field, placeholder, required, minDigits, maxDigits, options };
 }
 
 // helper: strip blank names and collapse dup options
 function cleanRows(arr: any[]): Array<z.infer<typeof FieldRow>> {
   const normed = (Array.isArray(arr) ? arr : []).map(normalizeRow);
   const nonEmpty = normed.filter((r) => r.name && r.name.trim().length > 0);
-  return nonEmpty.map((r) => ({
-    ...r,
-    options: Array.from(
-      new Set((r.options || []).map((s) => s.trim()).filter(Boolean))
-    ),
-  }));
+  return nonEmpty.map((r) => {
+    const isNumber = r.display === "input" && r.field === "number";
+    const min = Number.isFinite(r.minDigits)
+      ? Math.max(0, Math.min(64, Math.floor(r.minDigits ?? 0)))
+      : 0;
+    let max: number | null = null;
+    if (r.maxDigits != null && Number.isFinite(r.maxDigits)) {
+      max = Math.max(0, Math.min(64, Math.floor(r.maxDigits ?? 0)));
+      if (max < min) max = min;
+    }
+    return {
+      ...r,
+      minDigits: isNumber ? min : 0,
+      maxDigits: isNumber ? max : null,
+      options: Array.from(
+        new Set((r.options || []).map((s) => s.trim()).filter(Boolean))
+      ),
+    };
+  });
 }
 
 // GET: forms editor — supports bank selection under a merchant

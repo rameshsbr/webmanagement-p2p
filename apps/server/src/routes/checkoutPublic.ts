@@ -186,7 +186,8 @@ type UIField = {
   field: "text" | "number" | null;
   placeholder?: string;
   required?: boolean;
-  digits?: number;
+  minDigits?: number;
+  maxDigits?: number | null;
   options?: string[];
 };
 
@@ -199,11 +200,33 @@ function normalizeField(r: any): UIField | null {
   const field = display === "input" ? (String(r.field || "text").toLowerCase() === "number" ? "number" : "text") : null;
   const placeholder = r.placeholder ?? "";
   const required = !!r.required;
-  const digits = Number.isFinite(+r.digits) ? Math.max(0, +r.digits) : 0;
+  const clamp = (n: number) => Math.max(0, Math.min(64, Math.floor(n)));
+  const hasMin = r && Object.prototype.hasOwnProperty.call(r, "minDigits");
+  const hasMax = r && Object.prototype.hasOwnProperty.call(r, "maxDigits");
+  const legacyDigits = Number.isFinite(+r.digits) && +r.digits > 0 ? clamp(+r.digits) : null;
+
+  let minDigits = Number.isFinite(+r.minDigits) ? clamp(+r.minDigits) : 0;
+  let maxDigits: number | null = null;
+  if (hasMax) {
+    const raw = (r as any).maxDigits;
+    if (raw === null || raw === "" || typeof raw === "undefined") maxDigits = null;
+    else if (Number.isFinite(+raw)) maxDigits = clamp(+raw);
+  } else if (legacyDigits) {
+    maxDigits = legacyDigits;
+  }
+  if (!hasMin && legacyDigits) {
+    minDigits = 0;
+  }
+
+  if (maxDigits !== null && maxDigits < minDigits) maxDigits = minDigits;
+  if (!(display === "input" && field === "number")) {
+    minDigits = 0;
+    maxDigits = null;
+  }
   let options: string[] = [];
   if (Array.isArray(r.options)) options = r.options.map((x: any) => String(x));
   else if (typeof r.data === "string") options = r.data.split(",").map((s: string) => s.trim()).filter(Boolean);
-  return { name, display, field, placeholder, required, digits, options };
+  return { name, display, field, placeholder, required, minDigits, maxDigits, options };
 }
 
 async function getFormConfig(merchantId: string, bankAccountId?: string | null) {
@@ -222,29 +245,63 @@ async function getFormConfig(merchantId: string, bankAccountId?: string | null) 
   return { deposit, withdrawal };
 }
 
-function validateExtras(fields: UIField[], extras: any) {
-  const data = extras && typeof extras === "object" ? extras : {};
+function validateExtras(
+  fields: UIField[],
+  extras: any
+): { ok: true; values: Record<string, any> } | { ok: false; error: string } {
+  const data =
+    extras && typeof extras === "object" && !Array.isArray(extras) ? extras : {};
+  const result: Record<string, any> = {};
+
   for (const f of fields) {
-    const v = data[f.name];
+    const raw = (data as any)[f.name];
+    const asString = raw == null ? "" : String(raw);
+
     if (f.required) {
-      const missing = v == null || (typeof v === "string" && v.trim() === "");
+      const missing = asString.trim() === "";
       if (missing) return { ok: false, error: `Missing field: ${f.name}` };
     }
-    if (f.display === "select" && f.options && f.options.length) {
-      if (v != null && !f.options.includes(String(v))) {
+
+    if (f.display === "select" && Array.isArray(f.options) && f.options.length) {
+      if (asString && !f.options.includes(asString)) {
         return { ok: false, error: `Invalid option for ${f.name}` };
       }
     }
+
     if (f.display === "input" && f.field === "number") {
-      if (v != null && String(v).trim() !== "") {
-        if (!/^\d+$/.test(String(v))) return { ok: false, error: `Digits only in ${f.name}` };
-        if (f.digits && f.digits > 0 && String(v).length !== f.digits) {
-          return { ok: false, error: `${f.name} must be ${f.digits} digits` };
-        }
+      const trimmed = asString.trim();
+      if (trimmed === "") {
+        result[f.name] = "";
+        continue;
       }
+      const collapsed = trimmed.replace(/[\s-]+/g, "");
+      if (!/^\d+$/.test(collapsed)) {
+        return { ok: false, error: `${f.name}: Enter digits only.` };
+      }
+      const len = collapsed.length;
+      const min = Math.max(0, Math.floor(Number(f.minDigits ?? 0)));
+      const maxRaw = f.maxDigits == null ? null : Number(f.maxDigits);
+      const max = maxRaw == null ? null : Math.max(0, Math.floor(maxRaw));
+      if (min > 0 && len < min) {
+        if (max != null) {
+          return { ok: false, error: `${f.name}: Enter between ${min} and ${max} digits.` };
+        }
+        return { ok: false, error: `${f.name}: Enter at least ${min} digits.` };
+      }
+      if (max != null && len > max) {
+        if (min > 0) {
+          return { ok: false, error: `${f.name}: Enter between ${min} and ${max} digits.` };
+        }
+        return { ok: false, error: `${f.name}: Enter at most ${max} digits.` };
+      }
+      result[f.name] = collapsed;
+      continue;
     }
+
+    result[f.name] = asString;
   }
-  return { ok: true };
+
+  return { ok: true, values: result };
 }
 
 // ───────────────────────────────────────────────
@@ -399,6 +456,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   const forms = await getFormConfig(merchantId, chosenBank.id);
   const v = validateExtras(forms.deposit, base.extraFields || {});
   if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const sanitizedExtras = v.values;
 
   // include bank.fields for display
   const bankFull = await prisma.bankAccount.findUnique({
@@ -421,7 +479,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     bankAccountId: chosenBank.id,
     method: base.method,
     payer: base.payer,
-    extras: base.extraFields || {},
+    extras: sanitizedExtras,
     referenceCode,
     uniqueReference,
     createdAt: nowIso(),
@@ -504,6 +562,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
   const forms = await getFormConfig(merchantId, bank.id);
   const v = validateExtras(forms.deposit, payload.extras || {});
   if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const sanitizedExtras = v.values;
 
   const relPath = "/uploads/" + req.file.filename;
 
@@ -525,7 +584,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
           merchantId,
           userId: payload.userId,
           bankAccountId: bank.id,
-          detailsJson: { method: payload.method, payer: payload.payer, extras: payload.extras || {} },
+          detailsJson: { method: payload.method, payer: payload.payer, extras: sanitizedExtras },
         },
       });
 
@@ -593,6 +652,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   const forms = await getFormConfig(merchantId, null);
   const v = validateExtras(forms.withdrawal, body.extraFields || {});
   if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const sanitizedExtras = v.values;
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
@@ -645,7 +705,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       uniqueReference,
       merchantId,
       userId: user.id,
-      detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: body.extraFields || {} },
+      detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: sanitizedExtras },
     },
   });
 

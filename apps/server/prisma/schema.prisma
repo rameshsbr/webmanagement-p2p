@@ -465,7 +465,7 @@ model MerchantFormConfig {
   bankAccountId String?
   bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
 
-  // JSON arrays of { name,display,field,placeholder,required,digits?,options? }
+  // JSON arrays of { name,display,field,placeholder,required,minDigits?,maxDigits?,options? }
   deposit    Json?
   withdrawal Json?
 

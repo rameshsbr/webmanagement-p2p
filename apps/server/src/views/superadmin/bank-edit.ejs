@@ -141,9 +141,15 @@
 
     <!-- Meta row (NOT draggable) -->
     <div class="form-grid">
-      <div class="stack col-2">
-        <label>Bank ID</label>
-        <input value="<%= bank ? bank.publicId : 'Auto-assigned' %>" class="w-sm" readonly tabindex="-1" />
+      <div class="stack col-3">
+        <% if (bank) { %>
+          <label>Public ID</label>
+          <input value="<%= bank.publicId %>" class="w-sm" readonly tabindex="-1" />
+        <% } else { %>
+          <label>Public ID (will be assigned)</label>
+          <input id="bankPublicIdPreview" value="Loading…" class="w-sm" readonly tabindex="-1" data-fetch="1" />
+          <span class="muted" id="bankPublicIdPreviewNote">Final value may increment if another bank is created before you save.</span>
+        <% } %>
       </div>
 
       <div class="stack col-4">
@@ -476,6 +482,29 @@
 <script>
 (function () {
   const form = document.getElementById('bankForm');
+  const previewInput = document.getElementById('bankPublicIdPreview');
+  const previewNote = document.getElementById('bankPublicIdPreviewNote');
+
+  if (previewInput && previewInput.dataset.fetch === '1') {
+    fetch('/superadmin/banks/public-id/preview', { headers: { 'Accept': 'application/json' } })
+      .then(res => (res.ok ? res.json() : Promise.reject(new Error('preview fetch failed'))))
+      .then(data => {
+        if (data && typeof data.preview === 'string') {
+          previewInput.value = data.preview;
+        } else {
+          previewInput.value = 'Unavailable';
+        }
+        if (previewNote && typeof data?.note === 'string' && data.note.trim()) {
+          previewNote.textContent = `${data.note} Final value may increment if another bank is created before you save.`;
+        }
+      })
+      .catch(() => {
+        previewInput.value = 'Unavailable';
+        if (previewNote) {
+          previewNote.textContent = 'Preview unavailable. Final value assigned automatically when saved.';
+        }
+      });
+  }
 
   /* sync helper for the core visibility checkboxes (checkbox controls hidden input) */
   function wireCoreSync() {

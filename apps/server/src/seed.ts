@@ -2,7 +2,6 @@
 import { prisma } from './lib/prisma.js';
 import { hash } from './services/crypto.js';
 import { seal } from './services/secretBox.js';
-import { generateBankPublicId } from './services/reference.js';
 
 async function main() {
   const adminExists = await prisma.adminUser.findFirst();
@@ -41,7 +40,6 @@ async function main() {
   if (!bank) {
     await prisma.bankAccount.create({
       data: {
-        publicId: generateBankPublicId(),
         currency: 'USD',
         holderName: 'ACME Payments Ltd',
         bankName: 'Bank of Nowhere',

@@ -96,7 +96,7 @@ model BankAccount {
   merchantId String?
   merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
 
-  publicId   String    @unique
+  publicId   String    @unique @db.VarChar(32) @default(dbgenerated("'B' || lpad(nextval('bank_public_id_seq')::text, 4, '0')"))
   currency     String
   holderName   String
   bankName     String

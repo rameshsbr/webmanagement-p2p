@@ -1381,8 +1381,11 @@ async function predictNextBankPublicId() {
         nextNumeric = isCalled ? lastValue + 1 : lastValue;
       }
     }
-  } catch (err) {
-    console.warn("[superadmin] bank_public_id_seq preview fallback", err);
+  } catch (err: any) {
+    const code = err?.meta?.code || err?.code;
+    if (code && String(code) !== "42P01") {
+      console.warn("[superadmin] bank_public_id_seq preview fallback", err);
+    }
   }
 
   if (!Number.isFinite(nextNumeric ?? NaN)) {
@@ -1478,7 +1481,7 @@ superAdminRouter.get("/banks/public-id/preview", async (_req: any, res: any) => 
     const preview = await predictNextBankPublicId();
     return res.json({
       preview,
-      note: "Final value assigned at save.",
+      note: "Final value is assigned at save and may change if another bank is created first.",
     });
   } catch (err) {
     console.error("[superadmin] failed to build bank publicId preview", err);
@@ -1534,7 +1537,17 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
     }
   }
 
-  const payload = { ...data, ...promotedData, fields } as any;
+  const { merchantId, ...rest } = data as typeof data & {
+    merchantId?: string | null;
+  };
+
+  const payload: any = { ...rest, ...promotedData, fields };
+  if (merchantId) {
+    payload.merchant = { connect: { id: merchantId } };
+  }
+
+  // Ensure we never send publicId even if the client attempted to provide one.
+  delete payload.publicId;
 
   let created: any = null;
   try {

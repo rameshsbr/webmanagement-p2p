@@ -14,10 +14,10 @@ DO $$
 DECLARE
   max_num INTEGER;
 BEGIN
-  SELECT MAX(COALESCE(NULLIF(regexp_replace(publicId, '^B', ''), '')::int, 0))
+  SELECT MAX(COALESCE(NULLIF(regexp_replace("publicId", '^B', ''), '')::int, 0))
     INTO max_num
   FROM "BankAccount"
-  WHERE publicId IS NOT NULL;
+  WHERE "publicId" IS NOT NULL;
 
   IF max_num IS NULL OR max_num < 1 THEN
     -- No existing rows in correct format: nextval() should return 1
@@ -52,6 +52,6 @@ BEGIN
   ) THEN
     ALTER TABLE "BankAccount"
       ADD CONSTRAINT bankaccount_publicid_format_chk
-      CHECK (publicId ~ '^B[0-9]+$');
+      CHECK ("publicId" ~ '^B[0-9]+$');
   END IF;
 END $$;

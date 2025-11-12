@@ -3,7 +3,7 @@ import {
   generateTransactionId,
   generateUniqueReference,
   generateUserId,
-  generateBankPublicId,
+  formatBankPublicId,
 } from "./reference.js";
 
 async function ensureUniquePaymentReference(id: string, field: "referenceCode" | "uniqueReference", generator: () => string) {
@@ -35,9 +35,19 @@ async function ensureUniqueUserId(id: string) {
   }
 }
 
+async function nextBankPublicIdFromSequence() {
+  const rows = await prisma.$queryRaw<{ val: bigint | number }[]>
+    `SELECT nextval('bank_public_id_seq') AS val`;
+  const valRaw = rows.length ? Number(rows[0]?.val ?? 0) : 0;
+  if (!Number.isFinite(valRaw) || valRaw <= 0) {
+    throw new Error("bank_public_id_seq unavailable");
+  }
+  return formatBankPublicId(valRaw);
+}
+
 async function ensureUniqueBankId(id: string) {
   while (true) {
-    const next = generateBankPublicId();
+    const next = await nextBankPublicIdFromSequence();
     try {
       await prisma.bankAccount.update({ where: { id }, data: { publicId: next } });
       return;
@@ -80,7 +90,7 @@ export async function backfillShortIdentifiers() {
     }
 
     const banks = await prisma.bankAccount.findMany({
-      where: { publicId: { not: { startsWith: "BI" } } },
+      where: { publicId: { not: { startsWith: "B" } } },
       select: { id: true, publicId: true },
       take: 500,
     });

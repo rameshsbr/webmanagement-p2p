@@ -166,17 +166,6 @@
 
   function textInput(attrs) { return el("input", { type:"text", ...attrs, style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }); }
 
-  function digitInput(attrs) {
-    const input = textInput({ inputmode:"numeric", pattern:"[0-9]*", autocomplete:"off", ...attrs });
-    input.addEventListener("input", () => {
-      const trimmed = input.value.replace(/[\s-]+/g, "");
-      if (trimmed !== input.value) {
-        input.value = trimmed;
-      }
-    });
-    return input;
-  }
-
   // ─────────────────────────────────────────────────────────
   // KYC popup lifecycle
   // ─────────────────────────────────────────────────────────
@@ -274,32 +263,22 @@
         input = el("input", { type:"file", style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" });
       } else {
         input = f.field === "number"
-          ? digitInput({ placeholder: f.placeholder || "" })
+          ? numberInput({ placeholder: f.placeholder || "" })
           : textInput({ placeholder: f.placeholder || "" });
       }
       if (draftExtras && draftExtras[f.name] != null && input && input.type !== "file") {
-        const seed = String(draftExtras[f.name]);
-        input.value = f.field === "number" ? seed.replace(/[\s-]+/g, "") : seed;
+        input.value = String(draftExtras[f.name]);
       }
-      inputs[f.name] = { node: input, config: f };
+      inputs[f.name] = input;
       // 👉 pass required to render inline asterisk properly
       wrap.appendChild(inputRow(f.name, input, !!f.required));
     });
 
     function getValues() {
       const out = {};
-      Object.entries(inputs).forEach(([k, meta]) => {
-        const node = meta.node;
-        const cfg = meta.config;
+      Object.entries(inputs).forEach(([k, node]) => {
         if (node.type === "file") return; // file extras ignored for now
-        if (cfg.display === "input" && cfg.field === "number") {
-          const raw = String(node.value ?? "").trim();
-          const collapsed = raw.replace(/[\s-]+/g, "");
-          if (collapsed !== node.value) node.value = collapsed;
-          out[k] = collapsed;
-        } else {
-          out[k] = node.value;
-        }
+        out[k] = node.value;
       });
       return out;
     }
@@ -315,20 +294,10 @@
           const v = vals[f.name];
           if (v != null && !f.options.includes(String(v))) return `${f.name} has an invalid value.`;
         }
-        if (f.display === "input" && f.field === "number") {
-          const raw = String(vals[f.name] ?? "");
-          if (raw.trim() === "") continue;
-          if (!/^\d+$/.test(raw)) return `${f.name}: Enter digits only.`;
-          const len = raw.length;
-          const min = Math.max(0, Math.floor(Number(f.minDigits ?? 0)));
-          const max = f.maxDigits == null ? null : Math.max(0, Math.floor(Number(f.maxDigits)));
-          if (min > 0 && len < min) {
-            if (max != null) return `${f.name}: Enter between ${min} and ${max} digits.`;
-            return `${f.name}: Enter at least ${min} digits.`;
-          }
-          if (max != null && len > max) {
-            if (min > 0) return `${f.name}: Enter between ${min} and ${max} digits.`;
-            return `${f.name}: Enter at most ${max} digits.`;
+        if (f.display === "input" && f.field === "number" && f.digits > 0) {
+          const v = vals[f.name];
+          if (v && (!/^\d+$/.test(String(v)) || String(v).length !== Number(f.digits))) {
+            return `${f.name} must be ${f.digits} digits.`;
           }
         }
       }
@@ -345,13 +314,13 @@
 
   const WITHDRAWAL_FALLBACK_FIELDS = {
     OSKO: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
-      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, minDigits: 10, maxDigits: 12 },
-      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, minDigits: 6, maxDigits: 6 },
+      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, digits: 0 },
+      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, digits: 0 },
+      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, digits: 6 },
     ],
     PAYID: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
-      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, minDigits: 0, maxDigits: null },
+      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, digits: 0 },
+      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, digits: 0 },
     ],
   };
 

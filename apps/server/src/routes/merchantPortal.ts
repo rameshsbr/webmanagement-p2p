@@ -9,11 +9,6 @@ import { seal } from "../services/secretBox.js";
 import jwt from "jsonwebtoken";
 import speakeasy from "speakeasy";
 import QRCode from "qrcode";
-import {
-  generateTransactionId,
-  generateUniqueReference,
-  generateUserId,
-} from "../services/reference.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
 import {
   buildPaymentExportFile,
@@ -781,84 +776,6 @@ router.get("/payments", async (req: any, res) => {
     table: { total, items, page, perPage, pages },
     query,
   });
-});
-
-router.post("/payments/test-deposit", async (req: any, res) => {
-  const merchantId = req.merchant?.sub as string | undefined;
-  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
-
-  try {
-    const requestedSubject = readRequestedSubject(req);
-    const { userId, subject } = await ensureTestUser(merchantId, requestedSubject);
-    const currency = await resolveMerchantCurrency(req, merchantId);
-    const rawAmount = req.body?.amountCents ?? req.body?.amount;
-    const amountCents = parseAmountCents(rawAmount, DEFAULT_TEST_DEPOSIT_CENTS);
-
-    const payment = await createTestDeposit({
-      merchantId,
-      userId,
-      subject,
-      amountCents,
-      currency,
-    });
-
-    return res.json({
-      ok: true,
-      id: payment.id,
-      referenceCode: payment.referenceCode,
-      subject,
-      amountCents: payment.amountCents,
-      currency: payment.currency,
-      message: `Created test deposit ${payment.referenceCode}`,
-      toast: `Created test deposit for ${subject}.`,
-    });
-  } catch (err) {
-    const status = err instanceof TestPaymentError ? err.status : 500;
-    const message = err instanceof Error ? err.message : "Failed to create test deposit";
-    if (!(err instanceof TestPaymentError)) {
-      console.error("[merchant] test deposit failed", err);
-    }
-    return res.status(status).json({ ok: false, error: message });
-  }
-});
-
-router.post("/payments/test-withdrawal", async (req: any, res) => {
-  const merchantId = req.merchant?.sub as string | undefined;
-  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
-
-  try {
-    const requestedSubject = readRequestedSubject(req);
-    const { userId, subject } = await ensureTestUser(merchantId, requestedSubject);
-    const currency = await resolveMerchantCurrency(req, merchantId);
-    const rawAmount = req.body?.amountCents ?? req.body?.amount;
-    const amountCents = parseAmountCents(rawAmount, DEFAULT_TEST_WITHDRAWAL_CENTS);
-
-    const payment = await createTestWithdrawal({
-      merchantId,
-      userId,
-      subject,
-      amountCents,
-      currency,
-    });
-
-    return res.json({
-      ok: true,
-      id: payment.id,
-      referenceCode: payment.referenceCode,
-      subject,
-      amountCents: payment.amountCents,
-      currency: payment.currency,
-      message: `Created test withdrawal ${payment.referenceCode}`,
-      toast: `Created test withdrawal for ${subject}.`,
-    });
-  } catch (err) {
-    const status = err instanceof TestPaymentError ? err.status : 500;
-    const message = err instanceof Error ? err.message : "Failed to create test withdrawal";
-    if (!(err instanceof TestPaymentError)) {
-      console.error("[merchant] test withdrawal failed", err);
-    }
-    return res.status(status).json({ ok: false, error: message });
-  }
 });
 
 router.get("/payments/deposits", (_req, res) => res.redirect("/merchant/payments?type=DEPOSIT"));

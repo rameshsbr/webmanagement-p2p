@@ -23,6 +23,8 @@
   // Merchant-level forms (loaded at init). We will still use these for withdrawals.
   let _forms = { ok: true, deposit: [], withdrawal: [] };
   const _withdrawalFormCache = {};
+  let _availableMethods = [];
+  let _availableMethodsCurrency = null;
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -55,6 +57,10 @@
 
   const MIN_AMOUNT = 50;
   const MAX_AMOUNT = 5000;
+
+  function currencyUnit() {
+    return (_claims && _claims.currency) || "AUD";
+  }
 
   function normalizeAmountInput(value) {
     if (value === null || value === undefined) return null;
@@ -206,23 +212,13 @@
     });
   }
 
-  function validateDepositInputs(amountCents, methodVal, fields) {
+  function validateDepositInputs(amountCents) {
     if (!Number.isInteger(amountCents) || amountCents < MIN_AMOUNT * 100 || amountCents > MAX_AMOUNT * 100) {
-      return `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
-    }
-    if (methodVal === "OSKO") {
-      if (!/^\d{10,12}$/.test(fields.accountNo || "")) return "Account No must be 10–12 digits.";
-      if (!/^\d{6}$/.test(fields.bsb || "")) return "BSB must be 6 digits.";
-      if (!fields.holderName || fields.holderName.length < 2) return "Enter account holder name.";
-    } else {
-      if (!fields.holderName || fields.holderName.length < 2) return "Enter account holder name.";
-      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.payIdValue || "");
-      const isAuMobile = /^\+?61\d{9}$/.test(fields.payIdValue || "");
-      if (!(isEmail || isAuMobile)) return "PayID must be an email or +61XXXXXXXXX.";
+      return `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
     }
     return null;
   }
-  function validateWithdrawalInputs(amountCents, methodVal, fields) { return validateDepositInputs(amountCents, methodVal, fields); }
+  function validateWithdrawalInputs(amountCents) { return validateDepositInputs(amountCents); }
 
   async function ensureKyc(token) {
     const st = await call("/public/kyc/status", token, { method:"GET" });
@@ -401,74 +397,77 @@
     return buildDynamicFrom(list, draftExtras);
   }
 
-  const WITHDRAWAL_FALLBACK_FIELDS = {
-    OSKO: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
-      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, minDigits: 10, maxDigits: 12 },
-      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, minDigits: 6, maxDigits: 6 },
-    ],
-    PAYID: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
-      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, minDigits: 0, maxDigits: null },
-    ],
-  };
-
-  function canonicalWithdrawalKey(name) {
-    const key = normKey(name);
-    if (!key) return key;
-    if (["account number", "account no", "account", "acct number"].includes(key)) return "account-number";
-    if (["account holder name", "holder name", "account name", "name"].includes(key)) return "account-holder";
-    if (["bsb"].includes(key)) return "bsb";
-    if (["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"].includes(key)) return "bank-name";
-    if (["payid value", "payid", "email", "payid (email)", "payid (mobile)", "mobile", "phone"].includes(key)) return "payid-value";
-    return key;
+  async function fetchAvailableMethods(token) {
+    const params = new URLSearchParams();
+    const currency = currencyUnit();
+    if (currency) params.set("currency", currency);
+    const qs = params.toString();
+    const resp = await call(`/public/deposit/banks${qs ? `?${qs}` : ""}`, token, { method: "GET" });
+    const banks = Array.isArray(resp?.banks) ? resp.banks : [];
+    const methods = [];
+    banks.forEach((bank) => {
+      const method = String(bank?.method || "").trim();
+      if (method && !methods.includes(method)) methods.push(method);
+    });
+    _availableMethods = methods;
+    _availableMethodsCurrency = currency || null;
+    return _availableMethods;
   }
 
-  function mergeWithdrawalFields(methodVal, baseFields) {
-    const base = Array.isArray(baseFields)
-      ? baseFields
-      : (Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : []);
-    const defaults = WITHDRAWAL_FALLBACK_FIELDS[methodVal] || [];
-    const seen = new Set();
-    const merged = [];
-
-    base.forEach((f) => {
-      if (!f || !f.name) return;
-      const key = canonicalWithdrawalKey(f.name);
-      if (!key) return;
-      seen.add(key);
-      merged.push(f);
-    });
-
-    defaults.forEach((f) => {
-      if (!f || !f.name) return;
-      const key = canonicalWithdrawalKey(f.name);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      merged.push(f);
-    });
-
-    return merged;
+  async function ensureAvailableMethods(token) {
+    const currency = currencyUnit() || null;
+    if (_availableMethodsCurrency === currency && _availableMethods.length) {
+      return _availableMethods;
+    }
+    try {
+      return await fetchAvailableMethods(token);
+    } catch (err) {
+      return _availableMethods;
+    }
   }
 
-  async function getBankAndFormsForMethod(token, methodValue) {
-    const banksResp = await call(`/public/deposit/banks?method=${encodeURIComponent(methodValue)}`, token, { method: "GET" });
-    const first = (banksResp && Array.isArray(banksResp.banks) && banksResp.banks.length) ? banksResp.banks[0] : null;
+  function buildMethodSelect(selectedValue) {
+    const select = el("select", {
+      style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px",
+      disabled: !_availableMethods.length,
+    });
+    if (!_availableMethods.length) {
+      select.appendChild(el("option", { value: "" }, "No methods configured"));
+      return select;
+    }
+    _availableMethods.forEach((method) => {
+      select.appendChild(el("option", { value: method }, method));
+    });
+    if (selectedValue && _availableMethods.includes(selectedValue)) {
+      select.value = selectedValue;
+    } else {
+      select.value = _availableMethods[0];
+    }
+    return select;
+  }
 
-    if (first && first.id) {
-      const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(first.id)}`, token, { method: "GET" });
-      return {
-        bankId: first.id,
-        depositFields: cfg.deposit || [],
-        withdrawalFields: cfg.withdrawal || [],
-      };
+  function withdrawalFormCacheKey(methodValue, currency) {
+    return `${currency || ""}::${methodValue || ""}`;
+  }
+
+  async function getBankAndFormsForMethod(token, claims, methodValue) {
+    const params = new URLSearchParams();
+    params.set("method", methodValue);
+    const currency = (claims && claims.currency) || currencyUnit();
+    if (currency) params.set("currency", currency);
+    const banksResp = await call(`/public/deposit/banks?${params.toString()}`, token, { method: "GET" });
+    const banks = Array.isArray(banksResp?.banks) ? banksResp.banks : [];
+    const first = banks.find((bank) => bank && bank.id);
+
+    if (!first || !first.id) {
+      return { bankId: null, depositFields: [], withdrawalFields: [] };
     }
 
-    const cfg = await call(`/public/forms`, token, { method: "GET" });
+    const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(first.id)}`, token, { method: "GET" });
     return {
-      bankId: null,
-      depositFields: cfg.deposit || [],
-      withdrawalFields: cfg.withdrawal || [],
+      bankId: first.id,
+      depositFields: Array.isArray(cfg?.deposit) ? cfg.deposit : [],
+      withdrawalFields: Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [],
     };
   }
 
@@ -489,7 +488,7 @@
     const bankName = bankNameRaw != null ? String(bankNameRaw).trim() : "";
 
     if (methodVal === "OSKO") {
-      const holderName = findValue(ex, ["account holder name", "holder name", "account name", "name"]);
+      const holderName = findValue(ex, ["account holder name", "account holder", "holder name", "account name", "name"]);
       const accountNo = findValue(ex, ["account number", "account no", "account #", "acct number"]);
       const bsb = findValue(ex, ["bsb"]);
       return {
@@ -501,8 +500,8 @@
     }
     const email = findValue(ex, ["email", "payid (email)"]);
     let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
-    const payIdValue = findValue(ex, ["payid value", "payid"]);
-    const holderName = findValue(ex, ["account holder name", "holder name", "name"]);
+    const payIdValue = findValue(ex, ["payid value", "payid", "pay id"]);
+    const holderName = findValue(ex, ["account holder name", "account holder", "holder name", "name"]);
     let type = "email";
     let value = String(email || "");
     const looksMobile = (s) => /^\+?61\d{9}$/.test(String(s || "").trim());
@@ -524,50 +523,85 @@
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
 
-    let nextBtn;
-
-    const amount = numberInput({ placeholder:"Amount (AUD, min 50 max 5000)" });
-    const method = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }, [
-      el("option", { value:"OSKO" }, "OSKO"),
-      el("option", { value:"PAYID" }, "PayID"),
-    ]);
-
-    const dynMount = el("div");
-    dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
+    await ensureAvailableMethods(token);
 
     const draft = loadDraft("deposit", claims) || {};
+    const amount = numberInput({ placeholder: `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
-    if (draft.method) method.value = draft.method;
+    const method = buildMethodSelect(draft.method);
+
+    const dynMount = el("div");
+    const createLoading = () => el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
+    dynMount.appendChild(createLoading());
+    const formNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:6px 0; display:none" });
 
     let dyn = { wrap: el("div"), getValues: () => ({}), validate: () => null };
     let selectedBankId = null;
+    let formReady = false;
+
+    function showFormNotice(msg) {
+      if (msg) {
+        formNotice.textContent = msg;
+        formNotice.style.display = "block";
+      } else {
+        formNotice.textContent = "";
+        formNotice.style.display = "none";
+      }
+    }
 
     async function refreshDynForMethod() {
-      try {
-        const { bankId, depositFields } = await getBankAndFormsForMethod(token, method.value);
-        selectedBankId = bankId;
-        dyn = buildDynamicFrom(depositFields, draft.extras);
-      } catch (e) {
-        selectedBankId = null;
-        dyn = buildDynamic("deposit", draft.extras);
-      }
+      const methodVal = String(method.value || "");
+      const prevRaw = typeof dyn.getValues === "function" ? dyn.getValues() : null;
+      const prev = prevRaw && Object.keys(prevRaw).length ? prevRaw : (draft.extras || {});
+      selectedBankId = null;
+      formReady = false;
       dynMount.innerHTML = "";
-      dynMount.appendChild(dyn.wrap);
+      dynMount.appendChild(createLoading());
+      showFormNotice("");
+
+      if (!_availableMethods.length || !methodVal) {
+        dynMount.innerHTML = "";
+        showFormNotice("No configured form for this method and currency.");
+        updateValidity();
+        return;
+      }
+
+      try {
+        const { bankId, depositFields } = await getBankAndFormsForMethod(token, claims, methodVal);
+        if (!bankId || !Array.isArray(depositFields) || !depositFields.length) {
+          dynMount.innerHTML = "";
+          showFormNotice("No configured form for this method and currency.");
+          updateValidity();
+          return;
+        }
+        selectedBankId = bankId;
+        dyn = buildDynamicFrom(depositFields, prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        showFormNotice("");
+        formReady = true;
+      } catch (e) {
+        dynMount.innerHTML = "";
+        showFormNotice("No configured form for this method and currency.");
+        formReady = false;
+      }
       updateValidity();
     }
 
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
-    nextBtn = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Next");
+    const nextBtn = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Next");
+    setEnabled(nextBtn, false);
 
     function updateValidity() {
+      if (!formReady) {
+        setEnabled(nextBtn, false);
+        status.textContent = "";
+        return;
+      }
       const amountCents = normalizeAmountInput(amount.value);
-      const extras = dyn.getValues();
-      const inferred = inferPayerFromExtras(method.value, extras);
       let err = null;
       if (amountCents === null) {
-        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
-      } else {
-        err = validateDepositInputs(amountCents, method.value, inferred);
+        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
       }
       err = err || dyn.validate();
       setEnabled(nextBtn, !err);
@@ -575,29 +609,34 @@
     }
 
     method.addEventListener("change", () => { refreshDynForMethod(); });
-    [amount].forEach(i => i && i.addEventListener("input", updateValidity));
+    [amount].forEach((i) => i && i.addEventListener("input", updateValidity));
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
 
-    box.appendChild(inputRow("Amount (AUD)", amount));
+    box.appendChild(inputRow(`Amount (${currencyUnit()})`, amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
+    box.appendChild(formNotice);
     box.appendChild(nextBtn);
     box.appendChild(status);
 
     refreshDynForMethod();
 
     nextBtn.addEventListener("click", async () => {
+      if (!formReady || !method.value) {
+        status.textContent = "No configured form for this method and currency.";
+        return;
+      }
       const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
       const payer = inferPayerFromExtras(method.value, extras);
 
       if (amountCents === null) {
-        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
         return;
       }
 
-      const verr = validateDepositInputs(amountCents, method.value, { ...payer }) || dyn.validate();
+      const verr = validateDepositInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       saveDraft("deposit", claims, { amountCents, method: method.value, extras });
@@ -685,7 +724,7 @@
           referenceCode: resp.referenceCode || intent.referenceCode,
           uniqueReference: resp.uniqueReference || intent.uniqueReference,
           amountCents: resp.amountCents || intent.amountCents,
-          currency: resp.currency || intent.currency || "AUD",
+          currency: resp.currency || intent.currency || currencyUnit(),
         });
         setTimeout(() => { submitBtn.disabled = false; }, 1500);
       } catch (e) {
@@ -713,36 +752,44 @@
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
 
-    let submit;
-
-    const amount = numberInput({ placeholder:"Amount (AUD, min 50 max 5000)" });
-    const method = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }, [
-      el("option", { value:"OSKO" }, "OSKO"),
-      el("option", { value:"PAYID" }, "PayID"),
-    ]);
+    await ensureAvailableMethods(token);
 
     const draft = loadDraft("withdrawal", claims) || {};
+    const amount = numberInput({ placeholder: `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
-    if (draft.method) method.value = draft.method;
+    const method = buildMethodSelect(draft.method);
 
     const dynMount = el("div");
-    const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
-    dynMount.appendChild(loadingNotice);
+    const createLoading = () => el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
+    dynMount.appendChild(createLoading());
+    const formNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:6px 0; display:none" });
     let dyn = buildDynamicFrom([], draft.extras);
-    const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
+    let formReady = false;
 
-    submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
+    function showFormNotice(msg) {
+      if (msg) {
+        formNotice.textContent = msg;
+        formNotice.style.display = "block";
+      } else {
+        formNotice.textContent = "";
+        formNotice.style.display = "none";
+      }
+    }
+
+    const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
+    const submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
     setEnabled(submit, false);
 
     function updateValidity() {
+      if (!formReady) {
+        setEnabled(submit, false);
+        status.textContent = "";
+        return;
+      }
       const amountCents = normalizeAmountInput(amount.value);
-      const extras = dyn.getValues();
-      const inferred = inferPayerFromExtras(method.value, extras);
       let err = null;
       if (amountCents === null) {
-        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
-      } else {
-        err = validateWithdrawalInputs(amountCents, method.value, inferred);
+        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
       }
       err = err || dyn.validate();
       setEnabled(submit, !err);
@@ -752,53 +799,79 @@
     let refreshSeq = 0;
     async function refreshDynamicFields() {
       const seq = ++refreshSeq;
-      const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
-      let baseFields = null;
+      const prevRaw = typeof dyn.getValues === "function" ? dyn.getValues() : null;
+      const prev = prevRaw && Object.keys(prevRaw).length ? prevRaw : (draft.extras || {});
+      const methodVal = String(method.value || "");
+      const currency = (claims && claims.currency) || currencyUnit();
+      const cacheKey = withdrawalFormCacheKey(methodVal, currency);
+      formReady = false;
+      dynMount.innerHTML = "";
+      dynMount.appendChild(createLoading());
+      showFormNotice("");
 
-      if (Object.prototype.hasOwnProperty.call(_withdrawalFormCache, method.value)) {
-        baseFields = _withdrawalFormCache[method.value];
+      if (!_availableMethods.length || !methodVal) {
+        dynMount.innerHTML = "";
+        showFormNotice("No configured form for this method and currency.");
+        updateValidity();
+        return;
+      }
+
+      let baseFields = null;
+      if (Object.prototype.hasOwnProperty.call(_withdrawalFormCache, cacheKey)) {
+        baseFields = _withdrawalFormCache[cacheKey];
       } else {
         try {
-          const { withdrawalFields } = await getBankAndFormsForMethod(token, method.value);
-          if (Array.isArray(withdrawalFields)) {
-            _withdrawalFormCache[method.value] = withdrawalFields;
+          const { withdrawalFields } = await getBankAndFormsForMethod(token, claims, methodVal);
+          if (Array.isArray(withdrawalFields) && withdrawalFields.length) {
+            _withdrawalFormCache[cacheKey] = withdrawalFields;
             baseFields = withdrawalFields;
+          } else {
+            baseFields = [];
           }
         } catch (err) {
-          // ignore
+          baseFields = [];
         }
       }
 
-      if (!Array.isArray(baseFields) || baseFields.length === 0) {
-        baseFields = Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : [];
+      if (!Array.isArray(baseFields) || !baseFields.length) {
+        dynMount.innerHTML = "";
+        showFormNotice("No configured form for this method and currency.");
+        updateValidity();
+        return;
       }
 
-      const next = buildDynamicFrom(mergeWithdrawalFields(method.value, baseFields), prev);
+      const next = buildDynamicFrom(baseFields, prev);
       if (seq !== refreshSeq) return;
 
       dyn = next;
       dynMount.innerHTML = "";
       dynMount.appendChild(dyn.wrap);
+      showFormNotice("");
+      formReady = true;
       updateValidity();
     }
 
-    [amount].forEach(i => { i && i.addEventListener("input", updateValidity); });
+    [amount].forEach((i) => { i && i.addEventListener("input", updateValidity); });
     method.addEventListener("change", () => { refreshDynamicFields(); });
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
-    refreshDynamicFields().then(() => updateValidity());
+    refreshDynamicFields();
 
     submit.addEventListener("click", async () => {
+      if (!formReady || !method.value) {
+        status.textContent = "No configured form for this method and currency.";
+        return;
+      }
       const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
       const destination = inferPayerFromExtras(method.value, extras);
 
       if (amountCents === null) {
-        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
         return;
       }
 
-      const verr = validateWithdrawalInputs(amountCents, method.value, { ...destination }) || dyn.validate();
+      const verr = validateWithdrawalInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       saveDraft("withdrawal", claims, { amountCents, method: method.value, extras });
@@ -813,7 +886,11 @@
         status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);
         safeCallback("onWithdrawalSubmitted", {
-          id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: "AUD"
+          id: resp.id,
+          referenceCode: resp.referenceCode,
+          uniqueReference: resp.uniqueReference,
+          amountCents,
+          currency: resp.currency || currencyUnit(),
         });
       } catch (e) {
         status.textContent = (e && e.error) ? String(e.error) : "Error";
@@ -821,9 +898,10 @@
       }
     });
 
-    box.appendChild(inputRow("Amount (AUD)", amount));
+    box.appendChild(inputRow(`Amount (${currencyUnit()})`, amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
+    box.appendChild(formNotice);
     box.appendChild(submit);
     box.appendChild(status);
   }
@@ -853,6 +931,10 @@
         const r = await fetch("/public/deposit/draft", { headers: { authorization:`Bearer ${cfg.token}` } });
         const j = await r.json();
         if (j && j.ok && j.claims) _claims = j.claims;
+      } catch {}
+
+      try {
+        await fetchAvailableMethods(cfg.token);
       } catch {}
 
       return true;

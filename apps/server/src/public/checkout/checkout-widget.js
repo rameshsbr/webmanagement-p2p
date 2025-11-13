@@ -311,7 +311,7 @@
     });
 
     function getValues() {
-      const out = {} as Record<string, string>;
+      const out = {};
       metas.forEach(({ field, input }) => {
         if (!field || !field.name) return;
         if (field.display === "input" && field.field === "number") {

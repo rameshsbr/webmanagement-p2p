@@ -492,15 +492,11 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
     const key = `${merchantId}::${bankAccountId || "null"}`;
     if (formCache.has(key)) return formCache.get(key)!;
 
-    let row: any = await prisma.merchantFormConfig.findFirst({
-      where: { merchantId, bankAccountId },
-    });
-
-    if (!row && bankAccountId) {
-      row = await prisma.merchantFormConfig.findFirst({
-        where: { merchantId, bankAccountId: null },
-      });
-    }
+    const row = bankAccountId
+      ? await prisma.merchantFormConfig.findFirst({
+          where: { merchantId, bankAccountId },
+        })
+      : null;
 
     const entry = {
       deposit: cleanRows(((row as any)?.deposit as any[]) || []),
@@ -514,7 +510,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
   const comboSeen = new Set<string>();
 
   rawItems.forEach((x: any) => {
-    const bankKey = type === "DEPOSIT" ? x.bankAccountId || null : null;
+    const bankKey = x.bankAccountId || null;
     const key = `${x.merchantId}::${bankKey || "null"}`;
     if (!comboSeen.has(key)) {
       comboSeen.add(key);
@@ -3218,7 +3214,6 @@ superAdminRouter.get("/forms", async (req, res) => {
       error: null,
       copied: false,
       copiedFromLabel: "",
-      usedFallback: false,
     });
   }
 
@@ -3233,21 +3228,11 @@ superAdminRouter.get("/forms", async (req, res) => {
   });
 
   const bankId = String(req.query.bankAccountId || "");
-  const selectedBankId = banks.find(b => b.id === bankId)?.id ?? ""; // "" means merchant-level
+  const selectedBankId = banks.find(b => b.id === bankId)?.id ?? (banks[0]?.id ?? "");
 
-  // pull config for (merchantId, selectedBankId|null) with fallback to merchant default
-  let usedFallback = false;
-  let row = await prisma.merchantFormConfig.findFirst({
-    where: { merchantId, bankAccountId: selectedBankId || null }
-  });
-
-  if (!row && selectedBankId) {
-    // try merchant default
-    row = await prisma.merchantFormConfig.findFirst({
-      where: { merchantId, bankAccountId: null }
-    });
-    if (row) usedFallback = true;
-  }
+  const row = selectedBankId
+    ? await prisma.merchantFormConfig.findFirst({ where: { merchantId, bankAccountId: selectedBankId } })
+    : null;
 
   const config = {
     deposit: Array.isArray((row as any)?.deposit) ? (row as any).deposit : [],
@@ -3268,7 +3253,6 @@ superAdminRouter.get("/forms", async (req, res) => {
     error,
     copied,
     copiedFromLabel,
-    usedFallback,
   });
 });
 
@@ -3292,13 +3276,25 @@ superAdminRouter.get("/forms/banks.json", async (req, res) => {
   res.json({ ok: true, banks });
 });
 
-// POST: upsert forms for (merchant, bank?) — bankAccountId ""/missing means merchant-level
+// POST: upsert forms for (merchant, bank)
 superAdminRouter.post("/forms/:merchantId", async (req, res) => {
   const merchantId = req.params.merchantId;
 
   // Ensure merchant exists
   const exists = await prisma.merchant.count({ where: { id: merchantId } });
   if (!exists) return res.status(404).send("Merchant not found");
+
+  const bankAccountId = String(req.body?.bankAccountId || "").trim();
+  if (!bankAccountId) {
+    const back = new URLSearchParams({ merchantId, error: "Select a bank account" }).toString();
+    return res.redirect(`/superadmin/forms?${back}`);
+  }
+
+  const ownsBank = await prisma.bankAccount.count({ where: { id: bankAccountId, merchantId } });
+  if (!ownsBank) {
+    const back = new URLSearchParams({ merchantId, error: "Bank not under selected merchant" }).toString();
+    return res.redirect(`/superadmin/forms?${back}`);
+  }
 
   // Accept JSON strings from the page
   let payload: any = {};
@@ -3328,8 +3324,7 @@ superAdminRouter.post("/forms/:merchantId", async (req, res) => {
       select: { id: true, method: true, bankName: true, label: true, accountNo: true, active: true }
     });
 
-    const bankIdRaw = String(req.body?.bankAccountId || "").trim();
-    const selectedBankId = banks.find(b => b.id === bankIdRaw)?.id ?? "";
+    const selectedBankId = banks.find(b => b.id === bankAccountId)?.id ?? bankAccountId;
 
     const firstIssue = (parsed as any).error?.issues?.[0];
     const msg = firstIssue?.message || "Invalid form configuration. Remove empty fields and try again.";
@@ -3344,85 +3339,65 @@ superAdminRouter.post("/forms/:merchantId", async (req, res) => {
       error: msg,
       copied: false,
       copiedFromLabel: "",
-      usedFallback: false,
     });
   }
 
-  // bank scope
-  const bankIdRaw = String(req.body?.bankAccountId || "").trim();
-  const bankAccountId = bankIdRaw === "" ? null : bankIdRaw;
+  const bankOk = await prisma.bankAccount.count({ where: { id: bankAccountId, merchantId } });
+  if (!bankOk) return res.status(400).send("Bank does not belong to merchant");
 
-  if (bankAccountId) {
-    const bankOk = await prisma.bankAccount.count({ where: { id: bankAccountId, merchantId } });
-    if (!bankOk) return res.status(400).send("Bank does not belong to merchant");
-  }
-
-  if (bankAccountId) {
-    await prisma.merchantFormConfig.upsert({
-      where: { merchantId_bankAccountId: { merchantId, bankAccountId } },
-      update: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-      create: { merchantId, bankAccountId, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-    });
-  } else {
-    const existing = await prisma.merchantFormConfig.findFirst({
-      where: { merchantId, bankAccountId: null },
-      select: { id: true },
-    });
-    if (existing) {
-      await prisma.merchantFormConfig.update({
-        where: { id: existing.id },
-        data: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-      });
-    } else {
-      await prisma.merchantFormConfig.create({
-        data: { merchantId, bankAccountId: null, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
-      });
-    }
-  }
+  await prisma.merchantFormConfig.upsert({
+    where: { merchantId_bankAccountId: { merchantId, bankAccountId } },
+    update: { deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+    create: { merchantId, bankAccountId, deposit: parsed.data.deposit as any, withdrawal: parsed.data.withdrawal as any },
+  });
 
   await auditAdmin(req, "merchant.forms.upsert", "MERCHANT", merchantId, {
-    bankAccountId: bankAccountId || null,
+    bankAccountId,
     depositCount: parsed.data.deposit.length,
     withdrawalCount: parsed.data.withdrawal.length,
   });
 
-  const q = new URLSearchParams({ merchantId, ...(bankAccountId ? { bankAccountId } : {}) }).toString();
+  const q = new URLSearchParams({ merchantId, bankAccountId }).toString();
   res.redirect(`/superadmin/forms?${q}`);
 });
 
 // POST: COPY from another merchant/bank into the current selection
-// Body: fromMerchantId, fromBankAccountId ("" or cuid), toBankAccountId ("" or cuid)
+// Body: fromMerchantId, fromBankAccountId, toBankAccountId
 superAdminRouter.post("/forms/:merchantId/copy-from", async (req: any, res: any) => {
   const toMerchantId = req.params.merchantId;
   const existsTo = await prisma.merchant.count({ where: { id: toMerchantId } });
   if (!existsTo) return res.status(404).send("Target merchant not found");
 
   const fromMerchantId = String(req.body?.fromMerchantId || "");
-  const fromBankIdRaw = String(req.body?.fromBankAccountId || "").trim();
-  const fromBankAccountId = fromBankIdRaw === "" ? null : fromBankIdRaw;
+  const fromBankAccountId = String(req.body?.fromBankAccountId || "").trim();
 
-  const toBankIdRaw = String(req.body?.toBankAccountId || "").trim();
-  const toBankAccountId = toBankIdRaw === "" ? null : toBankIdRaw;
+  const toBankAccountId = String(req.body?.toBankAccountId || "").trim();
 
   if (!fromMerchantId) {
     const back = new URLSearchParams({ merchantId: toMerchantId, ...(toBankAccountId ? { bankAccountId: toBankAccountId } : {}), error: "Select a source merchant" }).toString();
     return res.redirect(`/superadmin/forms?${back}`);
   }
 
-  // Verify bank-merchant relationships when bank IDs provided
-  if (fromBankAccountId) {
-    const ok = await prisma.bankAccount.count({ where: { id: fromBankAccountId, merchantId: fromMerchantId } });
-    if (!ok) {
-      const back = new URLSearchParams({ merchantId: toMerchantId, ...(toBankAccountId ? { bankAccountId: toBankAccountId } : {}), error: "Source bank not under selected source merchant" }).toString();
-      return res.redirect(`/superadmin/forms?${back}`);
-    }
+  if (!fromBankAccountId) {
+    const back = new URLSearchParams({ merchantId: toMerchantId, ...(toBankAccountId ? { bankAccountId: toBankAccountId } : {}), error: "Select a source bank" }).toString();
+    return res.redirect(`/superadmin/forms?${back}`);
   }
-  if (toBankAccountId) {
-    const ok = await prisma.bankAccount.count({ where: { id: toBankAccountId, merchantId: toMerchantId } });
-    if (!ok) {
-      const back = new URLSearchParams({ merchantId: toMerchantId, error: "Target bank not under target merchant" }).toString();
-      return res.redirect(`/superadmin/forms?${back}`);
-    }
+
+  if (!toBankAccountId) {
+    const back = new URLSearchParams({ merchantId: toMerchantId, error: "Select a target bank" }).toString();
+    return res.redirect(`/superadmin/forms?${back}`);
+  }
+
+  // Verify bank-merchant relationships when bank IDs provided
+  const okSource = await prisma.bankAccount.count({ where: { id: fromBankAccountId, merchantId: fromMerchantId } });
+  if (!okSource) {
+    const back = new URLSearchParams({ merchantId: toMerchantId, ...(toBankAccountId ? { bankAccountId: toBankAccountId } : {}), error: "Source bank not under selected source merchant" }).toString();
+    return res.redirect(`/superadmin/forms?${back}`);
+  }
+  const okTarget = await prisma.bankAccount.count({ where: { id: toBankAccountId, merchantId: toMerchantId } });
+  if (!okTarget) {
+    const back = new URLSearchParams({ merchantId: toMerchantId, error: "Target bank not under target merchant" }).toString();
+    return res.redirect(`/superadmin/forms?${back}`);
   }
 
   // Load source config
@@ -3442,28 +3417,11 @@ superAdminRouter.post("/forms/:merchantId/copy-from", async (req: any, res: any)
   const dep = Array.isArray((source as any).deposit) ? (source as any).deposit : [];
   const wdr = Array.isArray((source as any).withdrawal) ? (source as any).withdrawal : [];
 
-  if (toBankAccountId) {
-    await prisma.merchantFormConfig.upsert({
-      where: { merchantId_bankAccountId: { merchantId: toMerchantId, bankAccountId: toBankAccountId } },
-      update: { deposit: dep as any, withdrawal: wdr as any },
-      create: { merchantId: toMerchantId, bankAccountId: toBankAccountId, deposit: dep as any, withdrawal: wdr as any },
-    });
-  } else {
-    const existing = await prisma.merchantFormConfig.findFirst({
-      where: { merchantId: toMerchantId, bankAccountId: null },
-      select: { id: true },
-    });
-    if (existing) {
-      await prisma.merchantFormConfig.update({
-        where: { id: existing.id },
-        data: { deposit: dep as any, withdrawal: wdr as any },
-      });
-    } else {
-      await prisma.merchantFormConfig.create({
-        data: { merchantId: toMerchantId, bankAccountId: null, deposit: dep as any, withdrawal: wdr as any },
-      });
-    }
-  }
+  await prisma.merchantFormConfig.upsert({
+    where: { merchantId_bankAccountId: { merchantId: toMerchantId, bankAccountId: toBankAccountId } },
+    update: { deposit: dep as any, withdrawal: wdr as any },
+    create: { merchantId: toMerchantId, bankAccountId: toBankAccountId, deposit: dep as any, withdrawal: wdr as any },
+  });
 
   // Build a nice label for the success banner
   const [fromMerch, fromBank, toBank] = await Promise.all([
@@ -3476,19 +3434,22 @@ superAdminRouter.post("/forms/:merchantId/copy-from", async (req: any, res: any)
       : Promise.resolve(null),
   ]);
 
-  const bankLabel = (b: any) => b ? (b.label || `${b.bankName} • ${String(b.accountNo || "").slice(-4)} (${b.method})`) : "Merchant default";
+  const bankLabel = (b: any) =>
+    b
+      ? (b.label || `${b.bankName} • ${String(b.accountNo || "").slice(-4)} (${b.method})`)
+      : "Unconfigured";
 
   const fromLabel = `${fromMerch?.name || fromMerchantId} — ${bankLabel(fromBank)}`;
 
   await auditAdmin(req, "merchant.forms.copy", "MERCHANT", toMerchantId, {
     fromMerchantId,
-    fromBankAccountId: fromBankAccountId || null,
-    toBankAccountId: toBankAccountId || null,
+    fromBankAccountId,
+    toBankAccountId,
   });
 
   const q = new URLSearchParams({
     merchantId: toMerchantId,
-    ...(toBankAccountId ? { bankAccountId: toBankAccountId } : {}),
+    bankAccountId: toBankAccountId,
     copied: "1",
     from: fromLabel
   }).toString();

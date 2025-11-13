@@ -20,8 +20,6 @@
   // claims from /public/deposit/draft (merchantId, diditSubject, currency)
   let _claims = null;
 
-  // Merchant-level forms (loaded at init). We will still use these for withdrawals.
-  let _forms = { ok: true, deposit: [], withdrawal: [] };
   const _bankFormCache = {};
   let _availableMethods = [];
 
@@ -63,6 +61,7 @@
   }
 
   const NO_FORM_MESSAGE = "No configured form for this method and currency.";
+  const NO_METHODS_MESSAGE = "No configured methods.";
 
   function normalizeAmountInput(value) {
     if (value === null || value === undefined) return null;
@@ -150,6 +149,7 @@
     if (!resp.ok) {
       let err = { ok: false, status: resp.status, error: "HTTP_ERROR" };
       try { err = await resp.json(); } catch {}
+      console.error(`[PayX] request failed (${resp.status}) for ${path}`, err);
       throw err;
     }
     return ct.includes("application/json") ? resp.json() : resp.text();
@@ -395,11 +395,6 @@
     return { wrap, getValues, validate };
   }
 
-  function buildDynamic(kind, draftExtras) {
-    const list = Array.isArray(_forms?.[kind]) ? _forms[kind] : [];
-    return buildDynamicFrom(list, draftExtras);
-  }
-
   async function getBankAndFormsForMethod(token, methodValue) {
     const method = String(methodValue || "").trim();
     const currency = currencyUnit();
@@ -413,23 +408,43 @@
     if (currency) params.set("currency", currency);
     const query = params.toString();
 
-    const banksResp = await call(query ? `/public/deposit/banks?${query}` : "/public/deposit/banks", token, { method: "GET" });
+    console.info(`[PayX] getBankAndFormsForMethod:start`, { method, currency });
+    let banksResp;
+    try {
+      banksResp = await call(query ? `/public/deposit/banks?${query}` : "/public/deposit/banks", token, { method: "GET" });
+    } catch (err) {
+      console.error(`[PayX] getBankAndFormsForMethod:banks error`, err);
+      throw err;
+    }
     const banks = (banksResp && Array.isArray(banksResp.banks)) ? banksResp.banks : [];
-    const firstActive = banks.find((b) => b && (b.active === undefined || b.active === null || b.active));
+    const firstActive = banks.find((b) => {
+      if (!b) return false;
+      const val = String(b.method || "").trim().toUpperCase();
+      const active = b.active === undefined || b.active === null || !!b.active;
+      return active && val === method;
+    });
 
     if (!firstActive || !firstActive.id) {
       const result = { bankId: null, depositFields: [], withdrawalFields: [] };
       _bankFormCache[cacheKey] = result;
+      console.warn(`[PayX] getBankAndFormsForMethod:no-bank`, { method, currency });
       return result;
     }
 
-    const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(firstActive.id)}`, token, { method: "GET" });
+    let cfg;
+    try {
+      cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(firstActive.id)}`, token, { method: "GET" });
+    } catch (err) {
+      console.error(`[PayX] getBankAndFormsForMethod:forms error`, err);
+      throw err;
+    }
     const result = {
       bankId: firstActive.id,
       depositFields: Array.isArray(cfg?.deposit) ? cfg.deposit : [],
       withdrawalFields: Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [],
     };
     _bankFormCache[cacheKey] = result;
+    console.info(`[PayX] getBankAndFormsForMethod:success`, { method, currency, bankId: firstActive.id });
     return result;
   }
 
@@ -438,14 +453,26 @@
     const params = new URLSearchParams();
     if (currency) params.set("currency", currency);
     const query = params.toString();
-    const resp = await call(query ? `/public/deposit/banks?${query}` : "/public/deposit/banks", token, { method: "GET" });
+    console.info(`[PayX] fetchAvailableMethods:start`, { currency });
+    let resp;
+    try {
+      resp = await call(query ? `/public/deposit/banks?${query}` : "/public/deposit/banks", token, { method: "GET" });
+    } catch (err) {
+      console.error(`[PayX] fetchAvailableMethods:error`, err);
+      _availableMethods = [];
+      throw err;
+    }
     const banks = (resp && Array.isArray(resp.banks)) ? resp.banks : [];
     const methods = [];
     banks.forEach((bank) => {
-      const val = String(bank?.method || "").trim().toUpperCase();
-      if (val && !methods.includes(val)) methods.push(val);
+      const value = String(bank?.method || "").trim().toUpperCase();
+      if (!value) return;
+      if (methods.find((m) => m.value === value)) return;
+      const label = String(bank?.methodLabel || value).trim();
+      methods.push({ value, label: label || value });
     });
     _availableMethods = methods;
+    console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length });
     return methods;
   }
 
@@ -463,13 +490,13 @@
     }
 
     const normalizedSelected = String(selectedMethod || "").trim().toUpperCase();
-    opts.forEach((val) => {
-      select.appendChild(el("option", { value: val }, val));
+    opts.forEach((item) => {
+      select.appendChild(el("option", { value: item.value }, item.label || item.value));
     });
-    if (normalizedSelected && opts.includes(normalizedSelected)) {
+    if (normalizedSelected && opts.find((m) => m.value === normalizedSelected)) {
       select.value = normalizedSelected;
     } else if (opts.length) {
-      select.value = opts[0];
+      select.value = opts[0].value;
     }
     return select;
   }
@@ -523,7 +550,14 @@
   }
 
   async function openDeposit(token, claims) {
-    try { await fetchAvailableMethods(token); } catch { _availableMethods = []; }
+    try {
+      console.info("[PayX] openDeposit:fetchAvailableMethods:start");
+      await fetchAvailableMethods(token);
+      console.info("[PayX] openDeposit:fetchAvailableMethods:done");
+    } catch (err) {
+      console.error("[PayX] openDeposit:fetchAvailableMethods:error", err);
+      _availableMethods = [];
+    }
 
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
@@ -539,6 +573,10 @@
     const dynMount = el("div");
     dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
     const configWarning = el("div", { style:"color:#dc2626; font-size:12px; margin-top:4px; display:none" });
+    if (!(_availableMethods && _availableMethods.length)) {
+      configWarning.textContent = NO_METHODS_MESSAGE;
+      configWarning.style.display = "block";
+    }
 
     let dyn = { wrap: el("div"), getValues: () => ({}), validate: () => null };
     let selectedBankId = null;
@@ -555,16 +593,20 @@
 
       const methodVal = String(method.value || "").trim();
       if (!methodVal) {
+        selectedBankId = null;
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
-        configWarning.textContent = NO_FORM_MESSAGE;
+        configWarning.textContent = (_availableMethods && _availableMethods.length)
+          ? NO_FORM_MESSAGE
+          : NO_METHODS_MESSAGE;
         configWarning.style.display = "block";
         updateValidity();
         return;
       }
 
       try {
+        console.info("[PayX] openDeposit:getBankForms:start", methodVal);
         const { bankId, depositFields } = await getBankAndFormsForMethod(token, methodVal);
         selectedBankId = bankId;
         dyn = buildDynamicFrom(Array.isArray(depositFields) ? depositFields : [], prev);
@@ -579,6 +621,7 @@
           configWarning.style.display = "none";
           formReady = true;
         }
+        console.info("[PayX] openDeposit:getBankForms:done", { method: methodVal, bankId });
       } catch (e) {
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
@@ -626,8 +669,8 @@
         return;
       }
 
-      if (!formReady || !method.value) {
-        configWarning.textContent = NO_FORM_MESSAGE;
+      if (!formReady || !method.value || !selectedBankId) {
+        configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
         configWarning.style.display = "block";
         setEnabled(nextBtn, false);
         return;
@@ -643,8 +686,7 @@
         await ensureKyc(token);
 
         status.textContent = "Creating intent…";
-        const body = { amountCents, method: method.value, payer, extraFields: extras };
-        if (selectedBankId) body.bankAccountId = selectedBankId;
+        const body = { amountCents, method: method.value, payer, extraFields: extras, bankAccountId: selectedBankId };
 
         const resp = await call("/public/deposit/intent", token, {
           method: "POST",
@@ -746,7 +788,14 @@
   }
 
   async function openWithdrawal(token, claims) {
-    try { await fetchAvailableMethods(token); } catch { _availableMethods = []; }
+    try {
+      console.info("[PayX] openWithdrawal:fetchAvailableMethods:start");
+      await fetchAvailableMethods(token);
+      console.info("[PayX] openWithdrawal:fetchAvailableMethods:done");
+    } catch (err) {
+      console.error("[PayX] openWithdrawal:fetchAvailableMethods:error", err);
+      _availableMethods = [];
+    }
 
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
@@ -763,6 +812,10 @@
     const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
     dynMount.appendChild(loadingNotice);
     const configWarning = el("div", { style:"color:#dc2626; font-size:12px; margin-top:4px; display:none" });
+    if (!(_availableMethods && _availableMethods.length)) {
+      configWarning.textContent = NO_METHODS_MESSAGE;
+      configWarning.style.display = "block";
+    }
     let dyn = buildDynamicFrom([], draft.extras);
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
 
@@ -771,6 +824,7 @@
 
     let formReady = false;
     let refreshSeq = 0;
+    let selectedBankId = null;
 
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
@@ -789,21 +843,26 @@
       configWarning.style.display = "none";
       configWarning.textContent = "";
       formReady = false;
+      selectedBankId = null;
 
       const methodVal = String(method.value || "").trim();
       if (!methodVal) {
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
-        configWarning.textContent = NO_FORM_MESSAGE;
+        configWarning.textContent = (_availableMethods && _availableMethods.length)
+          ? NO_FORM_MESSAGE
+          : NO_METHODS_MESSAGE;
         configWarning.style.display = "block";
         updateValidity();
         return;
       }
 
       try {
+        console.info("[PayX] openWithdrawal:getBankForms:start", methodVal);
         const { bankId, withdrawalFields } = await getBankAndFormsForMethod(token, methodVal);
         if (seq !== refreshSeq) return;
+        selectedBankId = bankId || null;
         dyn = buildDynamicFrom(Array.isArray(withdrawalFields) ? withdrawalFields : [], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
@@ -816,8 +875,10 @@
           configWarning.style.display = "none";
           formReady = true;
         }
+        console.info("[PayX] openWithdrawal:getBankForms:done", { method: methodVal, bankId });
       } catch (err) {
         if (seq !== refreshSeq) return;
+        selectedBankId = null;
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
@@ -844,8 +905,8 @@
         return;
       }
 
-      if (!formReady || !method.value) {
-        configWarning.textContent = NO_FORM_MESSAGE;
+      if (!formReady || !method.value || !selectedBankId) {
+        configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
         configWarning.style.display = "block";
         setEnabled(submit, false);
         return;
@@ -861,7 +922,7 @@
         const resp = await call("/public/withdrawals", token, {
           method: "POST",
           headers: { "content-type":"application/json" },
-          body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras }),
+          body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras, bankAccountId: selectedBankId }),
         });
         status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);
@@ -896,12 +957,6 @@
       _cfg.onError = cfg.onError || null;
 
       this._token = cfg.token;
-
-      try {
-        const resp = await fetch("/public/forms", { headers: { authorization:`Bearer ${cfg.token}` } });
-        const data = await resp.json();
-        if (data && data.ok) _forms = { ok: true, deposit: data.deposit || [], withdrawal: data.withdrawal || [] };
-      } catch {}
 
       try {
         const r = await fetch("/public/deposit/draft", { headers: { authorization:`Bearer ${cfg.token}` } });

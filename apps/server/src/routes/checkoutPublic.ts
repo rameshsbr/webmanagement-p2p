@@ -63,7 +63,6 @@ const upload = multer({
 });
 
 // ───────────────────────────────────────────────
-const CURRENCY = "AUD";
 const MIN_CENTS = 50 * 100;
 const MAX_CENTS = 5000 * 100;
 
@@ -226,14 +225,10 @@ function normalizeField(r: any): UIField | null {
 }
 
 async function getFormConfig(merchantId: string, bankAccountId?: string | null) {
-  // Try bank-specific first if provided, then fallback to merchant-level (null)
-  let rec = null as any;
-  if (bankAccountId) {
-    rec = await prisma.merchantFormConfig.findFirst({ where: { merchantId, bankAccountId } });
+  if (!bankAccountId) {
+    return { deposit: [] as UIField[], withdrawal: [] as UIField[] };
   }
-  if (!rec) {
-    rec = await prisma.merchantFormConfig.findFirst({ where: { merchantId, bankAccountId: null } });
-  }
+  const rec = await prisma.merchantFormConfig.findFirst({ where: { merchantId, bankAccountId } });
   const dep = Array.isArray((rec as any)?.deposit) ? (rec as any).deposit : [];
   const wdr = Array.isArray((rec as any)?.withdrawal) ? (rec as any).withdrawal : [];
   const deposit = dep.map(normalizeField).filter(Boolean) as UIField[];
@@ -309,6 +304,40 @@ function validateExtras(fields: UIField[], extras: any) {
   return { ok: true, values: sanitized };
 }
 
+const WILDCARD_CURRENCIES = new Set(["ANY", "ALL"]);
+
+function normalizeCurrencyCode(value: string | null | undefined) {
+  return String(value || "").trim().toUpperCase();
+}
+
+function bankSupportsCurrency(bankCurrency: string | null | undefined, desiredCurrency: string | null | undefined) {
+  const bankCode = normalizeCurrencyCode(bankCurrency);
+  const desiredCode = normalizeCurrencyCode(desiredCurrency);
+  if (!bankCode || !desiredCode) return true;
+  if (bankCode === desiredCode) return true;
+  return WILDCARD_CURRENCIES.has(bankCode);
+}
+
+async function loadMerchantBank(merchantId: string, bankAccountId: string) {
+  if (!merchantId || !bankAccountId) return null;
+  return prisma.bankAccount.findFirst({
+    where: { id: bankAccountId, merchantId, active: true },
+    select: {
+      id: true,
+      merchantId: true,
+      currency: true,
+      method: true,
+      label: true,
+      holderName: true,
+      bankName: true,
+      accountNo: true,
+      iban: true,
+      instructions: true,
+      fields: true,
+    },
+  });
+}
+
 // ───────────────────────────────────────────────
 // 1) Server-to-server: create a checkout session (API key)
 // ───────────────────────────────────────────────
@@ -345,39 +374,31 @@ checkoutPublicRouter.post(
 // ───────────────────────────────────────────────
 checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, currency } = req.checkout;
-  const method = METHOD.parse(String(req.query.method || "OSKO").toUpperCase());
+  const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
 
-  if (currency !== "AUD") return res.status(400).json({ ok: false, error: "AUD only" });
+  const currencyFilter = requestedCurrency
+    ? [{ currency: requestedCurrency }, { currency: "ANY" }, { currency: "ALL" }]
+    : null;
 
   const rows = await prisma.bankAccount.findMany({
     where: {
+      merchantId,
       active: true,
-      currency,
-      method,
-      OR: [{ merchantId }, { merchantId: null }],
+      ...(currencyFilter ? { OR: currencyFilter } : {}),
     },
-    orderBy: [{ merchantId: "desc" }, { createdAt: "desc" }],
-    select: {
-      id: true, merchantId: true, bankName: true, holderName: true,
-      accountNo: true, iban: true, label: true, instructions: true, method: true,
-      fields: true,
-    },
+    orderBy: [{ createdAt: "asc" }],
+    select: { id: true, method: true, label: true, currency: true, active: true },
   });
 
   const banks = rows.map((b) => {
-    const display = computeDisplayFields(b);
+    const method = String(b.method || "").trim().toUpperCase();
+    const methodLabel = (b.label || method || "").toString();
     return {
       id: b.id,
-      label: b.label || `${b.bankName} • ${String(b.accountNo || "").slice(-4)}`,
-      bankName: b.bankName,
-      holderName: b.holderName,
-      accountNo: b.accountNo,
-      iban: b.iban,
-      instructions: b.instructions || null,
-      method: b.method,
-      scope: b.merchantId ? "MERCHANT" : "GLOBAL",
-      fields: b.fields || null,
-      displayFields: display.all,
+      method,
+      methodLabel: methodLabel || method,
+      currency: normalizeCurrencyCode(b.currency) || requestedCurrency,
+      active: !!b.active,
     };
   });
 
@@ -406,11 +427,10 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     amountCents: z.number().int().positive(),
     method: METHOD,
     payer: z.union([payerOsko, payerPayId]),
-    bankAccountId: z.string().cuid().optional(),
+    bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
   }).parse(req.body || {});
 
-  if (currency !== "AUD") return res.status(400).json({ ok: false, error: "AUD only" });
   if (base.amountCents < MIN_CENTS || base.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
   }
@@ -425,39 +445,18 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
   }
 
-  // Determine bank rail (explicit or auto-pick)
-  let chosenBank: any | null = null;
-
-  if (base.bankAccountId) {
-    chosenBank = await prisma.bankAccount.findFirst({
-      where: {
-        id: base.bankAccountId,
-        active: true,
-        currency,
-        method: base.method,
-        OR: [{ merchantId }, { merchantId: null }],
-      },
-    });
-    if (!chosenBank) {
-      return res.status(400).json({ ok: false, error: "INVALID_BANK_SELECTION" });
-    }
-  }
-
-  // If no explicit choice, pick newest active rail for this method (merchant-first, then global)
+  const chosenBank = await loadMerchantBank(merchantId, base.bankAccountId);
   if (!chosenBank) {
-    chosenBank =
-      (await prisma.bankAccount.findFirst({
-        where: { active: true, merchantId, currency, method: base.method },
-        orderBy: { createdAt: "desc" },
-      })) ||
-      (await prisma.bankAccount.findFirst({
-        where: { active: true, merchantId: null, currency, method: base.method },
-        orderBy: { createdAt: "desc" },
-      }));
+    return res.status(400).json({ ok: false, error: "INVALID_BANK_SELECTION" });
   }
-  if (!chosenBank) return res.status(400).json({ ok: false, error: "No bank account for method" });
+  if (String(chosenBank.method || "").toUpperCase() !== base.method) {
+    return res.status(400).json({ ok: false, error: "METHOD_BANK_MISMATCH" });
+  }
+  if (!bankSupportsCurrency(chosenBank.currency, currency)) {
+    return res.status(400).json({ ok: false, error: "BANK_CURRENCY_UNAVAILABLE" });
+  }
 
-  // Validate per-bank extra fields (fallback to merchant-level if no bank-specific config)
+  // Validate per-bank extra fields
   const forms = await getFormConfig(merchantId, chosenBank.id);
   const v = validateExtras(forms.deposit, base.extraFields || {});
   if (!v.ok)
@@ -466,15 +465,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
       .json({ ok: false, error: v.error, field: v.field || undefined });
   const sanitizedExtras = v.values || {};
 
-  // include bank.fields for display
-  const bankFull = await prisma.bankAccount.findUnique({
-    where: { id: chosenBank.id },
-    select: {
-      holderName: true, bankName: true, accountNo: true, iban: true, instructions: true, method: true, label: true, fields: true
-    }
-  });
-
-  const display = computeDisplayFields({ ...bankFull, fields: bankFull?.fields });
+  const display = computeDisplayFields(chosenBank);
 
   const referenceCode = generateTransactionId();
   const uniqueReference = generateUniqueReference();
@@ -509,14 +500,14 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     amountCents: base.amountCents,
     intentToken,
     bankDetails: {
-      holderName: bankFull?.holderName || null,
-      bankName: bankFull?.bankName || null,
-      accountNo: bankFull?.accountNo || null,
-      iban: bankFull?.iban || null,
-      instructions: bankFull?.instructions || null,
-      method: bankFull?.method || null,
-      label: bankFull?.label || null,
-      fields: bankFull?.fields || null,       // raw config
+      holderName: chosenBank?.holderName || null,
+      bankName: chosenBank?.bankName || null,
+      accountNo: chosenBank?.accountNo || null,
+      iban: chosenBank?.iban || null,
+      instructions: chosenBank?.instructions || null,
+      method: chosenBank?.method || null,
+      label: chosenBank?.label || null,
+      fields: chosenBank?.fields || null,       // raw config
       displayFields: display.all,             // convenient ordered list
     },
   });
@@ -551,21 +542,14 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
   }
 
-  const bank = await prisma.bankAccount.findFirst({
-    where: {
-      id: payload.bankAccountId,
-      active: true,
-      currency: payload.currency,
-      method: payload.method,
-      OR: [{ merchantId }, { merchantId: null }],
-    },
-    select: {
-      id: true,
-      method: true,
-      bankName: true,
-    },
-  });
+  const bank = await loadMerchantBank(merchantId, payload.bankAccountId);
   if (!bank) return res.status(400).json({ ok: false, error: "BANK_INACTIVE" });
+  if (String(bank.method || "").toUpperCase() !== payload.method) {
+    return res.status(400).json({ ok: false, error: "METHOD_BANK_MISMATCH" });
+  }
+  if (!bankSupportsCurrency(bank.currency, payload.currency)) {
+    return res.status(400).json({ ok: false, error: "BANK_CURRENCY_UNAVAILABLE" });
+  }
 
   const forms = await getFormConfig(merchantId, bank.id);
   const v = validateExtras(forms.deposit, payload.extras || {});
@@ -648,10 +632,10 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     amountCents: z.number().int().positive(),
     method: METHOD,
     destination: z.union([payerOsko, payerPayId]),
+    bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
   }).parse(req.body || {});
 
-  if (currency !== "AUD") return res.status(400).json({ ok: false, error: "AUD only" });
   if (body.amountCents < MIN_CENTS || body.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
   }
@@ -659,8 +643,17 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     return res.status(400).json({ ok: false, error: "INSUFFICIENT_BALANCE" });
   }
 
-  // Validate merchant-level extra fields for withdrawals
-  const forms = await getFormConfig(merchantId, null);
+  const bank = await loadMerchantBank(merchantId, body.bankAccountId);
+  if (!bank) return res.status(400).json({ ok: false, error: "INVALID_BANK_SELECTION" });
+  if (String(bank.method || "").toUpperCase() !== body.method) {
+    return res.status(400).json({ ok: false, error: "METHOD_BANK_MISMATCH" });
+  }
+  if (!bankSupportsCurrency(bank.currency, currency)) {
+    return res.status(400).json({ ok: false, error: "BANK_CURRENCY_UNAVAILABLE" });
+  }
+
+  // Validate per-bank extra fields for withdrawals
+  const forms = await getFormConfig(merchantId, bank.id);
   const v = validateExtras(forms.withdrawal, body.extraFields || {});
   if (!v.ok)
     return res
@@ -719,6 +712,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       uniqueReference,
       merchantId,
       userId: user.id,
+      bankAccountId: bank.id,
       detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: sanitizedExtras },
     },
   });
@@ -730,9 +724,10 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 // ───────────────────────────────────────────────
 // 5) Public: reusable deposit draft
 checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency } = req.checkout;
+  const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
+  const claims = { merchantId, diditSubject, currency, availableBalanceCents };
   const user = await prisma.user.findUnique({ where: { diditSubject } });
-  if (!user) return res.json({ ok: true, draft: null });
+  if (!user) return res.json({ ok: true, draft: null, claims });
 
   const pr = await prisma.paymentRequest.findFirst({
     where: {
@@ -745,7 +740,7 @@ checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLim
     },
   });
 
-  res.json({ ok: true, draft: pr || null });
+  res.json({ ok: true, draft: pr || null, claims });
 });
 
 // ───────────────────────────────────────────────

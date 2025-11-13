@@ -585,6 +585,100 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
+// Merchant test payments widget
+(() => {
+  const root = document.querySelector('[data-test-payments]');
+  if (!root) return;
+
+  const buttons = root.querySelectorAll('[data-test-action]');
+  if (!buttons.length) return;
+
+  const sessionEndpoint = root.getAttribute('data-session-endpoint') || '/merchant/payments/test/session';
+  let subject = root.getAttribute('data-default-subject') || '';
+  let bootstrapToken = root.getAttribute('data-initial-token') || '';
+
+  const notify = (msg) => {
+    if (typeof window.toast === 'function') window.toast(msg || 'Something went wrong');
+    else if (msg) console.warn(msg);
+  };
+
+  const setBusy = (busy) => {
+    buttons.forEach((btn) => {
+      btn.disabled = !!busy;
+      btn.style.opacity = busy ? '.6' : '';
+    });
+  };
+
+  const loadPayX = (() => {
+    let pending;
+    return () => {
+      if (window.PayX) return Promise.resolve(window.PayX);
+      if (!pending) {
+        pending = new Promise((resolve, reject) => {
+          const script = document.createElement('script');
+          script.src = '/public/checkout/checkout-widget.js';
+          script.async = true;
+          script.onload = () => {
+            if (window.PayX) resolve(window.PayX);
+            else reject(new Error('Checkout widget unavailable'));
+          };
+          script.onerror = () => reject(new Error('Failed to load checkout widget'));
+          document.head.appendChild(script);
+        });
+      }
+      return pending;
+    };
+  })();
+
+  const fetchSession = async () => {
+    const resp = await fetch(sessionEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ subject }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data || !data.ok) {
+      const err = (data && data.error) || 'Unable to prepare checkout';
+      throw new Error(err);
+    }
+    subject = data.subject || subject;
+    return data.token;
+  };
+
+  const claimToken = async () => {
+    if (bootstrapToken) {
+      const token = bootstrapToken;
+      bootstrapToken = '';
+      return token;
+    }
+    return fetchSession();
+  };
+
+  const open = async (kind) => {
+    setBusy(true);
+    try {
+      const PayX = await loadPayX();
+      const token = await claimToken();
+      await PayX.init({ token });
+      if (kind === 'deposit') PayX.openDeposit();
+      else PayX.openWithdrawal();
+    } catch (err) {
+      notify((err && err.message) || 'Unable to open checkout');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', (event) => {
+      event.preventDefault();
+      const kind = (btn.getAttribute('data-test-action') || '').toLowerCase();
+      if (kind === 'deposit' || kind === 'withdrawal') open(kind);
+    });
+  });
+})();
+
 // Active nav highlight
 (() => {
   const here = location.pathname.replace(/\/+$/, '');

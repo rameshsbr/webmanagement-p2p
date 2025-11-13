@@ -17,6 +17,7 @@ import {
   PaymentExportItem,
 } from "../services/paymentExports.js";
 import { listAccountEntries } from "../services/merchantAccounts.js";
+import { signCheckoutToken } from "../services/checkoutToken.js";
 import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
@@ -51,6 +52,15 @@ function currentMerchantUserId(req: any): string | null {
     if (!merchantId || auth.sub !== merchantId) return auth.sub;
   }
   return null;
+}
+
+function normalizeTestSubject(input: any, merchantId: string): string {
+  const raw = typeof input === "string" ? input.trim() : "";
+  if (raw && /^[A-Za-z0-9_.-]{3,64}$/.test(raw)) return raw;
+  const tail = merchantId.replace(/[^A-Za-z0-9]/g, "").slice(-6) || merchantId.slice(-6) || "demo";
+  const ts = Date.now().toString(36);
+  const generated = `merchant-${tail}-${ts}`;
+  return generated.slice(0, 64);
 }
 
 type RenderKeysOptions = {
@@ -780,6 +790,28 @@ router.get("/payments", async (req: any, res) => {
 
 router.get("/payments/deposits", (_req, res) => res.redirect("/merchant/payments?type=DEPOSIT"));
 router.get("/payments/withdrawals", (_req, res) => res.redirect("/merchant/payments?type=WITHDRAWAL"));
+router.get("/payments/test", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.redirect("/merchant/payments");
+
+  const subject = normalizeTestSubject(req.query?.subject, merchantId);
+  const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
+  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency });
+
+  res.render("merchant/payments-test", {
+    title: "Test Payments",
+    testCheckout: { subject, token },
+  });
+});
+
+router.post("/payments/test/session", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
+  const subject = normalizeTestSubject(req.body?.subject || req.query?.subject, merchantId);
+  const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
+  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency });
+  res.json({ ok: true, token, subject, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+});
 
 router.get("/users", async (req: any, res) => {
   if (!usersFeatureEnabled(res)) {

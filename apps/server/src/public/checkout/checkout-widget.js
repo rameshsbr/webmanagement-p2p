@@ -159,7 +159,15 @@
   }
 
   function numberInput(attrs) {
-    const i = el("input", { type:"number", ...attrs, style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" });
+    const i = el("input", {
+      type:"text",
+      inputmode:"numeric",
+      pattern:"[0-9\\s-]*",
+      autocomplete:"off",
+      spellcheck:"false",
+      ...attrs,
+      style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px"
+    });
     i.addEventListener("wheel", () => i.blur());
     return i;
   }
@@ -251,57 +259,139 @@
     const wrap = el("div");
     if (!list.length) return { wrap, getValues: () => ({}), validate: () => null };
 
-    const inputs = {};
-    list.forEach(f => {
+    const metas = [];
+
+    list.forEach((f) => {
       if (!f || !f.name) return;
       let input;
       if (f.display === "select") {
-        input = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" },
-          (Array.isArray(f.options) ? f.options : []).map(opt => el("option", { value:String(opt) }, String(opt)))
+        input = el(
+          "select",
+          { style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px" },
+          (Array.isArray(f.options) ? f.options : []).map((opt) =>
+            el("option", { value: String(opt) }, String(opt))
+          )
         );
       } else if (f.display === "file") {
-        input = el("input", { type:"file", style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" });
+        input = el("input", {
+          type: "file",
+          style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px",
+        });
       } else {
         input = f.field === "number"
           ? numberInput({ placeholder: f.placeholder || "" })
           : textInput({ placeholder: f.placeholder || "" });
       }
+
       if (draftExtras && draftExtras[f.name] != null && input && input.type !== "file") {
         input.value = String(draftExtras[f.name]);
       }
-      inputs[f.name] = input;
-      // 👉 pass required to render inline asterisk properly
-      wrap.appendChild(inputRow(f.name, input, !!f.required));
+
+      if (f.display === "input" && f.field === "number" && input && input.type !== "file") {
+        input.addEventListener("input", () => {
+          const filtered = input.value.replace(/[^0-9\s-]+/g, "");
+          if (filtered !== input.value) input.value = filtered;
+        });
+        input.addEventListener("blur", () => {
+          const trimmed = String(input.value || "").trim();
+          input.value = trimmed ? trimmed.replace(/[\s-]+/g, "") : "";
+        });
+      }
+
+      const errorEl = el("div", {
+        style: "color:#dc2626; font-size:12px; margin:4px 0 0; display:none",
+      });
+      const row = inputRow(f.name, input, !!f.required);
+      const rowWrap = el("div", { style: "margin-bottom:8px" }, [row, errorEl]);
+      wrap.appendChild(rowWrap);
+
+      if (input && input.type !== "file") {
+        metas.push({ field: f, input, errorEl });
+      }
     });
 
     function getValues() {
-      const out = {};
-      Object.entries(inputs).forEach(([k, node]) => {
-        if (node.type === "file") return; // file extras ignored for now
-        out[k] = node.value;
+      const out = {} as Record<string, string>;
+      metas.forEach(({ field, input }) => {
+        if (!field || !field.name) return;
+        if (field.display === "input" && field.field === "number") {
+          const trimmed = String(input.value || "").trim();
+          out[field.name] = trimmed ? trimmed.replace(/[\s-]+/g, "") : "";
+        } else if (field.display === "select") {
+          out[field.name] = String(input.value || "");
+        } else {
+          out[field.name] = String(input.value || "").trim();
+        }
       });
       return out;
     }
 
+    function setError(meta, message) {
+      if (!meta || !meta.errorEl) return;
+      if (message) {
+        meta.errorEl.textContent = message;
+        meta.errorEl.style.display = "block";
+        meta.input.setAttribute("aria-invalid", "true");
+      } else {
+        meta.errorEl.textContent = "";
+        meta.errorEl.style.display = "none";
+        meta.input.removeAttribute("aria-invalid");
+      }
+    }
+
     function validate() {
       const vals = getValues();
-      for (const f of list) {
-        if (f.required) {
-          const v = vals[f.name];
-          if (v == null || String(v).trim() === "") return `${f.name} is required.`;
-        }
-        if (f.display === "select" && Array.isArray(f.options) && f.options.length) {
-          const v = vals[f.name];
-          if (v != null && !f.options.includes(String(v))) return `${f.name} has an invalid value.`;
-        }
-        if (f.display === "input" && f.field === "number" && f.digits > 0) {
-          const v = vals[f.name];
-          if (v && (!/^\d+$/.test(String(v)) || String(v).length !== Number(f.digits))) {
-            return `${f.name} must be ${f.digits} digits.`;
+      let firstMessage = null;
+      metas.forEach((meta) => {
+        const { field, input } = meta;
+        if (!field || !field.name) return;
+        const raw = String(input.value || "");
+        const trimmed = raw.trim();
+        let message = "";
+
+        if (field.required && trimmed === "") {
+          message = `${field.name} is required.`;
+        } else if (
+          field.display === "select" &&
+          Array.isArray(field.options) &&
+          field.options.length
+        ) {
+          const val = String(input.value || "");
+          if (trimmed && !field.options.includes(val)) {
+            message = `${field.name} has an invalid value.`;
+          }
+        } else if (field.display === "input" && field.field === "number" && trimmed !== "") {
+          if (!/^[\d\s-]+$/.test(trimmed)) {
+            message = "Enter digits only.";
+          } else {
+            const normalized = vals[field.name] || "";
+            if (!/^\d+$/.test(normalized)) {
+              message = "Enter digits only.";
+            } else {
+              const min = Number.isFinite(field.minDigits)
+                ? Math.max(0, Math.floor(field.minDigits))
+                : 0;
+              const max =
+                typeof field.maxDigits === "number" && Number.isFinite(field.maxDigits)
+                  ? Math.max(min, Math.floor(field.maxDigits))
+                  : null;
+              const len = normalized.length;
+              if (max !== null && min > 0 && (len < min || len > max)) {
+                message = `Enter between ${min} and ${max} digits.`;
+              } else if (min > 0 && len < min) {
+                message = `Enter at least ${min} digits.`;
+              } else if (max !== null && len > max) {
+                message = `Enter at most ${max} digits.`;
+              }
+            }
           }
         }
-      }
-      return null;
+
+        setError(meta, message);
+        if (!firstMessage && message) firstMessage = message;
+      });
+
+      return firstMessage;
     }
 
     return { wrap, getValues, validate };
@@ -314,13 +404,13 @@
 
   const WITHDRAWAL_FALLBACK_FIELDS = {
     OSKO: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, digits: 0 },
-      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, digits: 0 },
-      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, digits: 6 },
+      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
+      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, minDigits: 10, maxDigits: 12 },
+      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, minDigits: 6, maxDigits: 6 },
     ],
     PAYID: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, digits: 0 },
-      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, digits: 0 },
+      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
+      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, minDigits: 0, maxDigits: null },
     ],
   };
 

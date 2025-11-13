@@ -9,8 +9,6 @@ import { seal } from "../services/secretBox.js";
 import jwt from "jsonwebtoken";
 import speakeasy from "speakeasy";
 import QRCode from "qrcode";
-// ⬇️ NEW: we’ll mint a short-lived checkout token for the merchant demo
-import { signCheckoutToken } from "../services/checkoutToken.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
 import {
   buildPaymentExportFile,
@@ -561,32 +559,10 @@ router.get("/payments", async (req: any, res) => {
   if (t === "DEPOSIT") title = "Deposits";
   else if (t === "WITHDRAWAL") title = "Withdrawals";
 
-  // NEW: build a short-lived checkout token for the “Test checkout” panel
-  let checkoutToken: string | undefined;
-  const diditSubject =
-    String((req.query?.subject as string) || (req.query?.diditSubject as string) || "").trim();
-
-  if (diditSubject) {
-    // You can also pull merchant balance to show a realistic available balance.
-    const m = await prisma.merchant.findUnique({
-      where: { id: merchantId },
-      select: { balanceCents: true },
-    });
-
-    checkoutToken = signCheckoutToken({
-      merchantId,
-      diditSubject,
-      currency: "AUD",
-      // Keep it generous for testing. Use m?.balanceCents if you prefer.
-      availableBalanceCents: typeof m?.balanceCents === "number" ? m.balanceCents : 200000,
-    });
-  }
-
   res.render("merchant/payments", {
     title,
     table: { total, items, page, perPage, pages },
     query,
-    checkoutToken, // <- pass to EJS so PayX.init can run
   });
 });
 

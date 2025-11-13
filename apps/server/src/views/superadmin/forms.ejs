@@ -158,8 +158,11 @@
   }
   .grid{ display:grid; grid-template-columns: 160px 1fr; gap:14px; align-items:center; }
   .full { grid-column: 1 / -1; }
-  .digits-wrap{ display:none; gap:8px; align-items:center; margin-top:8px; }
-  .digits-input{ width:120px; }
+  .digits-wrap{ display:none; flex-direction:column; gap:6px; margin-top:8px; }
+  .digits-row{ display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+  .digits-input{ width:140px; }
+  .digits-help{ font-size: var(--fs-12); opacity:.78; }
+  .digits-error{ font-size: var(--fs-12); color: var(--tone-danger); display:none; }
   .field-card > .grid{ margin-bottom:16px; }
   .field-card > .grid:last-child{ margin-bottom:0; }
   .block-actions{ position:static; display:flex; gap:8px; }
@@ -282,7 +285,7 @@
   const modes = [['input','Input'],['file','File'],['select','Select']];
 
   function normalizeRow(r){
-    if (!r) return { name:"", display:"input", field:"text", placeholder:"", required:false, digits:0, options:[] };
+    if (!r) return { name:"", display:"input", field:"text", placeholder:"", required:false, minDigits:0, maxDigits:null, options:[] };
     const name = String(r.name ?? r.key ?? r.label ?? "").trim();
     const displayRaw = String(r.display ?? r.mode ?? "input").toLowerCase();
     const display = (displayRaw==="file"||displayRaw==="select") ? displayRaw : "input";
@@ -297,8 +300,29 @@
     let options = [];
     if (Array.isArray(r.options)) options = r.options.map(String);
     else if (typeof r.data === "string") options = r.data.split(",").map(s=>s.trim()).filter(Boolean);
-    const digits = Number.isFinite(+r.digits) ? Math.max(0,+r.digits) : 0;
-    return { name, display, field, placeholder: r.placeholder ?? "", required: !!r.required, digits, options };
+
+    let minDigits = 0;
+    let maxDigits = null;
+    if (display==='input' && field==='number'){
+      const minRaw = Number(r.minDigits);
+      const maxRaw = r.maxDigits;
+      minDigits = Number.isFinite(minRaw) ? Math.max(0, Math.min(64, Math.floor(minRaw))) : 0;
+      if (maxRaw === null || typeof maxRaw === 'undefined' || maxRaw === ''){
+        maxDigits = null;
+      } else {
+        const parsed = Number(maxRaw);
+        if (Number.isFinite(parsed)){
+          maxDigits = Math.max(minDigits, Math.min(64, Math.floor(parsed)));
+        }
+      }
+      const legacy = Number(r.digits);
+      if (Number.isFinite(legacy) && legacy > 0){
+        minDigits = 0;
+        maxDigits = Math.max(minDigits, Math.min(64, Math.floor(legacy)));
+      }
+    }
+
+    return { name, display, field, placeholder: r.placeholder ?? "", required: !!r.required, minDigits, maxDigits, options };
   }
 
   function el(tag, attrs={}, children){
@@ -348,17 +372,24 @@
     const card = el('div',{class:'field-card', draggable:'true'});
 
     const actions = el('div',{class:'block-actions'},[
-      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const clone = makeCard(kind,{display:'input',field:'text',required:true}); card.parentElement.insertBefore(clone, card.nextSibling); clone.querySelector('.i-name').focus(); }},'＋'),
-      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const list=card.parentElement; if(list.querySelectorAll('.field-card').length>1) card.remove(); }},'－')
+      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const clone = makeCard(kind,{display:'input',field:'text',required:true}); card.parentElement.insertBefore(clone, card.nextSibling); clone.querySelector('.i-name').focus(); refreshSaveState(); }},'＋'),
+      el('button',{type:'button', class:'icon-mini', onclick:()=>{ const list=card.parentElement; if(list.querySelectorAll('.field-card').length>1) { card.remove(); refreshSaveState(); } }},'－')
     ]);
 
     const name = el('input',{type:'text', class:'i-name', value:d.name||'', placeholder:'Field name'});
     const display = el('select',{class:'i-display'});
     modes.forEach(([v,t])=> display.appendChild(new Option(t,v, false, d.display===v)));
     const field = el('select',{class:'i-field'});
+    const digitsError = el('div',{class:'digits-error'});
+    const minInput = el('input',{type:'number', min:'0', max:'64', step:'1', class:'digits-input i-min-digits', value: Number.isFinite(d.minDigits) ? d.minDigits : 0});
+    const maxInput = el('input',{type:'number', min:'0', max:'64', step:'1', class:'digits-input i-max-digits', value: d.maxDigits == null ? '' : d.maxDigits, placeholder:'Unlimited'});
     const digitsWrap = el('div',{class:'digits-wrap'},[
-      el('span',{class:'muted'},'Number of digits. 0 - unlimited.'),
-      el('input',{type:'number', min:'0', step:'1', class:'digits-input i-digits', value: d.digits||0})
+      el('div',{class:'digits-row'},[
+        el('label',{},['Min digits', minInput]),
+        el('label',{},['Max digits', maxInput])
+      ]),
+      el('div',{class:'digits-help'},'Accepted length must be between Min and Max digits (inclusive). Leave Max empty for unlimited.'),
+      digitsError
     ]);
     const fieldRow = el('div',{class:'grid'},[
       el('div',{class:'muted'},'Field:'),
@@ -387,6 +418,53 @@
     card.appendChild(reqRow);
     card.appendChild(dataWrap);
 
+    function sanitizeDigits(input){
+      const raw = String(input.value || '').trim();
+      if (raw === '') {
+        input.value = '';
+        return null;
+      }
+      const num = Math.floor(Math.max(0, Number(raw)));
+      if (!Number.isFinite(num)) {
+        input.value = '';
+        return null;
+      }
+      const clamped = Math.min(num, 64);
+      if (String(clamped) !== input.value) input.value = String(clamped);
+      return clamped;
+    }
+
+    function syncDigitsState(){
+      const active = display.value==='input' && field.value==='number';
+      digitsWrap.style.display = active ? 'flex' : 'none';
+      if (!active){
+        digitsError.textContent = '';
+        digitsError.style.display = 'none';
+        card.removeAttribute('data-digit-error');
+        refreshSaveState();
+        return;
+      }
+      const minVal = sanitizeDigits(minInput) ?? 0;
+      const maxValRaw = sanitizeDigits(maxInput);
+      const maxVal = maxInput.value === '' ? null : (maxValRaw ?? minVal);
+      let message = '';
+      if (minVal < 0){
+        message = 'Min digits must be 0 or greater.';
+      } else if (maxVal !== null && maxVal < minVal){
+        message = 'Max digits must be greater than or equal to Min digits.';
+      }
+      if (message){
+        digitsError.textContent = message;
+        digitsError.style.display = 'block';
+        card.setAttribute('data-digit-error','1');
+      } else {
+        digitsError.textContent = '';
+        digitsError.style.display = 'none';
+        card.removeAttribute('data-digit-error');
+      }
+      refreshSaveState();
+    }
+
     function syncByDisplay(){
       const mode = display.value;
       field.innerHTML = '';
@@ -402,27 +480,33 @@
         ];
         opts.forEach(([v,t]) => field.appendChild(new Option(t, v)));
         field.value = (d.field && opts.some(o=>o[0]===d.field)) ? d.field : 'text';
-        digitsWrap.style.display = (field.value==='number') ? 'flex' : 'none';
+        syncDigitsState();
         dataWrap.style.display = 'none';
       } else if (mode==='file'){
         field.appendChild(new Option('null','null'));
         field.value = 'null'; field.disabled = true;
-        digitsWrap.style.display = 'none';
+        syncDigitsState();
         dataWrap.style.display = 'none';
       } else { // select
         field.appendChild(new Option('null','null'));
         field.value = 'null'; field.disabled = true;
-        digitsWrap.style.display = 'none';
+        syncDigitsState();
         dataWrap.style.display = '';
         const list = card.querySelector('.i-data-list');
         if (!list.children.length) optionRow(list,'');
       }
     }
     display.addEventListener('change', syncByDisplay);
-    field.addEventListener('change', ()=>{ digitsWrap.style.display = (field.value==='number') ? 'flex' : 'none'; });
+    field.addEventListener('change', syncDigitsState);
+    [minInput, maxInput].forEach(inp => {
+      inp.addEventListener('input', syncDigitsState);
+      inp.addEventListener('change', syncDigitsState);
+      inp.addEventListener('blur', syncDigitsState);
+    });
 
     // init
     syncByDisplay();
+    syncDigitsState();
     if (d.display==='select'){
       const list = card.querySelector('.i-data-list');
       list.innerHTML = '';
@@ -446,15 +530,23 @@
     return card;
   }
 
+  function refreshSaveState(){
+    const saveBtn = document.querySelector('.save-panel button[type="submit"]');
+    if (!saveBtn) return;
+    const invalid = document.querySelector('.field-card[data-digit-error="1"]');
+    saveBtn.disabled = !!invalid;
+  }
+
   function load(){
     depList.innerHTML = ''; wdrList.innerHTML = '';
     (cfg.deposit||[]).map(normalizeRow).forEach(x=> depList.appendChild(makeCard('deposit', x)));
     (cfg.withdrawal||[]).map(normalizeRow).forEach(x=> wdrList.appendChild(makeCard('withdrawal', x)));
     if (!depList.children.length) depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true}));
     if (!wdrList.children.length) wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true}));
+    refreshSaveState();
   }
-  addDep.addEventListener('click', ()=> depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true})));
-  addWdr.addEventListener('click', ()=> wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true})));
+  addDep.addEventListener('click', ()=> { depList.appendChild(makeCard('deposit', {display:'input', field:'text', required:true})); refreshSaveState(); });
+  addWdr.addEventListener('click', ()=> { wdrList.appendChild(makeCard('withdrawal', {display:'input', field:'text', required:true})); refreshSaveState(); });
   load();
 
   // Pack JSON and include the bank scope; skip blank-name rows to avoid server-side validation errors
@@ -468,7 +560,15 @@
         const fieldSel = card.querySelector('.i-field').value;
         const placeholder = card.querySelector('.i-placeholder').value;
         const required = card.querySelector('.i-required').checked;
-        const digits = Number(card.querySelector('.i-digits')?.value || 0);
+        const minDigitsInput = card.querySelector('.i-min-digits');
+        const maxDigitsInput = card.querySelector('.i-max-digits');
+        const parsedMin = minDigitsInput ? Number(minDigitsInput.value || 0) : 0;
+        const minDigits = Number.isFinite(parsedMin) ? Math.max(0, Math.floor(parsedMin)) : 0;
+        const rawMax = maxDigitsInput ? String(maxDigitsInput.value || '') : '';
+        const parsedMax = rawMax === '' ? NaN : Number(rawMax);
+        const maxDigits = rawMax === '' || !Number.isFinite(parsedMax)
+          ? null
+          : Math.max(minDigits, Math.floor(parsedMax));
         const row = {
           name,
           display,
@@ -476,8 +576,8 @@
           field: display==='input' ? fieldSel : null,
           placeholder,
           required,
-          // digits only meaningful for number
-          digits: (display==='input' && fieldSel==='number') ? (Number.isFinite(digits) ? digits : 0) : 0,
+          minDigits: (display==='input' && fieldSel==='number') ? minDigits : 0,
+          maxDigits: (display==='input' && fieldSel==='number') ? maxDigits : null,
           options: []
         };
         if (display==='select'){

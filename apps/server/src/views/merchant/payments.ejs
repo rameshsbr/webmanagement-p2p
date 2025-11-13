@@ -69,20 +69,6 @@
 
 <div class="table-wrap">
 
-  <% if (typeof checkoutToken !== 'undefined') { %>
-    <div id="payx-demo" style="margin: 12px 0 20px 0; padding:12px; border:1px solid var(--muted); border-radius:10px;">
-      <div class="row" style="align-items:center; gap:10px;">
-        <div style="font-weight:600;">Test checkout</div>
-        <div style="opacity:.7;">Subject:</div>
-        <code><%= (query.subject || query.diditSubject || '') %></code>
-        <span style="flex:1"></span>
-        <button class="btn small" id="payx-open-dep">Open deposit</button>
-        <button class="btn small" id="payx-open-wdr">Open withdrawal</button>
-      </div>
-      <div id="payx-demo-log" style="margin-top:8px; font-size:12px; opacity:.8;"></div>
-    </div>
-  <% } %>
-
   <table id="<%= tableId %>" class="table">
     <thead>
       <tr>
@@ -184,29 +170,3 @@
   <% } else { %><span>Next</span><% } %>
 </div>
 
-<% if (typeof checkoutToken !== 'undefined') { %>
-  <script>
-    window.CHECKOUT_TOKEN = "<%- checkoutToken %>";
-  </script>
-  <script src="/public/checkout/checkout-widget.js?v=2"></script>
-  <script src="/public/merchant/merchant.js" defer></script>
-  <script>
-    (async () => {
-      try {
-        if (window.PayX && window.CHECKOUT_TOKEN) {
-          await PayX.init({
-            token: window.CHECKOUT_TOKEN,
-            theme: (document.cookie.match(/merchant_theme=(dark)/)?.[1] || "light"),
-            onKycApproved:  () => document.getElementById('payx-demo-log').textContent = "KYC approved",
-            onKycRejected:  () => document.getElementById('payx-demo-log').textContent = "KYC rejected",
-            onDepositSubmitted:    info => document.getElementById('payx-demo-log').textContent = `Deposit ${info.referenceCode}`,
-            onWithdrawalSubmitted: info => document.getElementById('payx-demo-log').textContent = `Withdrawal ${info.referenceCode}`,
-            onError: err => document.getElementById('payx-demo-log').textContent = "Error: " + (err && (err.error || err.message) || String(err)),
-          });
-          document.getElementById('payx-open-dep')?.addEventListener('click', () => PayX.openDeposit());
-          document.getElementById('payx-open-wdr')?.addEventListener('click', () => PayX.openWithdrawal());
-        }
-      } catch {}
-    })();
-  </script>
-<% } %>

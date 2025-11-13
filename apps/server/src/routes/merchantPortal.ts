@@ -16,6 +16,7 @@ import {
   PaymentExportColumn,
   PaymentExportItem,
 } from "../services/paymentExports.js";
+import * as refs from "../services/reference.js";
 import { listAccountEntries } from "../services/merchantAccounts.js";
 import { signCheckoutToken } from "../services/checkoutToken.js";
 import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
@@ -558,7 +559,7 @@ async function ensureTestUser(merchantId: string, requestedSubject?: string | nu
     where: { diditSubject: subject },
     create: {
       diditSubject: subject,
-      publicId: generateUserId(),
+      publicId: refs.generateUserId(),
       verifiedAt: now,
     },
     update: { verifiedAt: now },
@@ -636,8 +637,8 @@ async function createTestDeposit(opts: {
   currency: string;
 }) {
   const bankAccount = await findTestBankAccount(opts.merchantId, opts.currency);
-  const referenceCode = generateTransactionId();
-  const uniqueReference = generateUniqueReference();
+  const referenceCode = refs.generateTransactionId()
+  const uniqueReference = refs.generateUniqueReference();
 
   const details: Record<string, any> = {
     test: true,
@@ -672,8 +673,8 @@ async function createTestWithdrawal(opts: {
   amountCents: number;
   currency: string;
 }) {
-  const referenceCode = generateTransactionId();
-  const uniqueReference = generateUniqueReference();
+  const referenceCode = refs.generateTransactionId();
+  const uniqueReference = refs.generateUniqueReference();
 
   return prisma.$transaction(async (tx) => {
     const destination = await tx.withdrawalDestination.create({

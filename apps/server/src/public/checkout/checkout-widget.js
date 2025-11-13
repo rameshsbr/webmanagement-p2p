@@ -1,5 +1,9 @@
 // apps/server/src/public/checkout/checkout-widget.js
+// Plain JS (no TS syntax). Keeps your current behavior; only tiny guards/semicolons.
+
 (function () {
+  "use strict";
+
   const DEFAULT_THEME = "light";
 
   // global, persisted after init()
@@ -143,7 +147,6 @@
     return ct.includes("application/json") ? resp.json() : resp.text();
   }
 
-  // 👉 updated to support inline, styled, non-wrapping required asterisk
   function inputRow(label, inputEl, required = false) {
     const lbl = el("div", {
       style:"opacity:.7; padding-top:6px; white-space:nowrap"
@@ -174,9 +177,7 @@
 
   function textInput(attrs) { return el("input", { type:"text", ...attrs, style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }); }
 
-  // ─────────────────────────────────────────────────────────
   // KYC popup lifecycle
-  // ─────────────────────────────────────────────────────────
   let _kycPopup = null;
   let _listenerInstalled = false;
 
@@ -251,9 +252,7 @@
   }
   function clearDraft(kind, claims) { try { localStorage.removeItem(LS_KEY(claims.merchantId, claims.diditSubject, claims.currency, kind)); } catch {} }
 
-  // ─────────────────────────────────────────────────────────
   // Dynamic extras from /public/forms
-  // ─────────────────────────────────────────────────────────
   function buildDynamicFrom(fields, draftExtras) {
     const list = Array.isArray(fields) ? fields : [];
     const wrap = el("div");
@@ -452,8 +451,6 @@
     return merged;
   }
 
-  // Helper: pick the same bank the server would choose for a given method,
-  // then fetch that bank's form config.
   async function getBankAndFormsForMethod(token, methodValue) {
     const banksResp = await call(`/public/deposit/banks?method=${encodeURIComponent(methodValue)}`, token, { method: "GET" });
     const first = (banksResp && Array.isArray(banksResp.banks) && banksResp.banks.length) ? banksResp.banks[0] : null;
@@ -475,7 +472,6 @@
     };
   }
 
-  // Infer payer/destination from dynamic form values
   function normKey(k) { return String(k || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
   function findValue(extras, names) {
     const keys = Object.keys(extras || {});
@@ -524,9 +520,6 @@
     };
   }
 
-  // ─────────────────────────────────────────────────────────
-  // Deposit (Step 1 → Step 2)
-  // ─────────────────────────────────────────────────────────
   async function openDeposit(token, claims) {
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
@@ -539,7 +532,6 @@
       el("option", { value:"PAYID" }, "PayID"),
     ]);
 
-    // only dynamic fields
     const dynMount = el("div");
     dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
 
@@ -717,9 +709,6 @@
     box.appendChild(status);
   }
 
-  // ─────────────────────────────────────────────────────────
-  // Withdrawal
-  // ─────────────────────────────────────────────────────────
   async function openWithdrawal(token, claims) {
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
@@ -821,10 +810,10 @@
           headers: { "content-type":"application/json" },
           body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras }),
         });
-    status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
+        status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);
         safeCallback("onWithdrawalSubmitted", {
-        id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: "AUD"
+          id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: "AUD"
         });
       } catch (e) {
         status.textContent = (e && e.error) ? String(e.error) : "Error";
@@ -854,14 +843,12 @@
 
       this._token = cfg.token;
 
-      // Load merchant-level dynamic form definitions (used for withdrawals; deposit uses bank-specific at runtime)
       try {
         const resp = await fetch("/public/forms", { headers: { authorization:`Bearer ${cfg.token}` } });
         const data = await resp.json();
         if (data && data.ok) _forms = { ok: true, deposit: data.deposit || [], withdrawal: data.withdrawal || [] };
       } catch {}
 
-      // Warm draft endpoint and capture claims (optional, for LS keying)
       try {
         const r = await fetch("/public/deposit/draft", { headers: { authorization:`Bearer ${cfg.token}` } });
         const j = await r.json();

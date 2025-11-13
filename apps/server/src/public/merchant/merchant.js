@@ -270,6 +270,135 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
+// Merchant payments: trigger test deposit/withdrawal actions
+(() => {
+  const container = document.querySelector('[data-test-payments]');
+  if (!container) return;
+
+  const depositBtn = container.querySelector('[data-action="test-deposit"]');
+  const withdrawalBtn = container.querySelector('[data-action="test-withdrawal"]');
+  if (!depositBtn && !withdrawalBtn) return;
+
+  const statusEl = container.querySelector('[data-test-status]');
+  const subjectEl = container.querySelector('[data-test-subject]');
+  const initialSubject = container.getAttribute('data-subject') || '';
+  if (!initialSubject && subjectEl) subjectEl.textContent = '—';
+
+  const csrfToken = document.querySelector('meta[name="csrf-token"]')?.getAttribute('content') || '';
+
+  const readSubject = () => container.getAttribute('data-subject') || '';
+  const setSubject = (value) => {
+    container.setAttribute('data-subject', value || '');
+    if (subjectEl) subjectEl.textContent = value || '—';
+  };
+
+  const setStatus = (message, isError = false) => {
+    if (!statusEl) return;
+    statusEl.textContent = message || '';
+    statusEl.style.opacity = message ? '0.9' : '0.75';
+    if (isError) {
+      statusEl.dataset.state = 'error';
+      statusEl.style.color = 'var(--danger, #c0392b)';
+    } else {
+      statusEl.dataset.state = 'ok';
+      statusEl.style.color = '';
+    }
+  };
+
+  const showToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast === 'function') window.toast(message);
+    else console.info(message);
+  };
+
+  const showErrorToast = (message) => {
+    if (!message) return;
+    if (typeof window.toast?.error === 'function') window.toast.error(message);
+    else if (typeof window.toast === 'function') window.toast(message);
+    else console.error(message);
+  };
+
+  const setLoading = (loading) => {
+    container.dataset.loading = loading ? '1' : '0';
+    [depositBtn, withdrawalBtn].forEach((btn) => {
+      if (btn) btn.disabled = loading;
+    });
+    if (loading) setStatus('Creating test payment…');
+  };
+
+  const updateQuerySubject = (subject) => {
+    try {
+      const url = new URL(window.location.href);
+      if (subject) url.searchParams.set('subject', subject);
+      else url.searchParams.delete('subject');
+      url.searchParams.delete('diditSubject');
+      window.history.replaceState({}, '', url.toString());
+    } catch {}
+  };
+
+  const postTestPayment = async (kind) => {
+    const endpoint = kind === 'deposit'
+      ? '/merchant/payments/test-deposit'
+      : '/merchant/payments/test-withdrawal';
+
+    const payload = { subject: readSubject() };
+
+    setLoading(true);
+    try {
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/json',
+          ...(csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+        },
+        body: JSON.stringify(payload),
+      });
+
+      let data = null;
+      try { data = await res.json(); } catch {}
+
+      if (!res.ok || !data?.ok) {
+        const message = (data && data.error) || `Failed to create test ${kind}`;
+        throw new Error(message);
+      }
+
+      const nextSubject = (data && data.subject) || readSubject();
+      if (nextSubject) {
+        setSubject(nextSubject);
+        updateQuerySubject(nextSubject);
+      }
+
+      const label = kind === 'deposit' ? 'deposit' : 'withdrawal';
+      const code = data && data.referenceCode ? ` ${data.referenceCode}` : '';
+      const successMessage = (data && data.message) || `Created test ${label}${code}`.trim();
+      setStatus(successMessage);
+      showToast((data && data.toast) || `Created test ${label}.`);
+
+      window.setTimeout(() => {
+        window.location.reload();
+      }, 800);
+    } catch (err) {
+      const message = (err && err.message) || `Failed to create test ${kind}`;
+      setStatus(message, true);
+      showErrorToast(message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  depositBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    postTestPayment('deposit');
+  });
+
+  withdrawalBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    postTestPayment('withdrawal');
+  });
+})();
+
 // ─── THEME: persist via localStorage + cookie, apply to <html> and <body> ───
 (() => {
   const KEY = 'merchant.theme';

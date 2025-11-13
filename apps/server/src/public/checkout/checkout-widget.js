@@ -25,6 +25,7 @@
   const _withdrawalFormCache = {};
   let _availableMethods = [];
   let _availableMethodsCurrency = null;
+  let _availableMethodsPromise = null;
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -69,10 +70,6 @@
   }
 
   const NO_FORM_MESSAGE = "No configured form for this method and currency.";
-
-  function currencyUnit() {
-    return (_claims && _claims.currency) || "AUD";
-  }
 
   function normalizeAmountInput(value) {
     if (value === null || value === undefined) return null;
@@ -409,77 +406,72 @@
     if (_availableMethods.length && _availableMethodsCurrency === currency) return _availableMethods;
     if (_availableMethodsPromise) return _availableMethodsPromise;
 
-  async function fetchAvailableMethods(token) {
-    const params = new URLSearchParams();
-    const currency = currencyUnit();
-    if (currency) params.set("currency", currency);
-    const qs = params.toString();
-    const resp = await call(`/public/deposit/banks${qs ? `?${qs}` : ""}`, token, { method: "GET" });
-    const banks = Array.isArray(resp?.banks) ? resp.banks : [];
-    const methods = [];
-    banks.forEach((bank) => {
-      const method = String(bank?.method || "").trim();
-      if (method && !methods.includes(method)) methods.push(method);
-    });
-    _availableMethods = methods;
-    _availableMethodsCurrency = currency || null;
-    return _availableMethods;
-  }
+    _availableMethodsPromise = (async () => {
+      try {
+        const resp = await call(`/public/deposit/banks?currency=${encodeURIComponent(currency)}`, token, { method: "GET" });
+        const banks = Array.isArray(resp?.banks) ? resp.banks : [];
+        const seen = new Set();
+        const list = [];
+        banks.forEach((bank) => {
+          const methodVal = bank && bank.method ? String(bank.method) : "";
+          if (!methodVal || seen.has(methodVal)) return;
+          seen.add(methodVal);
+          list.push(methodVal);
+        });
+        _availableMethods = list;
+        _availableMethodsCurrency = currency;
+        return list;
+      } catch (err) {
+        _availableMethods = [];
+        _availableMethodsCurrency = null;
+        throw err;
+      } finally {
+        _availableMethodsPromise = null;
+      }
+    })();
 
-  async function ensureAvailableMethods(token) {
-    const currency = currencyUnit() || null;
-    if (_availableMethodsCurrency === currency && _availableMethods.length) {
-      return _availableMethods;
-    }
-    try {
-      return await fetchAvailableMethods(token);
-    } catch (err) {
-      return _availableMethods;
-    }
+    return _availableMethodsPromise;
   }
 
   function buildMethodSelect(selectedValue) {
     const select = el("select", {
-      style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px",
-      disabled: !_availableMethods.length,
+      style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px"
     });
-    if (!_availableMethods.length) {
-      select.appendChild(el("option", { value: "" }, "No methods configured"));
-      return select;
-    }
-    _availableMethods.forEach((method) => {
-      select.appendChild(el("option", { value: method }, method));
+    _availableMethods.forEach((methodValue) => {
+      select.appendChild(el("option", { value: methodValue }, methodValue));
     });
+    if (_availableMethods.length === 0) select.disabled = true;
     if (selectedValue && _availableMethods.includes(selectedValue)) {
       select.value = selectedValue;
-    } else {
+    } else if (_availableMethods.length) {
       select.value = _availableMethods[0];
     }
     return select;
   }
 
-  function withdrawalFormCacheKey(methodValue, currency) {
-    return `${currency || ""}::${methodValue || ""}`;
-  }
-
-  async function getBankAndFormsForMethod(token, claims, methodValue) {
-    const params = new URLSearchParams();
-    params.set("method", methodValue);
-    const currency = (claims && claims.currency) || currencyUnit();
-    if (currency) params.set("currency", currency);
-    const banksResp = await call(`/public/deposit/banks?${params.toString()}`, token, { method: "GET" });
+  async function getBankAndFormsForMethod(token, methodValue) {
+    if (!methodValue) {
+      return { bankId: null, depositFields: [], withdrawalFields: [], error: NO_FORM_MESSAGE };
+    }
+    const currency = (_claims && _claims.currency) ? _claims.currency : "";
+    const query = `/public/deposit/banks?method=${encodeURIComponent(methodValue)}&currency=${encodeURIComponent(currency)}`;
+    const banksResp = await call(query, token, { method: "GET" });
     const banks = Array.isArray(banksResp?.banks) ? banksResp.banks : [];
-    const first = banks.find((bank) => bank && bank.id);
+    const first = banks.find((b) => b && b.id && (b.active === undefined || b.active === true));
 
-    if (!first || !first.id) {
-      return { bankId: null, depositFields: [], withdrawalFields: [] };
+    if (!first) {
+      return { bankId: null, depositFields: [], withdrawalFields: [], error: NO_FORM_MESSAGE };
     }
 
     const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(first.id)}`, token, { method: "GET" });
+    const depositFields = Array.isArray(cfg?.deposit) ? cfg.deposit : [];
+    const withdrawalFields = Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [];
+    const hasFields = depositFields.length || withdrawalFields.length;
     return {
       bankId: first.id,
-      depositFields: Array.isArray(cfg?.deposit) ? cfg.deposit : [],
-      withdrawalFields: Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [],
+      depositFields,
+      withdrawalFields,
+      error: hasFields ? null : NO_FORM_MESSAGE,
     };
   }
 
@@ -500,7 +492,7 @@
     const bankName = bankNameRaw != null ? String(bankNameRaw).trim() : "";
 
     if (methodVal === "OSKO") {
-      const holderName = findValue(ex, ["account holder name", "account holder", "holder name", "account name", "name"]);
+      const holderName = findValue(ex, ["account holder name", "holder name", "account name", "name", "account holder"]);
       const accountNo = findValue(ex, ["account number", "account no", "account #", "acct number"]);
       const bsb = findValue(ex, ["bsb"]);
       return {
@@ -513,7 +505,7 @@
     const email = findValue(ex, ["email", "payid (email)"]);
     let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
     const payIdValue = findValue(ex, ["payid value", "payid", "pay id"]);
-    const holderName = findValue(ex, ["account holder name", "account holder", "holder name", "name"]);
+    const holderName = findValue(ex, ["account holder name", "holder name", "name", "account holder"]);
     let type = "email";
     let value = String(email || "");
     const looksMobile = (s) => /^\+?61\d{9}$/.test(String(s || "").trim());
@@ -537,79 +529,77 @@
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
 
-    await ensureAvailableMethods(token);
+    _claims = { ...(_claims || {}), ...(claims || {}) };
+
+    let methodsError = null;
+    try {
+      await fetchAvailableMethods(token);
+    } catch (err) {
+      methodsError = err && err.error ? String(err.error) : "Unable to load payment methods.";
+    }
+
+    let nextBtn;
 
     const amountPlaceholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
     const amount = numberInput({ placeholder: amountPlaceholder });
     const draft = loadDraft("deposit", claims) || {};
-    const amount = numberInput({ placeholder: `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
+
     const method = buildMethodSelect(draft.method);
 
     const dynMount = el("div");
-    const createLoading = () => el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
-    dynMount.appendChild(createLoading());
-    const formNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:6px 0; display:none" });
+    const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
+    dynMount.appendChild(loadingNotice);
 
     let dyn = { wrap: el("div"), getValues: () => ({}), validate: () => null };
     let selectedBankId = null;
-    let formReady = false;
+    let hasConfigError = false;
+    const configNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:4px 0; display:none" });
 
-    function showFormNotice(msg) {
-      if (msg) {
-        formNotice.textContent = msg;
-        formNotice.style.display = "block";
-      } else {
-        formNotice.textContent = "";
-        formNotice.style.display = "none";
-      }
+    function setConfigError(message) {
+      const msg = message || "";
+      configNotice.textContent = msg;
+      configNotice.style.display = msg ? "block" : "none";
+      hasConfigError = Boolean(msg);
+    }
+
+    if (methodsError || !_availableMethods.length) {
+      setConfigError(methodsError || NO_FORM_MESSAGE);
+      dynMount.innerHTML = "";
     }
 
     async function refreshDynForMethod() {
-      const methodVal = String(method.value || "");
-      const prevRaw = typeof dyn.getValues === "function" ? dyn.getValues() : null;
-      const prev = prevRaw && Object.keys(prevRaw).length ? prevRaw : (draft.extras || {});
-      selectedBankId = null;
-      formReady = false;
-      dynMount.innerHTML = "";
-      dynMount.appendChild(createLoading());
-      showFormNotice("");
-
-      if (!_availableMethods.length || !methodVal) {
+      const selectedMethod = method.value;
+      if (!selectedMethod) {
+        selectedBankId = null;
+        dyn = buildDynamicFrom([], draft.extras);
         dynMount.innerHTML = "";
-        showFormNotice("No configured form for this method and currency.");
+        dynMount.appendChild(dyn.wrap);
+        setConfigError(NO_FORM_MESSAGE);
         updateValidity();
         return;
       }
-
+      dynMount.innerHTML = "";
+      dynMount.appendChild(loadingNotice);
       try {
-        const { bankId, depositFields } = await getBankAndFormsForMethod(token, claims, methodVal);
-        if (!bankId || !Array.isArray(depositFields) || !depositFields.length) {
-          dynMount.innerHTML = "";
-          showFormNotice("No configured form for this method and currency.");
-          updateValidity();
-          return;
-        }
-        selectedBankId = bankId;
-        dyn = buildDynamicFrom(depositFields, prev);
-        dynMount.innerHTML = "";
-        dynMount.appendChild(dyn.wrap);
-        showFormNotice("");
-        formReady = true;
-      } catch (e) {
-        dynMount.innerHTML = "";
-        showFormNotice("No configured form for this method and currency.");
-        formReady = false;
+        const { bankId, depositFields, error } = await getBankAndFormsForMethod(token, selectedMethod);
+        const errMsg = error || (depositFields && depositFields.length ? null : NO_FORM_MESSAGE);
+        selectedBankId = errMsg ? null : bankId;
+        dyn = buildDynamicFrom(depositFields, draft.extras);
+        setConfigError(errMsg);
+      } catch (err) {
+        selectedBankId = null;
+        dyn = buildDynamicFrom([], draft.extras);
+        setConfigError((err && err.error) ? String(err.error) : "Unable to load form.");
       }
       updateValidity();
     }
 
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
-    const nextBtn = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Next");
-    setEnabled(nextBtn, false);
+    nextBtn = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Next");
 
     function updateValidity() {
-      if (!formReady) {
+      if (hasConfigError) {
         setEnabled(nextBtn, false);
         status.textContent = "";
         return;
@@ -618,6 +608,8 @@
       let err = null;
       if (amountCents === null) {
         err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
+      } else {
+        err = validateDepositInputs(amountCents);
       }
       err = err || dyn.validate();
       const ready = formReady && Boolean(String(method.value || ""));
@@ -626,14 +618,14 @@
     }
 
     method.addEventListener("change", () => { refreshDynForMethod(); });
-    [amount].forEach((i) => i && i.addEventListener("input", updateValidity));
+    [amount].forEach(i => i && i.addEventListener("input", updateValidity));
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
 
     box.appendChild(inputRow(`Amount (${currencyUnit()})`, amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
-    box.appendChild(formNotice);
+    box.appendChild(configNotice);
     box.appendChild(nextBtn);
     box.appendChild(status);
 
@@ -641,8 +633,8 @@
     else updateValidity();
 
     nextBtn.addEventListener("click", async () => {
-      if (!formReady || !method.value) {
-        status.textContent = "No configured form for this method and currency.";
+      if (hasConfigError) {
+        status.textContent = configNotice.textContent || NO_FORM_MESSAGE;
         return;
       }
       const amountCents = normalizeAmountInput(amount.value);
@@ -772,41 +764,53 @@
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
 
-    await ensureAvailableMethods(token);
+    _claims = { ...(_claims || {}), ...(claims || {}) };
+
+    let methodsError = null;
+    try {
+      await fetchAvailableMethods(token);
+    } catch (err) {
+      methodsError = err && err.error ? String(err.error) : "Unable to load payment methods.";
+    }
+
+    let submit;
 
     const amountPlaceholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
     const amount = numberInput({ placeholder: amountPlaceholder });
     const draft = loadDraft("withdrawal", claims) || {};
-    const amount = numberInput({ placeholder: `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
+
     const method = buildMethodSelect(draft.method);
 
     const dynMount = el("div");
-    const createLoading = () => el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
-    dynMount.appendChild(createLoading());
-    const formNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:6px 0; display:none" });
+    const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
+    dynMount.appendChild(loadingNotice);
+    const configWarning = el("div", { style:"color:#dc2626; font-size:12px; margin-top:4px; display:none" });
     let dyn = buildDynamicFrom([], draft.extras);
-    let formReady = false;
+    const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
+    const configNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:4px 0; display:none" });
+    let hasConfigError = false;
 
-    function showFormNotice(msg) {
-      if (msg) {
-        formNotice.textContent = msg;
-        formNotice.style.display = "block";
-      } else {
-        formNotice.textContent = "";
-        formNotice.style.display = "none";
-      }
+    function setConfigError(message) {
+      const msg = message || "";
+      configNotice.textContent = msg;
+      configNotice.style.display = msg ? "block" : "none";
+      hasConfigError = Boolean(msg);
     }
 
-    const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
-    const submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
+    if (methodsError || !_availableMethods.length) {
+      setConfigError(methodsError || NO_FORM_MESSAGE);
+      dynMount.innerHTML = "";
+    }
+
+    submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
     setEnabled(submit, false);
 
     let formReady = false;
     let refreshSeq = 0;
 
     function updateValidity() {
-      if (!formReady) {
+      if (hasConfigError) {
         setEnabled(submit, false);
         status.textContent = "";
         return;
@@ -815,6 +819,8 @@
       let err = null;
       if (amountCents === null) {
         err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
+      } else {
+        err = validateWithdrawalInputs(amountCents);
       }
       err = err || dyn.validate();
       const ready = formReady && Boolean(String(method.value || ""));
@@ -824,66 +830,63 @@
 
     async function refreshDynamicFields() {
       const seq = ++refreshSeq;
-      const prevRaw = typeof dyn.getValues === "function" ? dyn.getValues() : null;
-      const prev = prevRaw && Object.keys(prevRaw).length ? prevRaw : (draft.extras || {});
-      const methodVal = String(method.value || "");
-      const currency = (claims && claims.currency) || currencyUnit();
-      const cacheKey = withdrawalFormCacheKey(methodVal, currency);
-      formReady = false;
+      const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
+      const selectedMethod = method.value;
+
+      if (!selectedMethod) {
+        dyn = buildDynamicFrom([], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        setConfigError(NO_FORM_MESSAGE);
+        updateValidity();
+        return;
+      }
+
       dynMount.innerHTML = "";
-      dynMount.appendChild(createLoading());
-      showFormNotice("");
+      dynMount.appendChild(loadingNotice);
 
-      if (!_availableMethods.length || !methodVal) {
-        dynMount.innerHTML = "";
-        showFormNotice("No configured form for this method and currency.");
-        updateValidity();
-        return;
-      }
-
-      let baseFields = null;
+      const cacheKey = `${selectedMethod}:::${currencyUnit()}`;
       if (Object.prototype.hasOwnProperty.call(_withdrawalFormCache, cacheKey)) {
-        baseFields = _withdrawalFormCache[cacheKey];
-      } else {
-        try {
-          const { withdrawalFields } = await getBankAndFormsForMethod(token, claims, methodVal);
-          if (Array.isArray(withdrawalFields) && withdrawalFields.length) {
-            _withdrawalFormCache[cacheKey] = withdrawalFields;
-            baseFields = withdrawalFields;
-          } else {
-            baseFields = [];
-          }
-        } catch (err) {
-          baseFields = [];
-        }
-      }
-
-      if (!Array.isArray(baseFields) || !baseFields.length) {
+        const cached = _withdrawalFormCache[cacheKey];
+        if (seq !== refreshSeq) return;
+        dyn = buildDynamicFrom(cached.fields || [], prev);
+        setConfigError(cached.error || null);
         dynMount.innerHTML = "";
-        showFormNotice("No configured form for this method and currency.");
+        dynMount.appendChild(dyn.wrap);
         updateValidity();
         return;
       }
 
-      const next = buildDynamicFrom(baseFields, prev);
-      if (seq !== refreshSeq) return;
+      try {
+        const { withdrawalFields, error } = await getBankAndFormsForMethod(token, selectedMethod);
+        if (seq !== refreshSeq) return;
+        const errMsg = error || (withdrawalFields && withdrawalFields.length ? null : NO_FORM_MESSAGE);
+        _withdrawalFormCache[cacheKey] = { fields: withdrawalFields, error: errMsg };
+        dyn = buildDynamicFrom(withdrawalFields, prev);
+        setConfigError(errMsg);
+      } catch (err) {
+        if (seq !== refreshSeq) return;
+        const msg = (err && err.error) ? String(err.error) : "Unable to load form.";
+        _withdrawalFormCache[cacheKey] = { fields: [], error: msg };
+        dyn = buildDynamicFrom([], prev);
+        setConfigError(msg);
+      }
 
       dynMount.innerHTML = "";
       dynMount.appendChild(dyn.wrap);
-      showFormNotice("");
-      formReady = true;
       updateValidity();
     }
 
-    [amount].forEach((i) => { i && i.addEventListener("input", updateValidity); });
+    [amount].forEach(i => { i && i.addEventListener("input", updateValidity); });
     method.addEventListener("change", () => { refreshDynamicFields(); });
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
-    refreshDynamicFields();
+    if (_availableMethods.length) refreshDynamicFields().then(() => updateValidity());
+    else updateValidity();
 
     submit.addEventListener("click", async () => {
-      if (!formReady || !method.value) {
-        status.textContent = "No configured form for this method and currency.";
+      if (hasConfigError) {
+        status.textContent = configNotice.textContent || NO_FORM_MESSAGE;
         return;
       }
       const amountCents = normalizeAmountInput(amount.value);
@@ -914,7 +917,7 @@
           referenceCode: resp.referenceCode,
           uniqueReference: resp.uniqueReference,
           amountCents,
-          currency: resp.currency || currencyUnit(),
+          currency: resp.currency || currencyUnit()
         });
       } catch (e) {
         status.textContent = (e && e.error) ? String(e.error) : "Error";
@@ -925,7 +928,7 @@
     box.appendChild(inputRow(`Amount (${currencyUnit()})`, amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
-    box.appendChild(formNotice);
+    box.appendChild(configNotice);
     box.appendChild(submit);
     box.appendChild(status);
   }
@@ -957,9 +960,7 @@
         if (j && j.ok && j.claims) _claims = j.claims;
       } catch {}
 
-      try {
-        await fetchAvailableMethods(cfg.token);
-      } catch {}
+      try { await fetchAvailableMethods(cfg.token); } catch { _availableMethods = []; }
 
       return true;
     },

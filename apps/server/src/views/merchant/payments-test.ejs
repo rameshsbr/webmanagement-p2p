@@ -1,0 +1,8 @@
+<% layout('merchant/layout') -%>
+
+<div class="card" data-test-payments data-session-endpoint="/merchant/payments/test/session" data-default-subject="<%= testCheckout.subject %>" data-initial-token="<%= testCheckout.token %>">
+  <div class="row" style="justify-content:center; gap:16px">
+    <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
+    <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
+  </div>
+</div>

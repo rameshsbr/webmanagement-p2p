@@ -3050,18 +3050,44 @@ superAdminRouter.get("/login-logs.xlsx", async (_req, res) => {
 // NEW: Forms (per-merchant and per-bank) — configure deposit/withdrawal inputs
 // Matches UI payload; backward compatible with legacy rows
 // ───────────────────────────────────────────────────────────────
-const FieldRow = z.object({
-  name: z.string().min(1).max(60),
-  display: z.enum(["input", "file", "select"]),
-  // NEW allowed field types for "input"
-  field: z
-    .enum(["text", "number", "phone", "email", "phone_email"])
-    .nullable(), // null for file/select
-  placeholder: z.string().max(200).optional().nullable(),
-  required: z.boolean().optional().default(false),
-  digits: z.number().int().nonnegative().max(64).optional().default(0), // 0 = unlimited (number only)
-  options: z.array(z.string().min(1).max(200)).optional().default([]), // for select
-});
+const FieldRow = z
+  .object({
+    name: z.string().min(1).max(60),
+    display: z.enum(["input", "file", "select"]),
+    // NEW allowed field types for "input"
+    field: z
+      .enum(["text", "number", "phone", "email", "phone_email"])
+      .nullable(), // null for file/select
+    placeholder: z.string().max(200).optional().nullable(),
+    required: z.boolean().optional().default(false),
+    minDigits: z.number().int().min(0).max(64).optional().default(0),
+    maxDigits: z
+      .number()
+      .int()
+      .min(0)
+      .max(64)
+      .nullable()
+      .optional()
+      .default(null),
+    options: z.array(z.string().min(1).max(200)).optional().default([]), // for select
+  })
+  .superRefine((val, ctx) => {
+    if (val.display !== "input" || val.field !== "number") return;
+
+    const min = Number.isFinite(val.minDigits) ? (val.minDigits as number) : 0;
+    const max =
+      val.maxDigits === null || typeof val.maxDigits === "undefined"
+        ? null
+        : (val.maxDigits as number);
+
+    if (max !== null && max < min) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message: "Max digits must be greater than or equal to Min digits",
+        path: ["maxDigits"],
+      });
+    }
+  });
 
 const FormPayload = z.object({
   deposit: z.array(FieldRow).optional().default([]),
@@ -3115,12 +3141,41 @@ function normalizeRow(r: any): z.infer<typeof FieldRow> {
   const placeholder = (r?.placeholder ?? "") as string;
   const required = !!r?.required;
 
-  const digitsNum = Number(r?.digits);
-  // digits only meaningful for number inputs
-  const digits =
-    display === "input" && field === "number" && Number.isFinite(digitsNum)
-      ? Math.max(0, digitsNum)
+  const minDigitsRaw = Number(r?.minDigits);
+  const maxDigitsRaw = r?.maxDigits;
+  let minDigits =
+    display === "input" && field === "number" && Number.isFinite(minDigitsRaw)
+      ? Math.max(0, Math.min(64, Math.floor(minDigitsRaw)))
       : 0;
+
+  let maxDigits: number | null = null;
+  if (display === "input" && field === "number") {
+    if (maxDigitsRaw === null || typeof maxDigitsRaw === "undefined" || maxDigitsRaw === "") {
+      maxDigits = null;
+    } else {
+      const parsed = Number(maxDigitsRaw);
+      if (Number.isFinite(parsed)) {
+        maxDigits = Math.max(minDigits, Math.min(64, Math.floor(parsed)));
+      }
+    }
+  }
+
+  // legacy support: digits => minDigits=0, maxDigits=digits
+  const legacyDigits = Number(r?.digits);
+  if (
+    display === "input" &&
+    field === "number" &&
+    Number.isFinite(legacyDigits) &&
+    legacyDigits > 0
+  ) {
+    minDigits = 0;
+    maxDigits = Math.max(minDigits, Math.min(64, Math.floor(legacyDigits)));
+  }
+
+  if (display !== "input" || field !== "number") {
+    minDigits = 0;
+    maxDigits = null;
+  }
 
   let options: string[] = [];
   if (Array.isArray(r?.options))
@@ -3134,7 +3189,7 @@ function normalizeRow(r: any): z.infer<typeof FieldRow> {
     .map((s) => s.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  return { name, display, field, placeholder, required, digits, options };
+  return { name, display, field, placeholder, required, minDigits, maxDigits, options };
 }
 
 // helper: strip blank names and collapse dup options

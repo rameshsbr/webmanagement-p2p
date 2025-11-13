@@ -64,6 +64,13 @@
     return (_claims && _claims.currency) || "AUD";
   }
 
+  function currencyUnit() {
+    const cur = String((_claims && _claims.currency) || "AUD").trim();
+    return cur ? cur.toUpperCase() : "AUD";
+  }
+
+  const NO_FORM_MESSAGE = "No configured form for this method and currency.";
+
   function normalizeAmountInput(value) {
     if (value === null || value === undefined) return null;
     const num = Number(String(value).replace(/,/g, ""));
@@ -517,6 +524,8 @@
   }
 
   async function openDeposit(token, claims) {
+    try { await fetchAvailableMethods(token); } catch { _availableMethods = []; }
+
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
 
@@ -583,8 +592,6 @@
         dyn = buildDynamicFrom([], draft.extras);
         setConfigError((err && err.error) ? String(err.error) : "Unable to load form.");
       }
-      dynMount.innerHTML = "";
-      dynMount.appendChild(dyn.wrap);
       updateValidity();
     }
 
@@ -605,7 +612,8 @@
         err = validateDepositInputs(amountCents);
       }
       err = err || dyn.validate();
-      setEnabled(nextBtn, !err);
+      const ready = formReady && Boolean(String(method.value || ""));
+      setEnabled(nextBtn, ready && !err);
       status.textContent = err || "";
     }
 
@@ -751,6 +759,8 @@
   }
 
   async function openWithdrawal(token, claims) {
+    try { await fetchAvailableMethods(token); } catch { _availableMethods = []; }
+
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
 
@@ -775,6 +785,7 @@
     const dynMount = el("div");
     const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
     dynMount.appendChild(loadingNotice);
+    const configWarning = el("div", { style:"color:#dc2626; font-size:12px; margin-top:4px; display:none" });
     let dyn = buildDynamicFrom([], draft.extras);
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
     const configNotice = el("div", { style:"color:#dc2626; font-size:12px; margin:4px 0; display:none" });
@@ -795,6 +806,9 @@
     submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
     setEnabled(submit, false);
 
+    let formReady = false;
+    let refreshSeq = 0;
+
     function updateValidity() {
       if (hasConfigError) {
         setEnabled(submit, false);
@@ -809,11 +823,11 @@
         err = validateWithdrawalInputs(amountCents);
       }
       err = err || dyn.validate();
-      setEnabled(submit, !err);
+      const ready = formReady && Boolean(String(method.value || ""));
+      setEnabled(submit, ready && !err);
       status.textContent = err || "";
     }
 
-    let refreshSeq = 0;
     async function refreshDynamicFields() {
       const seq = ++refreshSeq;
       const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
@@ -945,6 +959,8 @@
         const j = await r.json();
         if (j && j.ok && j.claims) _claims = j.claims;
       } catch {}
+
+      try { await fetchAvailableMethods(cfg.token); } catch { _availableMethods = []; }
 
       return true;
     },

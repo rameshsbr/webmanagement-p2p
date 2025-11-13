@@ -57,6 +57,18 @@
 
   const MIN_AMOUNT = 50;
   const MAX_AMOUNT = 5000;
+  const NO_FORM_MESSAGE = "No configured form for this method/currency.";
+
+  function currencyUnit() {
+    return (_claims && _claims.currency) || "AUD";
+  }
+
+  function currencyUnit() {
+    const cur = String((_claims && _claims.currency) || "AUD").trim();
+    return cur ? cur.toUpperCase() : "AUD";
+  }
+
+  const NO_FORM_MESSAGE = "No configured form for this method and currency.";
 
   function currencyUnit() {
     return (_claims && _claims.currency) || "AUD";
@@ -392,10 +404,10 @@
     return { wrap, getValues, validate };
   }
 
-  function buildDynamic(kind, draftExtras) {
-    const list = Array.isArray(_forms?.[kind]) ? _forms[kind] : [];
-    return buildDynamicFrom(list, draftExtras);
-  }
+  async function fetchAvailableMethods(token) {
+    const currency = (_claims && _claims.currency) ? _claims.currency : "";
+    if (_availableMethods.length && _availableMethodsCurrency === currency) return _availableMethods;
+    if (_availableMethodsPromise) return _availableMethodsPromise;
 
   async function fetchAvailableMethods(token) {
     const params = new URLSearchParams();
@@ -520,11 +532,15 @@
   }
 
   async function openDeposit(token, claims) {
+    try { await fetchAvailableMethods(token); } catch { _availableMethods = []; }
+
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
 
     await ensureAvailableMethods(token);
 
+    const amountPlaceholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
+    const amount = numberInput({ placeholder: amountPlaceholder });
     const draft = loadDraft("deposit", claims) || {};
     const amount = numberInput({ placeholder: `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
@@ -604,7 +620,8 @@
         err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
       }
       err = err || dyn.validate();
-      setEnabled(nextBtn, !err);
+      const ready = formReady && Boolean(String(method.value || ""));
+      setEnabled(nextBtn, ready && !err);
       status.textContent = err || "";
     }
 
@@ -620,7 +637,8 @@
     box.appendChild(nextBtn);
     box.appendChild(status);
 
-    refreshDynForMethod();
+    if (_availableMethods.length) refreshDynForMethod();
+    else updateValidity();
 
     nextBtn.addEventListener("click", async () => {
       if (!formReady || !method.value) {
@@ -749,11 +767,15 @@
   }
 
   async function openWithdrawal(token, claims) {
+    try { await fetchAvailableMethods(token); } catch { _availableMethods = []; }
+
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
 
     await ensureAvailableMethods(token);
 
+    const amountPlaceholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
+    const amount = numberInput({ placeholder: amountPlaceholder });
     const draft = loadDraft("withdrawal", claims) || {};
     const amount = numberInput({ placeholder: `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
@@ -780,6 +802,9 @@
     const submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
     setEnabled(submit, false);
 
+    let formReady = false;
+    let refreshSeq = 0;
+
     function updateValidity() {
       if (!formReady) {
         setEnabled(submit, false);
@@ -792,11 +817,11 @@
         err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
       }
       err = err || dyn.validate();
-      setEnabled(submit, !err);
+      const ready = formReady && Boolean(String(method.value || ""));
+      setEnabled(submit, ready && !err);
       status.textContent = err || "";
     }
 
-    let refreshSeq = 0;
     async function refreshDynamicFields() {
       const seq = ++refreshSeq;
       const prevRaw = typeof dyn.getValues === "function" ? dyn.getValues() : null;
@@ -843,7 +868,6 @@
       const next = buildDynamicFrom(baseFields, prev);
       if (seq !== refreshSeq) return;
 
-      dyn = next;
       dynMount.innerHTML = "";
       dynMount.appendChild(dyn.wrap);
       showFormNotice("");

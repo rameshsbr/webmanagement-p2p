@@ -67,7 +67,7 @@
   </form>
 </div>
 
-<div class="table-wrap">
+<% const testSubject = ((query.subject || query.diditSubject || '') || '').trim(); %>
 
   <table id="<%= tableId %>" class="table">
     <thead>

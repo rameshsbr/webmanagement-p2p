@@ -20,9 +20,8 @@
   // claims from /public/deposit/draft (merchantId, diditSubject, currency)
   let _claims = null;
 
-  // Merchant-level forms (loaded at init). We will still use these for withdrawals.
-  let _forms = { ok: true, deposit: [], withdrawal: [] };
-  const _withdrawalFormCache = {};
+  const _bankFormCache = {};
+  let _availableMethods = [];
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -55,6 +54,14 @@
 
   const MIN_AMOUNT = 50;
   const MAX_AMOUNT = 5000;
+
+  function currencyUnit() {
+    const cur = String((_claims && _claims.currency) || "AUD").trim();
+    return cur ? cur.toUpperCase() : "AUD";
+  }
+
+  const NO_FORM_MESSAGE = "No configured form for this method and currency.";
+  const NO_METHODS_MESSAGE = "No configured methods.";
 
   function normalizeAmountInput(value) {
     if (value === null || value === undefined) return null;
@@ -142,6 +149,7 @@
     if (!resp.ok) {
       let err = { ok: false, status: resp.status, error: "HTTP_ERROR" };
       try { err = await resp.json(); } catch {}
+      console.error(`[PayX] request failed (${resp.status}) for ${path}`, err);
       throw err;
     }
     return ct.includes("application/json") ? resp.json() : resp.text();
@@ -206,23 +214,14 @@
     });
   }
 
-  function validateDepositInputs(amountCents, methodVal, fields) {
+  function validateAmountRange(amountCents) {
     if (!Number.isInteger(amountCents) || amountCents < MIN_AMOUNT * 100 || amountCents > MAX_AMOUNT * 100) {
-      return `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
-    }
-    if (methodVal === "OSKO") {
-      if (!/^\d{10,12}$/.test(fields.accountNo || "")) return "Account No must be 10–12 digits.";
-      if (!/^\d{6}$/.test(fields.bsb || "")) return "BSB must be 6 digits.";
-      if (!fields.holderName || fields.holderName.length < 2) return "Enter account holder name.";
-    } else {
-      if (!fields.holderName || fields.holderName.length < 2) return "Enter account holder name.";
-      const isEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(fields.payIdValue || "");
-      const isAuMobile = /^\+?61\d{9}$/.test(fields.payIdValue || "");
-      if (!(isEmail || isAuMobile)) return "PayID must be an email or +61XXXXXXXXX.";
+      return `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
     }
     return null;
   }
-  function validateWithdrawalInputs(amountCents, methodVal, fields) { return validateDepositInputs(amountCents, methodVal, fields); }
+  function validateDepositInputs(amountCents) { return validateAmountRange(amountCents); }
+  function validateWithdrawalInputs(amountCents) { return validateAmountRange(amountCents); }
 
   async function ensureKyc(token) {
     const st = await call("/public/kyc/status", token, { method:"GET" });
@@ -396,80 +395,110 @@
     return { wrap, getValues, validate };
   }
 
-  function buildDynamic(kind, draftExtras) {
-    const list = Array.isArray(_forms?.[kind]) ? _forms[kind] : [];
-    return buildDynamicFrom(list, draftExtras);
-  }
-
-  const WITHDRAWAL_FALLBACK_FIELDS = {
-    OSKO: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
-      { name: "Account number", display: "input", field: "number", placeholder: "10-12 digits", required: true, minDigits: 10, maxDigits: 12 },
-      { name: "BSB", display: "input", field: "number", placeholder: "6 digits", required: true, minDigits: 6, maxDigits: 6 },
-    ],
-    PAYID: [
-      { name: "Account holder name", display: "input", field: "text", placeholder: "e.g. John Citizen", required: true, minDigits: 0, maxDigits: null },
-      { name: "PayID value", display: "input", field: "text", placeholder: "Email or +61XXXXXXXXX", required: true, minDigits: 0, maxDigits: null },
-    ],
-  };
-
-  function canonicalWithdrawalKey(name) {
-    const key = normKey(name);
-    if (!key) return key;
-    if (["account number", "account no", "account", "acct number"].includes(key)) return "account-number";
-    if (["account holder name", "holder name", "account name", "name"].includes(key)) return "account-holder";
-    if (["bsb"].includes(key)) return "bsb";
-    if (["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"].includes(key)) return "bank-name";
-    if (["payid value", "payid", "email", "payid (email)", "payid (mobile)", "mobile", "phone"].includes(key)) return "payid-value";
-    return key;
-  }
-
-  function mergeWithdrawalFields(methodVal, baseFields) {
-    const base = Array.isArray(baseFields)
-      ? baseFields
-      : (Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : []);
-    const defaults = WITHDRAWAL_FALLBACK_FIELDS[methodVal] || [];
-    const seen = new Set();
-    const merged = [];
-
-    base.forEach((f) => {
-      if (!f || !f.name) return;
-      const key = canonicalWithdrawalKey(f.name);
-      if (!key) return;
-      seen.add(key);
-      merged.push(f);
-    });
-
-    defaults.forEach((f) => {
-      if (!f || !f.name) return;
-      const key = canonicalWithdrawalKey(f.name);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      merged.push(f);
-    });
-
-    return merged;
-  }
-
   async function getBankAndFormsForMethod(token, methodValue) {
-    const banksResp = await call(`/public/deposit/banks?method=${encodeURIComponent(methodValue)}`, token, { method: "GET" });
-    const first = (banksResp && Array.isArray(banksResp.banks) && banksResp.banks.length) ? banksResp.banks[0] : null;
+    const method = String(methodValue || "").trim();
+    const currency = currencyUnit();
+    const cacheKey = `${method}::${currency}`;
+    if (_bankFormCache[cacheKey]) return _bankFormCache[cacheKey];
 
-    if (first && first.id) {
-      const cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(first.id)}`, token, { method: "GET" });
-      return {
-        bankId: first.id,
-        depositFields: cfg.deposit || [],
-        withdrawalFields: cfg.withdrawal || [],
-      };
+    if (!method) return { bankId: null, depositFields: [], withdrawalFields: [] };
+
+    const params = new URLSearchParams();
+    if (method) params.set("method", method);
+    if (currency) params.set("currency", currency);
+    const query = params.toString();
+
+    console.info(`[PayX] getBankAndFormsForMethod:start`, { method, currency });
+    let banksResp;
+    try {
+      banksResp = await call(query ? `/public/deposit/banks?${query}` : "/public/deposit/banks", token, { method: "GET" });
+    } catch (err) {
+      console.error(`[PayX] getBankAndFormsForMethod:banks error`, err);
+      throw err;
+    }
+    const banks = (banksResp && Array.isArray(banksResp.banks)) ? banksResp.banks : [];
+    const firstActive = banks.find((b) => {
+      if (!b) return false;
+      const val = String(b.method || "").trim().toUpperCase();
+      const active = b.active === undefined || b.active === null || !!b.active;
+      return active && val === method;
+    });
+
+    if (!firstActive || !firstActive.id) {
+      const result = { bankId: null, depositFields: [], withdrawalFields: [] };
+      _bankFormCache[cacheKey] = result;
+      console.warn(`[PayX] getBankAndFormsForMethod:no-bank`, { method, currency });
+      return result;
     }
 
-    const cfg = await call(`/public/forms`, token, { method: "GET" });
-    return {
-      bankId: null,
-      depositFields: cfg.deposit || [],
-      withdrawalFields: cfg.withdrawal || [],
+    let cfg;
+    try {
+      cfg = await call(`/public/forms?bankAccountId=${encodeURIComponent(firstActive.id)}`, token, { method: "GET" });
+    } catch (err) {
+      console.error(`[PayX] getBankAndFormsForMethod:forms error`, err);
+      throw err;
+    }
+    const result = {
+      bankId: firstActive.id,
+      depositFields: Array.isArray(cfg?.deposit) ? cfg.deposit : [],
+      withdrawalFields: Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [],
     };
+    _bankFormCache[cacheKey] = result;
+    console.info(`[PayX] getBankAndFormsForMethod:success`, { method, currency, bankId: firstActive.id });
+    return result;
+  }
+
+  async function fetchAvailableMethods(token) {
+    const currency = currencyUnit();
+    const params = new URLSearchParams();
+    if (currency) params.set("currency", currency);
+    const query = params.toString();
+    console.info(`[PayX] fetchAvailableMethods:start`, { currency });
+    let resp;
+    try {
+      resp = await call(query ? `/public/deposit/banks?${query}` : "/public/deposit/banks", token, { method: "GET" });
+    } catch (err) {
+      console.error(`[PayX] fetchAvailableMethods:error`, err);
+      _availableMethods = [];
+      throw err;
+    }
+    const banks = (resp && Array.isArray(resp.banks)) ? resp.banks : [];
+    const methods = [];
+    banks.forEach((bank) => {
+      const value = String(bank?.method || "").trim().toUpperCase();
+      if (!value) return;
+      if (methods.find((m) => m.value === value)) return;
+      const label = String(bank?.methodLabel || value).trim();
+      methods.push({ value, label: label || value });
+    });
+    _availableMethods = methods;
+    console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length });
+    return methods;
+  }
+
+  function buildMethodSelect(selectedMethod) {
+    const opts = Array.isArray(_availableMethods) ? _availableMethods : [];
+    const select = el("select", {
+      style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px",
+      ...(opts.length ? {} : { disabled: "disabled" })
+    });
+
+    if (!opts.length) {
+      select.appendChild(el("option", { value: "" }, "No methods configured"));
+      select.value = "";
+      return select;
+    }
+
+    const normalizedSelected = String(selectedMethod || "").trim().toUpperCase();
+    opts.forEach((item) => {
+      select.appendChild(el("option", { value: item.value }, item.label || item.value));
+    });
+    if (normalizedSelected && opts.find((m) => m.value === normalizedSelected)) {
+      select.value = normalizedSelected;
+    } else if (opts.length) {
+      select.value = opts[0].value;
+    }
+    return select;
   }
 
   function normKey(k) { return String(k || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
@@ -489,7 +518,7 @@
     const bankName = bankNameRaw != null ? String(bankNameRaw).trim() : "";
 
     if (methodVal === "OSKO") {
-      const holderName = findValue(ex, ["account holder name", "holder name", "account name", "name"]);
+      const holderName = findValue(ex, ["account holder name", "holder name", "account name", "name", "account holder"]);
       const accountNo = findValue(ex, ["account number", "account no", "account #", "acct number"]);
       const bsb = findValue(ex, ["bsb"]);
       return {
@@ -501,8 +530,8 @@
     }
     const email = findValue(ex, ["email", "payid (email)"]);
     let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
-    const payIdValue = findValue(ex, ["payid value", "payid"]);
-    const holderName = findValue(ex, ["account holder name", "holder name", "name"]);
+    const payIdValue = findValue(ex, ["payid value", "payid", "pay id"]);
+    const holderName = findValue(ex, ["account holder name", "holder name", "name", "account holder"]);
     let type = "email";
     let value = String(email || "");
     const looksMobile = (s) => /^\+?61\d{9}$/.test(String(s || "").trim());
@@ -521,38 +550,86 @@
   }
 
   async function openDeposit(token, claims) {
+    try {
+      console.info("[PayX] openDeposit:fetchAvailableMethods:start");
+      await fetchAvailableMethods(token);
+      console.info("[PayX] openDeposit:fetchAvailableMethods:done");
+    } catch (err) {
+      console.error("[PayX] openDeposit:fetchAvailableMethods:error", err);
+      _availableMethods = [];
+    }
+
     const { box, header, close } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Deposit";
 
     let nextBtn;
 
-    const amount = numberInput({ placeholder:"Amount (AUD, min 50 max 5000)" });
-    const method = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }, [
-      el("option", { value:"OSKO" }, "OSKO"),
-      el("option", { value:"PAYID" }, "PayID"),
-    ]);
+    const amount = numberInput({ placeholder:`Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
+    const draft = loadDraft("deposit", claims) || {};
+    if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
+
+    const method = buildMethodSelect(draft.method);
 
     const dynMount = el("div");
     dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
-
-    const draft = loadDraft("deposit", claims) || {};
-    if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
-    if (draft.method) method.value = draft.method;
+    const configWarning = el("div", { style:"color:#dc2626; font-size:12px; margin-top:4px; display:none" });
+    if (!(_availableMethods && _availableMethods.length)) {
+      configWarning.textContent = NO_METHODS_MESSAGE;
+      configWarning.style.display = "block";
+    }
 
     let dyn = { wrap: el("div"), getValues: () => ({}), validate: () => null };
     let selectedBankId = null;
+    let formReady = false;
 
     async function refreshDynForMethod() {
-      try {
-        const { bankId, depositFields } = await getBankAndFormsForMethod(token, method.value);
-        selectedBankId = bankId;
-        dyn = buildDynamicFrom(depositFields, draft.extras);
-      } catch (e) {
-        selectedBankId = null;
-        dyn = buildDynamic("deposit", draft.extras);
-      }
+      const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
       dynMount.innerHTML = "";
-      dynMount.appendChild(dyn.wrap);
+      dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
+      configWarning.style.display = "none";
+      configWarning.textContent = "";
+      formReady = false;
+      selectedBankId = null;
+
+      const methodVal = String(method.value || "").trim();
+      if (!methodVal) {
+        selectedBankId = null;
+        dyn = buildDynamicFrom([], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        configWarning.textContent = (_availableMethods && _availableMethods.length)
+          ? NO_FORM_MESSAGE
+          : NO_METHODS_MESSAGE;
+        configWarning.style.display = "block";
+        updateValidity();
+        return;
+      }
+
+      try {
+        console.info("[PayX] openDeposit:getBankForms:start", methodVal);
+        const { bankId, depositFields } = await getBankAndFormsForMethod(token, methodVal);
+        selectedBankId = bankId;
+        dyn = buildDynamicFrom(Array.isArray(depositFields) ? depositFields : [], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        if (!bankId || !(Array.isArray(depositFields) && depositFields.length)) {
+          configWarning.textContent = NO_FORM_MESSAGE;
+          configWarning.style.display = "block";
+          formReady = false;
+        } else {
+          configWarning.textContent = "";
+          configWarning.style.display = "none";
+          formReady = true;
+        }
+        console.info("[PayX] openDeposit:getBankForms:done", { method: methodVal, bankId });
+      } catch (e) {
+        dyn = buildDynamicFrom([], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        configWarning.textContent = NO_FORM_MESSAGE;
+        configWarning.style.display = "block";
+        formReady = false;
+      }
       updateValidity();
     }
 
@@ -561,16 +638,10 @@
 
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
-      const extras = dyn.getValues();
-      const inferred = inferPayerFromExtras(method.value, extras);
-      let err = null;
-      if (amountCents === null) {
-        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
-      } else {
-        err = validateDepositInputs(amountCents, method.value, inferred);
-      }
+      let err = validateDepositInputs(amountCents);
       err = err || dyn.validate();
-      setEnabled(nextBtn, !err);
+      const ready = formReady && Boolean(String(method.value || ""));
+      setEnabled(nextBtn, ready && !err);
       status.textContent = err || "";
     }
 
@@ -579,9 +650,10 @@
     dynMount.addEventListener("input", updateValidity);
     dynMount.addEventListener("change", updateValidity);
 
-    box.appendChild(inputRow("Amount (AUD)", amount));
+    box.appendChild(inputRow(`Amount (${currencyUnit()})`, amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
+    box.appendChild(configWarning);
     box.appendChild(nextBtn);
     box.appendChild(status);
 
@@ -593,11 +665,18 @@
       const payer = inferPayerFromExtras(method.value, extras);
 
       if (amountCents === null) {
-        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
         return;
       }
 
-      const verr = validateDepositInputs(amountCents, method.value, { ...payer }) || dyn.validate();
+      if (!formReady || !method.value || !selectedBankId) {
+        configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
+        configWarning.style.display = "block";
+        setEnabled(nextBtn, false);
+        return;
+      }
+
+      const verr = validateDepositInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       saveDraft("deposit", claims, { amountCents, method: method.value, extras });
@@ -607,8 +686,7 @@
         await ensureKyc(token);
 
         status.textContent = "Creating intent…";
-        const body = { amountCents, method: method.value, payer, extraFields: extras };
-        if (selectedBankId) body.bankAccountId = selectedBankId;
+        const body = { amountCents, method: method.value, payer, extraFields: extras, bankAccountId: selectedBankId };
 
         const resp = await call("/public/deposit/intent", token, {
           method: "POST",
@@ -685,7 +763,7 @@
           referenceCode: resp.referenceCode || intent.referenceCode,
           uniqueReference: resp.uniqueReference || intent.uniqueReference,
           amountCents: resp.amountCents || intent.amountCents,
-          currency: resp.currency || intent.currency || "AUD",
+          currency: resp.currency || intent.currency || currencyUnit(),
         });
         setTimeout(() => { submitBtn.disabled = false; }, 1500);
       } catch (e) {
@@ -710,75 +788,104 @@
   }
 
   async function openWithdrawal(token, claims) {
+    try {
+      console.info("[PayX] openWithdrawal:fetchAvailableMethods:start");
+      await fetchAvailableMethods(token);
+      console.info("[PayX] openWithdrawal:fetchAvailableMethods:done");
+    } catch (err) {
+      console.error("[PayX] openWithdrawal:fetchAvailableMethods:error", err);
+      _availableMethods = [];
+    }
+
     const { box, header } = modalShell(_cfg.theme);
     header.firstChild.textContent = "Withdrawal";
 
     let submit;
 
-    const amount = numberInput({ placeholder:"Amount (AUD, min 50 max 5000)" });
-    const method = el("select", { style:"height:36px; width:100%; box-sizing:border-box; padding:6px 10px" }, [
-      el("option", { value:"OSKO" }, "OSKO"),
-      el("option", { value:"PAYID" }, "PayID"),
-    ]);
-
+    const amount = numberInput({ placeholder:`Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
     const draft = loadDraft("withdrawal", claims) || {};
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
-    if (draft.method) method.value = draft.method;
+
+    const method = buildMethodSelect(draft.method);
 
     const dynMount = el("div");
     const loadingNotice = el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…");
     dynMount.appendChild(loadingNotice);
+    const configWarning = el("div", { style:"color:#dc2626; font-size:12px; margin-top:4px; display:none" });
+    if (!(_availableMethods && _availableMethods.length)) {
+      configWarning.textContent = NO_METHODS_MESSAGE;
+      configWarning.style.display = "block";
+    }
     let dyn = buildDynamicFrom([], draft.extras);
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
 
     submit = el("button", { style:"margin-top:10px; height:36px; padding:0 14px; cursor:pointer" }, "Submit withdrawal");
     setEnabled(submit, false);
 
+    let formReady = false;
+    let refreshSeq = 0;
+    let selectedBankId = null;
+
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
-      const extras = dyn.getValues();
-      const inferred = inferPayerFromExtras(method.value, extras);
-      let err = null;
-      if (amountCents === null) {
-        err = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
-      } else {
-        err = validateWithdrawalInputs(amountCents, method.value, inferred);
-      }
+      let err = validateWithdrawalInputs(amountCents);
       err = err || dyn.validate();
-      setEnabled(submit, !err);
+      const ready = formReady && Boolean(String(method.value || ""));
+      setEnabled(submit, ready && !err);
       status.textContent = err || "";
     }
 
-    let refreshSeq = 0;
     async function refreshDynamicFields() {
       const seq = ++refreshSeq;
       const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
-      let baseFields = null;
-
-      if (Object.prototype.hasOwnProperty.call(_withdrawalFormCache, method.value)) {
-        baseFields = _withdrawalFormCache[method.value];
-      } else {
-        try {
-          const { withdrawalFields } = await getBankAndFormsForMethod(token, method.value);
-          if (Array.isArray(withdrawalFields)) {
-            _withdrawalFormCache[method.value] = withdrawalFields;
-            baseFields = withdrawalFields;
-          }
-        } catch (err) {
-          // ignore
-        }
-      }
-
-      if (!Array.isArray(baseFields) || baseFields.length === 0) {
-        baseFields = Array.isArray(_forms?.withdrawal) ? _forms.withdrawal : [];
-      }
-
-      const next = buildDynamicFrom(mergeWithdrawalFields(method.value, baseFields), prev);
-      if (seq !== refreshSeq) return;
-
-      dyn = next;
       dynMount.innerHTML = "";
-      dynMount.appendChild(dyn.wrap);
+      dynMount.appendChild(el("div", { style:"opacity:.65; font-size:12px; padding:6px 0" }, "Loading form…"));
+      configWarning.style.display = "none";
+      configWarning.textContent = "";
+      formReady = false;
+      selectedBankId = null;
+
+      const methodVal = String(method.value || "").trim();
+      if (!methodVal) {
+        dyn = buildDynamicFrom([], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        configWarning.textContent = (_availableMethods && _availableMethods.length)
+          ? NO_FORM_MESSAGE
+          : NO_METHODS_MESSAGE;
+        configWarning.style.display = "block";
+        updateValidity();
+        return;
+      }
+
+      try {
+        console.info("[PayX] openWithdrawal:getBankForms:start", methodVal);
+        const { bankId, withdrawalFields } = await getBankAndFormsForMethod(token, methodVal);
+        if (seq !== refreshSeq) return;
+        selectedBankId = bankId || null;
+        dyn = buildDynamicFrom(Array.isArray(withdrawalFields) ? withdrawalFields : [], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        if (!bankId || !(Array.isArray(withdrawalFields) && withdrawalFields.length)) {
+          configWarning.textContent = NO_FORM_MESSAGE;
+          configWarning.style.display = "block";
+          formReady = false;
+        } else {
+          configWarning.textContent = "";
+          configWarning.style.display = "none";
+          formReady = true;
+        }
+        console.info("[PayX] openWithdrawal:getBankForms:done", { method: methodVal, bankId });
+      } catch (err) {
+        if (seq !== refreshSeq) return;
+        selectedBankId = null;
+        dyn = buildDynamicFrom([], prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        configWarning.textContent = NO_FORM_MESSAGE;
+        configWarning.style.display = "block";
+        formReady = false;
+      }
       updateValidity();
     }
 
@@ -794,11 +901,18 @@
       const destination = inferPayerFromExtras(method.value, extras);
 
       if (amountCents === null) {
-        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} AUD.`;
+        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
         return;
       }
 
-      const verr = validateWithdrawalInputs(amountCents, method.value, { ...destination }) || dyn.validate();
+      if (!formReady || !method.value || !selectedBankId) {
+        configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
+        configWarning.style.display = "block";
+        setEnabled(submit, false);
+        return;
+      }
+
+      const verr = validateWithdrawalInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       saveDraft("withdrawal", claims, { amountCents, method: method.value, extras });
@@ -808,12 +922,12 @@
         const resp = await call("/public/withdrawals", token, {
           method: "POST",
           headers: { "content-type":"application/json" },
-          body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras }),
+          body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras, bankAccountId: selectedBankId }),
         });
         status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);
         safeCallback("onWithdrawalSubmitted", {
-          id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: "AUD"
+          id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: resp.currency || currencyUnit()
         });
       } catch (e) {
         status.textContent = (e && e.error) ? String(e.error) : "Error";
@@ -821,9 +935,10 @@
       }
     });
 
-    box.appendChild(inputRow("Amount (AUD)", amount));
+    box.appendChild(inputRow(`Amount (${currencyUnit()})`, amount));
     box.appendChild(inputRow("Method", method));
     box.appendChild(dynMount);
+    box.appendChild(configWarning);
     box.appendChild(submit);
     box.appendChild(status);
   }
@@ -844,16 +959,12 @@
       this._token = cfg.token;
 
       try {
-        const resp = await fetch("/public/forms", { headers: { authorization:`Bearer ${cfg.token}` } });
-        const data = await resp.json();
-        if (data && data.ok) _forms = { ok: true, deposit: data.deposit || [], withdrawal: data.withdrawal || [] };
-      } catch {}
-
-      try {
         const r = await fetch("/public/deposit/draft", { headers: { authorization:`Bearer ${cfg.token}` } });
         const j = await r.json();
         if (j && j.ok && j.claims) _claims = j.claims;
       } catch {}
+
+      try { await fetchAvailableMethods(cfg.token); } catch { _availableMethods = []; }
 
       return true;
     },

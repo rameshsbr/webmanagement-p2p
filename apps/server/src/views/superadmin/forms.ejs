@@ -11,9 +11,9 @@
     <strong>✅ Copied.</strong> Source: <em><%= copiedFromLabel %></em>. Review below and Save to confirm.
   </div>
 <% } %>
-<% if (usedFallback && currentBank) { %>
+<% if (!banks.length) { %>
   <div class="callout callout-warn">
-    Showing <strong>merchant default</strong> because no form exists for this specific bank yet.
+    Configure a bank account for this merchant before editing forms.
   </div>
 <% } %>
 
@@ -32,7 +32,7 @@
     <div class="field-col">
       <div class="muted lbl">Copy from their bank</div>
       <select id="copyFromBank" class="sel-bank">
-        <option value="">— Merchant default —</option>
+        <option value="" disabled selected>Select bank</option>
       </select>
     </div>
 
@@ -70,8 +70,10 @@
 
       <label class="form-line">
         <span class="muted lab">Bank</span>
-        <select id="bankSel" class="sel-bank">
-          <option value="" <%= !currentBank ? 'selected' : '' %>>Default (merchant-level)</option>
+        <select id="bankSel" class="sel-bank" <%= (banks && banks.length) ? '' : 'disabled' %>>
+          <% if (!(banks || []).length) { %>
+            <option value="" selected disabled>No banks configured</option>
+          <% } %>
           <% (banks || []).forEach(b => { %>
             <option value="<%= b.id %>" <%= (currentBank===b.id)?'selected':'' %>>
               <%= (b.label || (b.bankName + ' • ' + String(b.accountNo||'').slice(-4))) + ' — ' + (b.method || '').toUpperCase() %>
@@ -233,7 +235,7 @@
 
   async function loadSourceBanks(mid){
     try{
-      copyFromBank.innerHTML = '<option value="">— Merchant default —</option>';
+      copyFromBank.innerHTML = '<option value="" disabled selected>Select bank</option>';
       if (!mid) return;
       const res = await fetch('/superadmin/forms/banks.json?merchantId=' + encodeURIComponent(mid), { credentials: 'same-origin' });
       const json = await res.json();
@@ -260,8 +262,18 @@
   copyToBankInput.value = currentBank || "";
 
   copyForm.addEventListener('submit', (e)=>{
+    if (!copyFromBank.value) {
+      e.preventDefault();
+      alert('Select a source bank');
+      return;
+    }
+    if (!document.getElementById('bankSel').value) {
+      e.preventDefault();
+      alert('Select a target bank');
+      return;
+    }
     copyFromMerchantInput.value = copyFromMerchant.value;
-    copyFromBankInput.value = copyFromBank.value || "";
+    copyFromBankInput.value = copyFromBank.value;
     copyToBankInput.value = (document.getElementById('bankSel').value || "");
   });
 

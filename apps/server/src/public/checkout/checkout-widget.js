@@ -514,6 +514,13 @@
     }
     return undefined;
   }
+  function normalizeAuMobile(input) {
+    const digits = String(input || "").replace(/[^\d]/g, "");
+    if (/^04\d{8}$/.test(digits)) return "+61" + digits.slice(1);
+    if (/^614\d{8}$/.test(digits)) return "+61" + digits.slice(2);
+    if (/^61\d{9}$/.test(digits)) return "+" + digits;
+    return input || "";
+  }
   function inferPayerFromExtras(methodVal, extras) {
     const ex = extras || {};
     const bankNameRaw = findValue(ex, ["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"]);
@@ -530,19 +537,33 @@
         bankName: bankName || undefined,
       };
     }
-    const email = findValue(ex, ["email", "payid (email)"]);
-    let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
-    const payIdValue = findValue(ex, ["payid value", "payid", "pay id"]);
+    const emailRaw = findValue(ex, ["email", "payid (email)"]);
+    const mobileRaw = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
+    const payIdValueRaw = findValue(ex, ["payid value", "payid", "pay id"]);
     const holderName = findValue(ex, ["account holder name", "holder name", "name", "account holder"]);
+    const email = String(emailRaw || "").trim();
+    const m1 = normalizeAuMobile(mobileRaw);
+    const m2 = normalizeAuMobile(payIdValueRaw);
+    const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+    const isMobile = (v) => /^\+61\d{9}$/.test(v);
+
     let type = "email";
-    let value = String(email || "");
-    const looksMobile = (s) => /^\+?61\d{9}$/.test(String(s || "").trim());
-    if (!value && looksMobile(mobile)) { type = "mobile"; value = String(mobile); }
-    if (!value && payIdValue) {
-      const pv = String(payIdValue);
-      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pv)) { type = "email"; value = pv; }
-      else if (looksMobile(pv)) { type = "mobile"; value = pv; }
+    let value = "";
+
+    if (isEmail(email)) {
+      type = "email";
+      value = email;
+    } else if (isMobile(m1)) {
+      type = "mobile";
+      value = m1;
+    } else if (isEmail(String(payIdValueRaw || ""))) {
+      type = "email";
+      value = String(payIdValueRaw).trim();
+    } else if (isMobile(m2)) {
+      type = "mobile";
+      value = m2;
     }
+
     return {
       holderName: String(holderName || ""),
       payIdType: type,

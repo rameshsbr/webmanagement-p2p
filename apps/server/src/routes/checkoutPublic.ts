@@ -67,18 +67,40 @@ const MIN_CENTS = 50 * 100;
 const MAX_CENTS = 5000 * 100;
 
 const METHOD = z.enum(["OSKO", "PAYID"]);
+const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function normalizeAuMobile(input: string) {
+  const digits = String(input || "").replace(/[^\d]/g, "");
+  if (/^04\d{8}$/.test(digits)) return `+61${digits.slice(1)}`;
+  if (/^614\d{8}$/.test(digits)) return `+61${digits.slice(2)}`;
+  if (/^61\d{9}$/.test(digits)) return `+${digits}`;
+  return input?.trim?.() || "";
+}
 const payerOsko = z.object({
   holderName: z.string().min(2),
   accountNo: z.string().regex(/^\d{10,12}$/),
   bsb: z.string().regex(/^\d{6}$/),
   bankName: z.string().min(1).optional(),
 });
-const payerPayId = z.object({
-  holderName: z.string().min(2),
-  payIdType: z.enum(["mobile", "email"]),
-  payIdValue: z.union([z.string().email(), z.string().regex(/^\+?61\d{9}$/)]),
-  bankName: z.string().min(1).optional(),
-});
+const payerPayId = z
+  .object({
+    holderName: z.string().min(2),
+    payIdType: z.enum(["mobile", "email"]),
+    payIdValue: z.preprocess((v) => (typeof v === "string" ? normalizeAuMobile(v) : v), z.string().min(3)),
+    bankName: z.string().min(1).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.payIdType === "email") {
+      if (!emailRe.test(val.payIdValue)) {
+        ctx.addIssue({ code: "custom", path: ["payIdValue"], message: "Invalid email" });
+      }
+    } else if (!/^\+61\d{9}$/.test(val.payIdValue)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["payIdValue"],
+        message: "Invalid AU mobile (use 04xxxxxxxx or +61xxxxxxxxx)",
+      });
+    }
+  });
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -352,11 +374,20 @@ checkoutPublicRouter.post(
   },
   applyMerchantLimits,
   async (req: any, res) => {
-    const body = z.object({
+    const sessionSchema = z.object({
       user: z.object({ diditSubject: z.string().min(3) }),
       currency: z.string().default("AUD"),
       availableBalanceCents: z.number().int().nonnegative().optional(),
-    }).parse(req.body || {});
+    });
+    const parsed = sessionSchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_FAILED",
+        details: parsed.error.flatten(),
+      });
+    }
+    const body = parsed.data;
 
     const token = signCheckoutToken({
       merchantId: req.merchantId,
@@ -375,17 +406,21 @@ checkoutPublicRouter.post(
 checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, currency } = req.checkout;
   const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
+  const requestedMethod = String(req.query.method || "").trim().toUpperCase();
 
   const currencyFilter = requestedCurrency
     ? [{ currency: requestedCurrency }, { currency: "ANY" }, { currency: "ALL" }]
     : null;
 
+  const where: any = {
+    merchantId,
+    active: true,
+    ...(currencyFilter ? { OR: currencyFilter } : {}),
+  };
+  if (requestedMethod) where.method = requestedMethod;
+
   const rows = await prisma.bankAccount.findMany({
-    where: {
-      merchantId,
-      active: true,
-      ...(currencyFilter ? { OR: currencyFilter } : {}),
-    },
+    where,
     orderBy: [{ createdAt: "asc" }],
     select: { id: true, method: true, label: true, currency: true, active: true },
   });
@@ -423,13 +458,22 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency } = req.checkout;
 
-  const base = z.object({
+  const intentSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
     payer: z.union([payerOsko, payerPayId]),
     bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
-  }).parse(req.body || {});
+  });
+  const parsedIntent = intentSchema.safeParse(req.body || {});
+  if (!parsedIntent.success) {
+    return res.status(400).json({
+      ok: false,
+      error: "VALIDATION_FAILED",
+      details: parsedIntent.error.flatten(),
+    });
+  }
+  const base = parsedIntent.data;
 
   if (base.amountCents < MIN_CENTS || base.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
@@ -628,13 +672,22 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
 
-  const body = z.object({
+  const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
     destination: z.union([payerOsko, payerPayId]),
     bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
-  }).parse(req.body || {});
+  });
+  const parsedWithdrawal = withdrawalSchema.safeParse(req.body || {});
+  if (!parsedWithdrawal.success) {
+    return res.status(400).json({
+      ok: false,
+      error: "VALIDATION_FAILED",
+      details: parsedWithdrawal.error.flatten(),
+    });
+  }
+  const body = parsedWithdrawal.data;
 
   if (body.amountCents < MIN_CENTS || body.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });

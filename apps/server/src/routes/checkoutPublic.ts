@@ -375,17 +375,21 @@ checkoutPublicRouter.post(
 checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, currency } = req.checkout;
   const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
+  const requestedMethod = String(req.query.method || "").trim().toUpperCase();
 
   const currencyFilter = requestedCurrency
     ? [{ currency: requestedCurrency }, { currency: "ANY" }, { currency: "ALL" }]
     : null;
 
+  const where: any = {
+    merchantId,
+    active: true,
+    ...(currencyFilter ? { OR: currencyFilter } : {}),
+  };
+  if (requestedMethod) where.method = requestedMethod;
+
   const rows = await prisma.bankAccount.findMany({
-    where: {
-      merchantId,
-      active: true,
-      ...(currencyFilter ? { OR: currencyFilter } : {}),
-    },
+    where,
     orderBy: [{ createdAt: "asc" }],
     select: { id: true, method: true, label: true, currency: true, active: true },
   });

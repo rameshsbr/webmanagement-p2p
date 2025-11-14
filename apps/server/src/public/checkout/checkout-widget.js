@@ -417,12 +417,14 @@
       throw err;
     }
     const banks = (banksResp && Array.isArray(banksResp.banks)) ? banksResp.banks : [];
-    const firstActive = banks.find((b) => {
+    const methodU = method.toUpperCase();
+    const candidates = banks.filter((b) => {
       if (!b) return false;
       const val = String(b.method || "").trim().toUpperCase();
       const active = b.active === undefined || b.active === null || !!b.active;
-      return active && val === method;
+      return active && val === methodU;
     });
+    const firstActive = candidates[0];
 
     if (!firstActive || !firstActive.id) {
       const result = { bankId: null, depositFields: [], withdrawalFields: [] };
@@ -830,7 +832,7 @@
       const amountCents = normalizeAmountInput(amount.value);
       let err = validateWithdrawalInputs(amountCents);
       err = err || dyn.validate();
-      const ready = formReady && Boolean(String(method.value || ""));
+      const ready = formReady && Boolean(String(method.value || "")) && Boolean(selectedBankId);
       setEnabled(submit, ready && !err);
       status.textContent = err || "";
     }
@@ -906,7 +908,7 @@
       }
 
       if (!formReady || !method.value || !selectedBankId) {
-        configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
+        configWarning.textContent = NO_FORM_MESSAGE;
         configWarning.style.display = "block";
         setEnabled(submit, false);
         return;
@@ -922,7 +924,13 @@
         const resp = await call("/public/withdrawals", token, {
           method: "POST",
           headers: { "content-type":"application/json" },
-          body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras, bankAccountId: selectedBankId }),
+          body: JSON.stringify({
+            amountCents,
+            method: method.value,
+            destination,
+            extraFields: extras,
+            bankAccountId: selectedBankId,
+          }),
         });
         status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);

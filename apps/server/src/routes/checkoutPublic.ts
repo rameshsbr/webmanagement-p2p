@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import path from "node:path";
@@ -68,6 +69,13 @@ const MAX_CENTS = 5000 * 100;
 
 const METHOD = z.enum(["OSKO", "PAYID"]);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+function deriveDiditSubject(merchantId: string, externalId: string) {
+  const base = `m:${merchantId}:u:${String(externalId).trim().toLowerCase()}`;
+  const h = crypto.createHash("sha256").update(base).digest("base64url").slice(0, 32);
+  return `m:${merchantId}:${h}`;
+}
+
 function normalizeAuMobile(input: string) {
   const digits = String(input || "").replace(/[^\d]/g, "");
   if (/^04\d{8}$/.test(digits)) return `+61${digits.slice(1)}`;
@@ -360,6 +368,24 @@ async function loadMerchantBank(merchantId: string, bankAccountId: string) {
   });
 }
 
+async function upsertMerchantClientMapping(params: {
+  merchantId: string;
+  externalId?: string | null;
+  userId: string;
+  diditSubject: string;
+  email?: string | null;
+}) {
+  const { merchantId, externalId, userId, diditSubject, email } = params;
+  if (!externalId) return;
+  await prisma.merchantClient
+    .upsert({
+      where: { diditSubject },
+      create: { merchantId, externalId, userId, diditSubject, email: email || null },
+      update: { merchantId, externalId, userId, email: email || null },
+    })
+    .catch(() => {});
+}
+
 // ───────────────────────────────────────────────
 // 1) Server-to-server: create a checkout session (API key)
 // ───────────────────────────────────────────────
@@ -374,12 +400,21 @@ checkoutPublicRouter.post(
   },
   applyMerchantLimits,
   async (req: any, res) => {
-    const sessionSchema = z.object({
-      user: z.object({ diditSubject: z.string().min(3) }),
-      currency: z.string().default("AUD"),
-      availableBalanceCents: z.number().int().nonnegative().optional(),
+    const UserInput = z.object({
+      diditSubject: z.string().min(3).optional(),
+      externalId: z.string().min(1).optional(),
+      email: z.string().email().optional(),
     });
-    const parsed = sessionSchema.safeParse(req.body || {});
+
+    const parsed = z
+      .object({
+        user: UserInput.refine((u) => !!(u.diditSubject || u.externalId), {
+          message: "Provide user.externalId or user.diditSubject",
+        }),
+        currency: z.string().default("AUD"),
+        availableBalanceCents: z.number().int().nonnegative().optional(),
+      })
+      .safeParse(req.body || {});
     if (!parsed.success) {
       return res.status(400).json({
         ok: false,
@@ -389,9 +424,17 @@ checkoutPublicRouter.post(
     }
     const body = parsed.data;
 
+    let diditSubject = body.user.diditSubject;
+    const externalId = body.user.externalId || null;
+    if (!diditSubject && externalId) {
+      diditSubject = deriveDiditSubject(req.merchantId, externalId);
+    }
+
     const token = signCheckoutToken({
       merchantId: req.merchantId,
-      diditSubject: body.user.diditSubject,
+      diditSubject: diditSubject!,
+      externalId,
+      email: body.user.email || null,
       currency: body.currency.toUpperCase(),
       availableBalanceCents: body.availableBalanceCents,
     });
@@ -456,7 +499,7 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 //             (validation now uses forms for the selected bank)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency } = req.checkout;
+  const { merchantId, diditSubject, currency, externalId, email } = req.checkout;
 
   const intentSchema = z.object({
     amountCents: z.number().int().positive(),
@@ -485,6 +528,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
+  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
   }
@@ -670,7 +714,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 // 4) Public: create withdrawal (still merchant-level forms)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
+  const { merchantId, diditSubject, currency, availableBalanceCents, externalId, email } = req.checkout;
 
   const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
@@ -716,6 +760,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
+  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
 
   const hasDeposit = await prisma.paymentRequest.findFirst({
     where: { userId: user.id, merchantId, type: "DEPOSIT", status: "APPROVED" },
@@ -799,19 +844,20 @@ checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLim
 // ───────────────────────────────────────────────
 // 6) KYC: start + status (Didit low-code link)
 checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { diditSubject } = req.checkout;
+  const { diditSubject, merchantId, externalId, email } = req.checkout;
 
   const user = await prisma.user.upsert({
     where: { diditSubject },
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
+  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
 
   let url: string | null = null;
   try {
     const didit = await import("../services/didit.js");
     if (typeof didit.createLowCodeLink === "function") {
-      const out = await didit.createLowCodeLink({ subject: diditSubject });
+      const out = await didit.createLowCodeLink({ subject: diditSubject, merchantId });
       url = out.url;
       await prisma.kycVerification.create({
         data: { userId: user.id, provider: "didit", status: "pending", externalSessionId: out.sessionId },

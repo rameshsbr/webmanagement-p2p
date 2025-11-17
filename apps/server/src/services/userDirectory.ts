@@ -10,6 +10,7 @@ export type UserDirectoryFilters = {
 
 export type UserDirectoryItem = {
   id: string;
+  externalId: string | null;
   publicId: string;
   email: string | null;
   phone: string | null;
@@ -89,25 +90,24 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   }
 
   const where: any = {
-    paymentReqs: { some: { merchantId: { in: merchantIds } } },
+    merchantId: { in: merchantIds },
   };
 
   const search = typeof filters.search === "string" ? filters.search.trim() : "";
   if (search) {
     const searchFilter = {
       OR: [
-        { publicId: { contains: search, mode: "insensitive" } },
+        { externalId: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
-        { phone: { contains: search, mode: "insensitive" } },
         { diditSubject: { contains: search, mode: "insensitive" } },
         {
-          paymentReqs: {
-            some: {
-              OR: [
-                { detailsJson: { path: ["payer", "holderName"], string_contains: search } },
-                { detailsJson: { path: ["destination", "holderName"], string_contains: search } },
-              ],
-            },
+          user: {
+            OR: [
+              { publicId: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+              { phone: { contains: search, mode: "insensitive" } },
+              { diditSubject: { contains: search, mode: "insensitive" } },
+            ],
           },
         },
       ],
@@ -115,24 +115,28 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     where.AND = Array.isArray(where.AND) ? [...where.AND, searchFilter] : [searchFilter];
   }
 
-  const [total, users] = await Promise.all([
-    prisma.user.count({ where }),
-    prisma.user.findMany({
+  const [total, mappings] = await Promise.all([
+    prisma.merchantClient.count({ where }),
+    prisma.merchantClient.findMany({
       where,
       include: {
-        paymentReqs: {
+        user: {
           select: {
-            merchantId: true,
+            id: true,
+            publicId: true,
+            email: true,
+            phone: true,
+            diditSubject: true,
+            verifiedAt: true,
             createdAt: true,
-            detailsJson: true,
+            paymentReqs: {
+              where: { merchantId: { in: merchantIds } },
+              select: { merchantId: true, createdAt: true, detailsJson: true },
+              orderBy: { createdAt: "desc" },
+              take: 5,
+            },
+            kyc: { select: { status: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
           },
-          orderBy: { createdAt: "desc" },
-          take: 5,
-        },
-        kyc: {
-          select: { status: true, createdAt: true },
-          orderBy: { createdAt: "desc" },
-          take: 1,
         },
       },
       orderBy: { createdAt: "desc" },
@@ -142,15 +146,9 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   ]);
 
   const merchantMap = new Map<string, string>();
-  const merchantIdsNeeded = new Set<string>();
-  users.forEach((user) => {
-    user.paymentReqs.forEach((req) => {
-      if (req.merchantId) merchantIdsNeeded.add(req.merchantId);
-    });
-  });
-  if (merchantIdsNeeded.size) {
+  if (merchantIds.length) {
     const merchants = await prisma.merchant.findMany({
-      where: { id: { in: Array.from(merchantIdsNeeded) } },
+      where: { id: { in: merchantIds } },
       select: { id: true, name: true },
     });
     merchants.forEach((m) => merchantMap.set(m.id, m.name || m.id));
@@ -165,45 +163,44 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
 
   const diditProfiles: Array<DiditProfile | null> = shouldFetchDidit
     ? await Promise.all(
-        users.map(async (user) => {
+        mappings.map(async (mapping) => {
           try {
-            return await fetchDiditProfile(user.diditSubject);
+            return await fetchDiditProfile(mapping.user?.diditSubject || "");
           } catch {
             return null;
           }
         })
       )
-    : users.map(() => null);
+    : mappings.map(() => null);
 
-  const items: UserDirectoryItem[] = users.map((user, index) => {
-    const payments = user.paymentReqs || [];
+  const items: UserDirectoryItem[] = mappings.map((mapping, index) => {
+    const user = mapping.user;
+    const payments = user?.paymentReqs || [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
     const manualName = computeFullName(details);
     const profile = diditProfiles[index];
     const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
-    const latestKyc = user.kyc && user.kyc.length ? user.kyc[0].status || null : null;
-    const verificationStatus = computeStatus(user.verifiedAt, latestKyc);
+    const latestKyc = user?.kyc && user.kyc.length ? user.kyc[0].status || null : null;
+    const verificationStatus = computeStatus(user?.verifiedAt || null, latestKyc);
 
-    const merchants = payments.reduce((acc: Array<{ id: string; name: string }>, req) => {
-      if (!req.merchantId) return acc;
-      if (acc.some((m) => m.id === req.merchantId)) return acc;
-      acc.push({ id: req.merchantId, name: merchantMap.get(req.merchantId) || req.merchantId });
-      return acc;
-    }, []);
+    const merchants = [
+      { id: mapping.merchantId, name: merchantMap.get(mapping.merchantId) || mapping.merchantId },
+    ];
 
     return {
-      id: user.id,
-      publicId: user.publicId,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-      diditSubject: user.diditSubject,
+      id: user?.id || mapping.id,
+      externalId: mapping.externalId || null,
+      publicId: user?.publicId || "",
+      email: mapping.email || user?.email || null,
+      phone: user?.phone ?? null,
+      diditSubject: mapping.diditSubject || user?.diditSubject || "",
       fullName,
-      registeredAt: user.createdAt,
-      verifiedAt: user.verifiedAt,
+      registeredAt: user?.createdAt || mapping.createdAt,
+      verifiedAt: user?.verifiedAt || null,
       verificationStatus,
       merchants,
-      lastActivityAt: latestPayment?.createdAt ?? null,
+      lastActivityAt: latestPayment?.createdAt ?? mapping.updatedAt ?? null,
       diditProfile: profile,
     };
   });

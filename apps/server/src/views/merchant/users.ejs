@@ -15,8 +15,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
-  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity' },
+  defaults: { externalId:true, userId:true, diditSubject:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true },
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', diditSubject: 'Internal subject' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -31,7 +31,9 @@
   <table class="table">
     <thead>
       <tr>
+        <th data-col="externalId">EXTERNAL ID</th>
         <th data-col="userId">USER ID</th>
+        <th data-col="diditSubject">DIDIT SUBJECT</th>
         <th data-col="fullName">FULL NAME</th>
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
@@ -42,11 +44,13 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="7" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
+          <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
+          <td data-col="diditSubject"><span class="mono"><%= user.diditSubject %></span></td>
           <td data-col="fullName"><%= user.fullName || '—' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>

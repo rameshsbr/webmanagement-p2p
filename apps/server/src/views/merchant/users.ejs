@@ -15,8 +15,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
-  defaults: { externalId:true, userId:true, diditSubject:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', diditSubject: 'Internal subject' },
+  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true },
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', didit: 'Didit subject' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -40,6 +40,7 @@
         <th data-col="status">VERIFICATION STATUS</th>
         <th data-col="registered">DATE REGISTERED</th>
         <th data-col="lastActivity">LAST ACTIVITY</th>
+        <th data-col="didit">DIDIT SUBJECT</th>
       </tr>
     </thead>
     <tbody>
@@ -57,6 +58,7 @@
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
+          <td data-col="didit"><span class="mono"><%= user.diditSubject %></span></td>
         </tr>
       <% }) %>
     </tbody>

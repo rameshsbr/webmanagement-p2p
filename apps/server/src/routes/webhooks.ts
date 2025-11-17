@@ -15,6 +15,15 @@ async function prisma() {
 
 const diditWebhookRouter = Router();
 
+function parseVendorData(raw: unknown): { merchantId: string; diditSubject: string } {
+  const str = typeof raw === "string" ? raw : "";
+  const parts = str.split("|");
+  if (parts.length >= 2) {
+    return { merchantId: parts[0] || "", diditSubject: parts[1] || "" };
+  }
+  return { merchantId: "", diditSubject: str || "" };
+}
+
 // Accept both mount styles:
 //   - app.use(diditWebhookRouter)  -> POST /webhooks/didit
 //   - app.use("/webhooks", diditWebhookRouter) -> POST /didit
@@ -51,7 +60,7 @@ for (const path of PATHS) {
 
       let sessionId = "";
       let diditSubject = "";
-      let merchantId = String((req.query?.merchantId as string) || "");
+      let merchantId = "";
       let statusNorm: "approved" | "rejected" | "pending" = "pending";
 
       const body = req.body ?? {};
@@ -63,9 +72,9 @@ for (const path of PATHS) {
       } else {
         const vb = v2.parse(body);
         sessionId = vb.session_id;
-        const parsed = parseVendorData(vb.vendor_data || "");
-        diditSubject = parsed.diditSubject;
-        merchantId = merchantId || parsed.merchantId;
+        const vendor = parseVendorData(vb.vendor_data);
+        diditSubject = vendor.diditSubject || "";
+        merchantId = vendor.merchantId || "";
         const s = vb.status.toLowerCase();
         statusNorm = s.includes("approve")
           ? "approved"
@@ -92,7 +101,9 @@ for (const path of PATHS) {
         return res.status(400).json({ ok: false, error: "missing_diditSubject" });
       }
 
-      const user = await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected");
+      const user = await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected", {
+        merchantId: merchantId || undefined,
+      });
       return res.json({ ok: true, userId: user.id, verifiedAt: user.verifiedAt });
     } catch (err: any) {
       console.error("Didit webhook POST error:", err?.message || err);
@@ -114,14 +125,11 @@ for (const path of PATHS) {
         (q.sessionId as string) ||
         "";
 
-      let merchantId = String((q.merchantId as string) || "");
-      let diditSubject =
-        (q.diditSubject as string) ||
-        (q.subject as string) ||
-        "";
-      const parsedVendor = parseVendorData((q.vendor_data as string) || "");
-      if (!diditSubject) diditSubject = parsedVendor.diditSubject;
-      merchantId = merchantId || parsedVendor.merchantId;
+      const vendor = parseVendorData(
+        (q.vendor_data as string) || (q.diditSubject as string) || (q.subject as string) || ""
+      );
+      let diditSubject = vendor.diditSubject;
+      const merchantId = vendor.merchantId;
 
       const statusRaw = String(q.status || "").toLowerCase();
       const statusNorm: "approved" | "rejected" | "pending" =
@@ -156,7 +164,9 @@ for (const path of PATHS) {
       }
       if (!diditSubject) return res.status(400).send("Missing vendor_data/diditSubject.");
 
-      await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected");
+      await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected", {
+        merchantId: merchantId || undefined,
+      });
 
       // Build bounce URL with optional merchant return
       const ret = process.env.CHECKOUT_RETURN_URL || ""; // e.g. https://merchant.example/checkout

@@ -4,10 +4,12 @@ import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
+import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
+import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 
@@ -69,13 +71,6 @@ const MAX_CENTS = 5000 * 100;
 
 const METHOD = z.enum(["OSKO", "PAYID"]);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-
-function deriveDiditSubject(merchantId: string, externalId: string) {
-  const base = `m:${merchantId}:u:${String(externalId).trim().toLowerCase()}`;
-  const h = crypto.createHash("sha256").update(base).digest("base64url").slice(0, 32);
-  return `m:${merchantId}:${h}`;
-}
-
 function normalizeAuMobile(input: string) {
   const digits = String(input || "").replace(/[^\d]/g, "");
   if (/^04\d{8}$/.test(digits)) return `+61${digits.slice(1)}`;
@@ -424,7 +419,7 @@ checkoutPublicRouter.post(
     }
     const body = parsed.data;
 
-    let diditSubject = body.user.diditSubject;
+    let diditSubject = body.user.diditSubject || null;
     const externalId = body.user.externalId || null;
     if (!diditSubject && externalId) {
       diditSubject = deriveDiditSubject(req.merchantId, externalId);
@@ -528,7 +523,13 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
-  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
+  await upsertMerchantClientMapping({
+    merchantId,
+    externalId: req.checkout.externalId,
+    userId: user.id,
+    diditSubject,
+    email: req.checkout.email,
+  });
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
   }
@@ -760,7 +761,13 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
-  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
+  await upsertMerchantClientMapping({
+    merchantId,
+    externalId: req.checkout.externalId,
+    userId: user.id,
+    diditSubject,
+    email: req.checkout.email,
+  });
 
   const hasDeposit = await prisma.paymentRequest.findFirst({
     where: { userId: user.id, merchantId, type: "DEPOSIT", status: "APPROVED" },
@@ -844,7 +851,7 @@ checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLim
 // ───────────────────────────────────────────────
 // 6) KYC: start + status (Didit low-code link)
 checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { diditSubject, merchantId, externalId, email } = req.checkout;
+  const { diditSubject, merchantId, email, externalId } = req.checkout;
 
   const user = await prisma.user.upsert({
     where: { diditSubject },
@@ -870,8 +877,11 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
 });
 
 checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { diditSubject } = req.checkout;
+  const { diditSubject, merchantId, externalId, email } = req.checkout;
   const user = await prisma.user.findUnique({ where: { diditSubject } });
+  if (user) {
+    await upsertMerchantClientMapping({ merchantId, userId: user.id, diditSubject, externalId, email });
+  }
   if (!user) return res.json({ ok: true, status: "pending" });
 
   const last = await prisma.kycVerification.findFirst({

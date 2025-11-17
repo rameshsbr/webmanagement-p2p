@@ -12,6 +12,7 @@ export type UserDirectoryItem = {
   id: string;
   externalId: string | null;
   publicId: string;
+  externalId: string | null;
   email: string | null;
   phone: string | null;
   diditSubject: string;
@@ -89,9 +90,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     return { total: 0, page, perPage, pages: 1, items: [] };
   }
 
-  const where: any = {
-    merchantId: { in: merchantIds },
-  };
+  const where: any = { merchantId: { in: merchantIds } };
 
   const search = typeof filters.search === "string" ? filters.search.trim() : "";
   if (search) {
@@ -106,7 +105,17 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
               { publicId: { contains: search, mode: "insensitive" } },
               { email: { contains: search, mode: "insensitive" } },
               { phone: { contains: search, mode: "insensitive" } },
-              { diditSubject: { contains: search, mode: "insensitive" } },
+              {
+                paymentReqs: {
+                  some: {
+                    OR: [
+                      { detailsJson: { path: ["payer", "holderName"], string_contains: search } },
+                      { detailsJson: { path: ["destination", "holderName"], string_contains: search } },
+                    ],
+                    merchantId: { in: merchantIds },
+                  },
+                },
+              },
             ],
           },
         },
@@ -115,11 +124,12 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     where.AND = Array.isArray(where.AND) ? [...where.AND, searchFilter] : [searchFilter];
   }
 
-  const [total, mappings] = await Promise.all([
+  const [total, clients] = await Promise.all([
     prisma.merchantClient.count({ where }),
     prisma.merchantClient.findMany({
       where,
       include: {
+        merchant: { select: { id: true, name: true } },
         user: {
           select: {
             id: true,
@@ -135,7 +145,11 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
               orderBy: { createdAt: "desc" },
               take: 5,
             },
-            kyc: { select: { status: true, createdAt: true }, orderBy: { createdAt: "desc" }, take: 1 },
+            kyc: {
+              select: { status: true, createdAt: true },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
           },
         },
       },
@@ -146,13 +160,9 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   ]);
 
   const merchantMap = new Map<string, string>();
-  if (merchantIds.length) {
-    const merchants = await prisma.merchant.findMany({
-      where: { id: { in: merchantIds } },
-      select: { id: true, name: true },
-    });
-    merchants.forEach((m) => merchantMap.set(m.id, m.name || m.id));
-  }
+  clients.forEach((row) => {
+    merchantMap.set(row.merchantId, row.merchant?.name || row.merchantId);
+  });
 
   const shouldFetchDidit = Boolean(
     process.env.DIDIT_CLIENT_ID ||
@@ -163,41 +173,40 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
 
   const diditProfiles: Array<DiditProfile | null> = shouldFetchDidit
     ? await Promise.all(
-        mappings.map(async (mapping) => {
+        clients.map(async (client) => {
           try {
-            return await fetchDiditProfile(mapping.user?.diditSubject || "");
+            return await fetchDiditProfile(client.user.diditSubject);
           } catch {
             return null;
           }
         })
       )
-    : mappings.map(() => null);
+    : clients.map(() => null);
 
-  const items: UserDirectoryItem[] = mappings.map((mapping, index) => {
-    const user = mapping.user;
-    const payments = user?.paymentReqs || [];
+  const items: UserDirectoryItem[] = clients.map((client, index) => {
+    const payments = client.user.paymentReqs || [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
     const manualName = computeFullName(details);
     const profile = diditProfiles[index];
     const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
-    const latestKyc = user?.kyc && user.kyc.length ? user.kyc[0].status || null : null;
-    const verificationStatus = computeStatus(user?.verifiedAt || null, latestKyc);
+    const latestKyc = client.user.kyc && client.user.kyc.length ? client.user.kyc[0].status || null : null;
+    const verificationStatus = computeStatus(client.user.verifiedAt, latestKyc);
 
-    const merchants = [
-      { id: mapping.merchantId, name: merchantMap.get(mapping.merchantId) || mapping.merchantId },
+    const merchants: Array<{ id: string; name: string }> = [
+      { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
     ];
 
     return {
-      id: user?.id || mapping.id,
-      externalId: mapping.externalId || null,
-      publicId: user?.publicId || "",
-      email: mapping.email || user?.email || null,
-      phone: user?.phone ?? null,
-      diditSubject: mapping.diditSubject || user?.diditSubject || "",
+      id: client.user.id,
+      publicId: client.user.publicId,
+      externalId: client.externalId,
+      email: client.email ?? client.user.email ?? null,
+      phone: client.user.phone ?? null,
+      diditSubject: client.diditSubject,
       fullName,
-      registeredAt: user?.createdAt || mapping.createdAt,
-      verifiedAt: user?.verifiedAt || null,
+      registeredAt: client.user.createdAt,
+      verifiedAt: client.user.verifiedAt,
       verificationStatus,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? mapping.updatedAt ?? null,
@@ -267,6 +276,7 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
 
   items.forEach((user) => {
     lines.push(`${user.publicId} • ${user.fullName || "—"}`);
+    lines.push(`External ID: ${user.externalId || "—"}`);
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
     lines.push(`Status: ${user.verificationStatus}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);

@@ -1,4 +1,5 @@
 import { generateUserId } from "./reference.js";
+import { upsertMerchantClientMapping } from "./merchantClient.js";
 
 // apps/server/src/services/didit.ts
 // Placeholder integration for Didit + real Low-Code API helpers.
@@ -55,7 +56,8 @@ export async function startDiditSession(diditSubjectHint?: string) {
 export async function handleDiditWebhook(
   sessionId: string,
   diditSubject: string,
-  status: "approved" | "rejected"
+  status: "approved" | "rejected",
+  metadata?: { merchantId?: string | null; externalId?: string | null; email?: string | null }
 ) {
   const p = await prisma();
   let user = await p.user.findUnique({ where: { diditSubject } });
@@ -65,6 +67,15 @@ export async function handleDiditWebhook(
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
+  }
+  if (metadata?.merchantId) {
+    await upsertMerchantClientMapping({
+      merchantId: metadata.merchantId,
+      userId: user.id,
+      diditSubject,
+      externalId: metadata.externalId,
+      email: metadata.email,
+    });
   }
   await p.kycVerification.upsert({
     where: { externalSessionId: sessionId },
@@ -185,9 +196,9 @@ async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sess
 
   const body: any = {
     workflow_id: workflowId,
-    vendor_data: buildVendorData(input.subject, input.merchantId),
+    vendor_data: buildVendorData(input),
+    callback: process.env.DIDIT_CALLBACK_URL || buildCallbackUrl(input),
   };
-  body.callback = buildCallbackUrl(input.subject, input.merchantId);
 
   const url = `${base}/v2/session/`;
   logDebug("createLinkV2 →", url, body);
@@ -241,23 +252,19 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 // ───────────────────────────────────────────────────────────────
 // Real Didit Low-Code API helpers (legacy v1 via OAuth/Bearer)
 // ───────────────────────────────────────────────────────────────
-type CreateLinkInput = { subject: string; merchantId?: string };
+type CreateLinkInput = { subject: string; merchantId?: string | null };
 type CreateLinkOutput = { url: string; sessionId: string };
 
-function buildVendorData(subject: string, merchantId?: string | null) {
-  if (merchantId) return `${merchantId}|${subject}`;
-  return subject;
+function buildVendorData(input: CreateLinkInput) {
+  return input.merchantId ? `${input.merchantId}|${input.subject}` : input.subject;
 }
 
-function buildCallbackUrl(subject: string, merchantId?: string | null) {
-  const baseCb = (process.env.DIDIT_CALLBACK_URL || `${process.env.BASE_URL || "http://localhost:4000"}/webhooks/didit`).trim();
-  const hasQuery = baseCb.includes("?");
-  const qs = new URLSearchParams();
-  if (merchantId) qs.set("merchantId", merchantId);
-  if (subject) qs.set("diditSubject", subject);
-  const suffix = qs.toString();
-  if (!suffix) return baseCb;
-  return hasQuery ? `${baseCb}&${suffix}` : `${baseCb}?${suffix}`;
+function buildCallbackUrl(input: CreateLinkInput) {
+  const base = (process.env.BASE_URL || "http://localhost:4000").replace(/\/+$/, "");
+  const qp = new URLSearchParams();
+  qp.set("diditSubject", input.subject);
+  if (input.merchantId) qp.set("merchantId", input.merchantId);
+  return `${base}/webhooks/didit?${qp.toString()}`;
 }
 
 /**
@@ -286,6 +293,8 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
     callback: buildCallbackUrl(input.subject, input.merchantId),
     appId,
     workflowId,
+    vendor_data: buildVendorData(input),
+    callback: process.env.DIDIT_CALLBACK_URL || buildCallbackUrl(input),
     redirectUrl:
       process.env.DIDIT_REDIRECT_URL ||
       `${process.env.BASE_URL || "http://localhost:4000"}/public/kyc/done`,

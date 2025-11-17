@@ -942,13 +942,12 @@
 
       try {
         status.textContent = "Checking verification…";
-        await ensureKyc(token);
-      } catch (e) {
-        status.textContent = (e && e.error) ? String(e.error) : "KYC error";
-        return;
-      }
-
-      try {
+        try {
+          await ensureKyc(token);
+        } catch (e) {
+          status.textContent = (e && e.error) ? String(e.error) : "KYC error";
+          return;
+        }
         status.textContent = "Submitting…";
         const resp = await call("/public/withdrawals", token, {
           method: "POST",

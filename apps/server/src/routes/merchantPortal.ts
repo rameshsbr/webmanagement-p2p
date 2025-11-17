@@ -19,6 +19,7 @@ import {
 import * as refs from "../services/reference.js";
 import { listAccountEntries } from "../services/merchantAccounts.js";
 import { signCheckoutToken } from "../services/checkoutToken.js";
+import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
@@ -794,9 +795,10 @@ router.get("/payments/test", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   if (!merchantId) return res.redirect("/merchant/payments");
 
-  const subject = normalizeTestSubject(req.query?.subject, merchantId);
+  const externalId = normalizeTestSubject(req.query?.subject, merchantId);
+  const subject = deriveDiditSubject(merchantId, externalId);
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
-  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency });
+  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
 
   res.render("merchant/payments-test", {
     title: "Test Payments",
@@ -807,9 +809,10 @@ router.get("/payments/test", async (req: any, res) => {
 router.post("/payments/test/session", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
-  const subject = normalizeTestSubject(req.body?.subject || req.query?.subject, merchantId);
+  const externalId = normalizeTestSubject(req.body?.subject || req.query?.subject, merchantId);
+  const subject = deriveDiditSubject(merchantId, externalId);
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
-  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency });
+  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
   res.json({ ok: true, token, subject, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
 });
 

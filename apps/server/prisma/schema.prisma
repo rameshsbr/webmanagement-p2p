@@ -35,17 +35,14 @@ model Merchant {
   apiKeysSelfServiceEnabled Boolean @default(true)
 
   // new relations for super-admin features
-  users           MerchantUser[]
-  limits          MerchantLimits?
-  blocklist       PayerBlocklist[]
-  clientDirectory MerchantClientMapping[]
+  limits         MerchantLimits?
+  blocklist      PayerBlocklist[]
+  clientMappings MerchantClient[]
 
   // NEW: per-merchant checkout/SDK form configuration
   // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
-  formConfigs MerchantFormConfig[]
-
-  // NEW: client mapping (externalId -> user) per merchant
-  clientMappings MerchantClient[]
+  formConfigs   MerchantFormConfig[]
+  merchantUsers MerchantUser[]
 }
 
 model MerchantApiKey {
@@ -79,10 +76,11 @@ model User {
   paymentReqs   PaymentRequest[]
   withdrawDests WithdrawalDestination[]
   createdAt     DateTime                @default(now())
+  updatedAt     DateTime                @updatedAt
 
   // NEW: back-reference for PayerBlocklist.user
   blocklistEntries PayerBlocklist[]
-  merchantClients  MerchantClientMapping[] @relation("MerchantClientUser")
+  merchantClients  MerchantClient[]
 }
 
 model KycVerification {
@@ -361,24 +359,6 @@ model MerchantUser {
   @@index([merchantId])
 }
 
-// Per-merchant client mapping (external user id -> internal user)
-model MerchantClient {
-  id           String   @id @default(cuid())
-  merchantId   String
-  externalId   String
-  userId       String
-  diditSubject String   @unique
-  email        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-
-  @@unique([merchantId, externalId])
-  @@index([userId])
-}
-
 model MerchantLoginLog {
   id             String        @id @default(cuid())
   merchantUserId String?
@@ -393,19 +373,21 @@ model MerchantLoginLog {
   @@index([email])
 }
 
-model MerchantClientMapping {
-  id           String   @id @default(cuid())
-  merchantId   String
-  merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  externalId   String
-  userId       String
-  user         User     @relation("MerchantClientUser", fields: [userId], references: [id], onDelete: Cascade)
-  diditSubject String   @unique
-  email        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model MerchantClient {
+  id         String   @id @default(cuid())
+  merchantId String
+  userId     String
+  externalId String?
+  email      String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, userId])
   @@unique([merchantId, externalId])
+  @@index([merchantId])
   @@index([userId])
 }
 

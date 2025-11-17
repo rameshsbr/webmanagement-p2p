@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import path from "node:path";
@@ -9,6 +10,7 @@ import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
 import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
+import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 
@@ -362,6 +364,24 @@ async function loadMerchantBank(merchantId: string, bankAccountId: string) {
   });
 }
 
+async function upsertMerchantClientMapping(params: {
+  merchantId: string;
+  externalId?: string | null;
+  userId: string;
+  diditSubject: string;
+  email?: string | null;
+}) {
+  const { merchantId, externalId, userId, diditSubject, email } = params;
+  if (!externalId) return;
+  await prisma.merchantClient
+    .upsert({
+      where: { diditSubject },
+      create: { merchantId, externalId, userId, diditSubject, email: email || null },
+      update: { merchantId, externalId, userId, email: email || null },
+    })
+    .catch(() => {});
+}
+
 // ───────────────────────────────────────────────
 // 1) Server-to-server: create a checkout session (API key)
 // ───────────────────────────────────────────────
@@ -475,7 +495,7 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 //             (validation now uses forms for the selected bank)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency } = req.checkout;
+  const { merchantId, diditSubject, currency, externalId, email } = req.checkout;
 
   const intentSchema = z.object({
     amountCents: z.number().int().positive(),
@@ -696,7 +716,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 // 4) Public: create withdrawal (still merchant-level forms)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
+  const { merchantId, diditSubject, currency, availableBalanceCents, externalId, email } = req.checkout;
 
   const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
@@ -858,8 +878,11 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
 });
 
 checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { diditSubject } = req.checkout;
+  const { diditSubject, merchantId, externalId, email } = req.checkout;
   const user = await prisma.user.findUnique({ where: { diditSubject } });
+  if (user) {
+    await upsertMerchantClientMapping({ merchantId, userId: user.id, diditSubject, externalId, email });
+  }
   if (!user) return res.json({ ok: true, status: "pending" });
 
   const last = await prisma.kycVerification.findFirst({

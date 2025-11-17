@@ -16,7 +16,7 @@
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
   defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity' },
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', didit: 'Didit subject' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -31,6 +31,7 @@
   <table class="table">
     <thead>
       <tr>
+        <th data-col="externalId">EXTERNAL ID</th>
         <th data-col="userId">USER ID</th>
         <th data-col="fullName">FULL NAME</th>
         <th data-col="email">EMAIL</th>
@@ -38,6 +39,7 @@
         <th data-col="status">VERIFICATION STATUS</th>
         <th data-col="registered">DATE REGISTERED</th>
         <th data-col="lastActivity">LAST ACTIVITY</th>
+        <th data-col="didit">DIDIT SUBJECT</th>
       </tr>
     </thead>
     <tbody>
@@ -46,6 +48,7 @@
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
+          <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
           <td data-col="fullName"><%= user.fullName || '—' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
@@ -53,6 +56,7 @@
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
+          <td data-col="didit"><span class="mono"><%= user.diditSubject %></span></td>
         </tr>
       <% }) %>
     </tbody>

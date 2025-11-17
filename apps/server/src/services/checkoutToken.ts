@@ -4,6 +4,8 @@ import { seal, open } from "./secretBox.js";
 export type CheckoutClaims = {
   merchantId: string;
   diditSubject: string;
+  externalId?: string | null;
+  email?: string | null;
   currency: string; // e.g. "AUD"
   availableBalanceCents?: number; // optional hint for withdrawal UX
   iat: number; // unix seconds

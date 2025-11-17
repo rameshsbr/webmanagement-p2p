@@ -20,6 +20,15 @@ const diditWebhookRouter = Router();
 //   - app.use("/webhooks", diditWebhookRouter) -> POST /didit
 const PATHS = ["/webhooks/didit", "/didit"];
 
+function parseVendorData(raw: string) {
+  const parts = String(raw || "").split("|");
+  if (parts.length >= 2) {
+    const [merchantId, ...rest] = parts;
+    return { merchantId: merchantId || "", diditSubject: rest.join("|") || "" };
+  }
+  return { merchantId: "", diditSubject: String(raw || "") };
+}
+
 /**
  * POST handler (server → server webhook), supports:
  *  - Legacy body: { sessionId, diditSubject, status: "approved"|"rejected" }
@@ -42,6 +51,7 @@ for (const path of PATHS) {
 
       let sessionId = "";
       let diditSubject = "";
+      let merchantId = String((req.query?.merchantId as string) || "");
       let statusNorm: "approved" | "rejected" | "pending" = "pending";
 
       const body = req.body ?? {};
@@ -53,7 +63,9 @@ for (const path of PATHS) {
       } else {
         const vb = v2.parse(body);
         sessionId = vb.session_id;
-        diditSubject = vb.vendor_data || "";
+        const parsed = parseVendorData(vb.vendor_data || "");
+        diditSubject = parsed.diditSubject;
+        merchantId = merchantId || parsed.merchantId;
         const s = vb.status.toLowerCase();
         statusNorm = s.includes("approve")
           ? "approved"
@@ -102,11 +114,14 @@ for (const path of PATHS) {
         (q.sessionId as string) ||
         "";
 
+      let merchantId = String((q.merchantId as string) || "");
       let diditSubject =
-        (q.vendor_data as string) ||
         (q.diditSubject as string) ||
         (q.subject as string) ||
         "";
+      const parsedVendor = parseVendorData((q.vendor_data as string) || "");
+      if (!diditSubject) diditSubject = parsedVendor.diditSubject;
+      merchantId = merchantId || parsedVendor.merchantId;
 
       const statusRaw = String(q.status || "").toLowerCase();
       const statusNorm: "approved" | "rejected" | "pending" =

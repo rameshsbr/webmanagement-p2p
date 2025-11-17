@@ -175,7 +175,7 @@ async function getDiditAccessToken(): Promise<string | null> {
 // ───────────────────────────────────────────────────────────────
 // v2 Verification Links helpers (preferred if DIDIT_API_KEY is present)
 // ───────────────────────────────────────────────────────────────
-async function createLinkV2(subject: string): Promise<{ url: string; sessionId: string }> {
+async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sessionId: string }> {
   const apiKey = process.env.DIDIT_API_KEY;
   const base = (process.env.DIDIT_VERIFICATION_BASE || "https://verification.didit.me").replace(/\/+$/, "");
   const workflowId = process.env.DIDIT_WORKFLOW_ID;
@@ -185,9 +185,9 @@ async function createLinkV2(subject: string): Promise<{ url: string; sessionId: 
 
   const body: any = {
     workflow_id: workflowId,
-    vendor_data: subject,
+    vendor_data: buildVendorData(input.subject, input.merchantId),
   };
-  if (process.env.DIDIT_CALLBACK_URL) body.callback = process.env.DIDIT_CALLBACK_URL;
+  body.callback = buildCallbackUrl(input.subject, input.merchantId);
 
   const url = `${base}/v2/session/`;
   logDebug("createLinkV2 →", url, body);
@@ -241,8 +241,24 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 // ───────────────────────────────────────────────────────────────
 // Real Didit Low-Code API helpers (legacy v1 via OAuth/Bearer)
 // ───────────────────────────────────────────────────────────────
-type CreateLinkInput = { subject: string };
+type CreateLinkInput = { subject: string; merchantId?: string };
 type CreateLinkOutput = { url: string; sessionId: string };
+
+function buildVendorData(subject: string, merchantId?: string | null) {
+  if (merchantId) return `${merchantId}|${subject}`;
+  return subject;
+}
+
+function buildCallbackUrl(subject: string, merchantId?: string | null) {
+  const baseCb = (process.env.DIDIT_CALLBACK_URL || `${process.env.BASE_URL || "http://localhost:4000"}/webhooks/didit`).trim();
+  const hasQuery = baseCb.includes("?");
+  const qs = new URLSearchParams();
+  if (merchantId) qs.set("merchantId", merchantId);
+  if (subject) qs.set("diditSubject", subject);
+  const suffix = qs.toString();
+  if (!suffix) return baseCb;
+  return hasQuery ? `${baseCb}&${suffix}` : `${baseCb}?${suffix}`;
+}
 
 /**
  * Create a Didit Low-Code verification link (v1 OAuth).
@@ -266,6 +282,8 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
 
   const body = {
     subject: input.subject,
+    vendor_data: buildVendorData(input.subject, input.merchantId),
+    callback: buildCallbackUrl(input.subject, input.merchantId),
     appId,
     workflowId,
     redirectUrl:
@@ -348,7 +366,7 @@ export async function createLowCodeLink(input: CreateLinkInput): Promise<CreateL
   const preferV2 = !!process.env.DIDIT_API_KEY && String(process.env.DIDIT_USE_V1 || "") !== "1";
   if (preferV2) {
     try {
-      return await createLinkV2(input.subject);
+      return await createLinkV2(input);
     } catch (e) {
       logDebug("v2 create failed, falling back to v1:", (e as any)?.message || e);
       // fall through to v1

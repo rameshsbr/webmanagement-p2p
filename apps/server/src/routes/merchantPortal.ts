@@ -59,8 +59,7 @@ function normalizeTestSubject(input: any, merchantId: string): string {
   const raw = typeof input === "string" ? input.trim() : "";
   if (raw && /^[A-Za-z0-9_.-]{3,64}$/.test(raw)) return raw;
   const tail = merchantId.replace(/[^A-Za-z0-9]/g, "").slice(-6) || merchantId.slice(-6) || "demo";
-  const ts = Date.now().toString(36);
-  const generated = `merchant-${tail}-${ts}`;
+  const generated = `merchant-${tail}-test`;
   return generated.slice(0, 64);
 }
 

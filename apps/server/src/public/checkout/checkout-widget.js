@@ -417,12 +417,14 @@
       throw err;
     }
     const banks = (banksResp && Array.isArray(banksResp.banks)) ? banksResp.banks : [];
-    const firstActive = banks.find((b) => {
+    const methodU = method.toUpperCase();
+    const candidates = banks.filter((b) => {
       if (!b) return false;
       const val = String(b.method || "").trim().toUpperCase();
       const active = b.active === undefined || b.active === null || !!b.active;
-      return active && val === method;
+      return active && val === methodU;
     });
+    const firstActive = candidates[0];
 
     if (!firstActive || !firstActive.id) {
       const result = { bankId: null, depositFields: [], withdrawalFields: [] };
@@ -512,6 +514,13 @@
     }
     return undefined;
   }
+  function normalizeAuMobile(input) {
+    const digits = String(input || "").replace(/[^\d]/g, "");
+    if (/^04\d{8}$/.test(digits)) return "+61" + digits.slice(1);
+    if (/^614\d{8}$/.test(digits)) return "+61" + digits.slice(2);
+    if (/^61\d{9}$/.test(digits)) return "+" + digits;
+    return input || "";
+  }
   function inferPayerFromExtras(methodVal, extras) {
     const ex = extras || {};
     const bankNameRaw = findValue(ex, ["bank name", "bank", "withdrawal bank", "payout bank", "bank selection"]);
@@ -528,19 +537,33 @@
         bankName: bankName || undefined,
       };
     }
-    const email = findValue(ex, ["email", "payid (email)"]);
-    let mobile = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
-    const payIdValue = findValue(ex, ["payid value", "payid", "pay id"]);
+    const emailRaw = findValue(ex, ["email", "payid (email)"]);
+    const mobileRaw = findValue(ex, ["mobile", "phone", "payid (mobile)"]);
+    const payIdValueRaw = findValue(ex, ["payid value", "payid", "pay id"]);
     const holderName = findValue(ex, ["account holder name", "holder name", "name", "account holder"]);
+    const email = String(emailRaw || "").trim();
+    const m1 = normalizeAuMobile(mobileRaw);
+    const m2 = normalizeAuMobile(payIdValueRaw);
+    const isEmail = (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+    const isMobile = (v) => /^\+61\d{9}$/.test(v);
+
     let type = "email";
-    let value = String(email || "");
-    const looksMobile = (s) => /^\+?61\d{9}$/.test(String(s || "").trim());
-    if (!value && looksMobile(mobile)) { type = "mobile"; value = String(mobile); }
-    if (!value && payIdValue) {
-      const pv = String(payIdValue);
-      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(pv)) { type = "email"; value = pv; }
-      else if (looksMobile(pv)) { type = "mobile"; value = pv; }
+    let value = "";
+
+    if (isEmail(email)) {
+      type = "email";
+      value = email;
+    } else if (isMobile(m1)) {
+      type = "mobile";
+      value = m1;
+    } else if (isEmail(String(payIdValueRaw || ""))) {
+      type = "email";
+      value = String(payIdValueRaw).trim();
+    } else if (isMobile(m2)) {
+      type = "mobile";
+      value = m2;
     }
+
     return {
       holderName: String(holderName || ""),
       payIdType: type,
@@ -830,7 +853,7 @@
       const amountCents = normalizeAmountInput(amount.value);
       let err = validateWithdrawalInputs(amountCents);
       err = err || dyn.validate();
-      const ready = formReady && Boolean(String(method.value || ""));
+      const ready = formReady && Boolean(String(method.value || "")) && Boolean(selectedBankId);
       setEnabled(submit, ready && !err);
       status.textContent = err || "";
     }
@@ -906,7 +929,7 @@
       }
 
       if (!formReady || !method.value || !selectedBankId) {
-        configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
+        configWarning.textContent = NO_FORM_MESSAGE;
         configWarning.style.display = "block";
         setEnabled(submit, false);
         return;
@@ -918,11 +941,25 @@
       saveDraft("withdrawal", claims, { amountCents, method: method.value, extras });
 
       try {
+        status.textContent = "Checking verification…";
+        await ensureKyc(token);
+      } catch (e) {
+        status.textContent = (e && e.error) ? String(e.error) : "KYC error";
+        return;
+      }
+
+      try {
         status.textContent = "Submitting…";
         const resp = await call("/public/withdrawals", token, {
           method: "POST",
           headers: { "content-type":"application/json" },
-          body: JSON.stringify({ amountCents, method: method.value, destination, extraFields: extras, bankAccountId: selectedBankId }),
+          body: JSON.stringify({
+            amountCents,
+            method: method.value,
+            destination,
+            extraFields: extras,
+            bankAccountId: selectedBankId,
+          }),
         });
         status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
         clearDraft("withdrawal", claims);

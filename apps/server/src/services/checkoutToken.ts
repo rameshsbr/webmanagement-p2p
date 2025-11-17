@@ -7,6 +7,8 @@ export type CheckoutClaims = {
   externalId?: string | null;
   email?: string | null;
   currency: string; // e.g. "AUD"
+  externalId?: string | null;
+  email?: string | null;
   availableBalanceCents?: number; // optional hint for withdrawal UX
   iat: number; // unix seconds
   exp: number; // unix seconds

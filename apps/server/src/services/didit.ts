@@ -289,6 +289,8 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
 
   const body = {
     subject: input.subject,
+    vendor_data: buildVendorData(input.subject, input.merchantId),
+    callback: buildCallbackUrl(input.subject, input.merchantId),
     appId,
     workflowId,
     vendor_data: buildVendorData(input),

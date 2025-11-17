@@ -1,3 +1,4 @@
+import crypto from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
 import path from "node:path";
@@ -362,6 +363,24 @@ async function loadMerchantBank(merchantId: string, bankAccountId: string) {
   });
 }
 
+async function upsertMerchantClientMapping(params: {
+  merchantId: string;
+  externalId?: string | null;
+  userId: string;
+  diditSubject: string;
+  email?: string | null;
+}) {
+  const { merchantId, externalId, userId, diditSubject, email } = params;
+  if (!externalId) return;
+  await prisma.merchantClient
+    .upsert({
+      where: { diditSubject },
+      create: { merchantId, externalId, userId, diditSubject, email: email || null },
+      update: { merchantId, externalId, userId, email: email || null },
+    })
+    .catch(() => {});
+}
+
 // ───────────────────────────────────────────────
 // 1) Server-to-server: create a checkout session (API key)
 // ───────────────────────────────────────────────
@@ -475,7 +494,7 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 //             (validation now uses forms for the selected bank)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency } = req.checkout;
+  const { merchantId, diditSubject, currency, externalId, email } = req.checkout;
 
   const intentSchema = z.object({
     amountCents: z.number().int().positive(),
@@ -696,7 +715,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 // 4) Public: create withdrawal (still merchant-level forms)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
+  const { merchantId, diditSubject, currency, availableBalanceCents, externalId, email } = req.checkout;
 
   const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),

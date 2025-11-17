@@ -43,6 +43,9 @@ model Merchant {
   // NEW: per-merchant checkout/SDK form configuration
   // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
   formConfigs MerchantFormConfig[]
+
+  // NEW: client mapping (externalId -> user) per merchant
+  clientMappings MerchantClient[]
 }
 
 model MerchantApiKey {
@@ -356,6 +359,24 @@ model MerchantUser {
   apiKeyRevealLogs MerchantApiKeyRevealLog[]
 
   @@index([merchantId])
+}
+
+// Per-merchant client mapping (external user id -> internal user)
+model MerchantClient {
+  id           String   @id @default(cuid())
+  merchantId   String
+  externalId   String
+  userId       String
+  diditSubject String   @unique
+  email        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([merchantId, externalId])
+  @@index([userId])
 }
 
 model MerchantLoginLog {

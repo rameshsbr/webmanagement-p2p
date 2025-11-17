@@ -10,6 +10,7 @@ export type UserDirectoryFilters = {
 
 export type UserDirectoryItem = {
   id: string;
+  externalId: string | null;
   publicId: string;
   externalId: string | null;
   email: string | null;
@@ -208,7 +209,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       verifiedAt: client.user.verifiedAt,
       verificationStatus,
       merchants,
-      lastActivityAt: latestPayment?.createdAt ?? null,
+      lastActivityAt: latestPayment?.createdAt ?? mapping.updatedAt ?? null,
       diditProfile: profile,
     };
   });

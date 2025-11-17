@@ -1,4 +1,5 @@
 import { generateUserId } from "./reference.js";
+import { upsertMerchantClientMapping } from "./merchantClient.js";
 
 // apps/server/src/services/didit.ts
 // Placeholder integration for Didit + real Low-Code API helpers.
@@ -55,7 +56,8 @@ export async function startDiditSession(diditSubjectHint?: string) {
 export async function handleDiditWebhook(
   sessionId: string,
   diditSubject: string,
-  status: "approved" | "rejected"
+  status: "approved" | "rejected",
+  metadata?: { merchantId?: string | null; externalId?: string | null; email?: string | null }
 ) {
   const p = await prisma();
   let user = await p.user.findUnique({ where: { diditSubject } });
@@ -65,6 +67,15 @@ export async function handleDiditWebhook(
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
+  }
+  if (metadata?.merchantId) {
+    await upsertMerchantClientMapping({
+      merchantId: metadata.merchantId,
+      userId: user.id,
+      diditSubject,
+      externalId: metadata.externalId,
+      email: metadata.email,
+    });
   }
   await p.kycVerification.upsert({
     where: { externalSessionId: sessionId },
@@ -175,7 +186,7 @@ async function getDiditAccessToken(): Promise<string | null> {
 // ───────────────────────────────────────────────────────────────
 // v2 Verification Links helpers (preferred if DIDIT_API_KEY is present)
 // ───────────────────────────────────────────────────────────────
-async function createLinkV2(subject: string): Promise<{ url: string; sessionId: string }> {
+async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sessionId: string }> {
   const apiKey = process.env.DIDIT_API_KEY;
   const base = (process.env.DIDIT_VERIFICATION_BASE || "https://verification.didit.me").replace(/\/+$/, "");
   const workflowId = process.env.DIDIT_WORKFLOW_ID;
@@ -185,9 +196,9 @@ async function createLinkV2(subject: string): Promise<{ url: string; sessionId: 
 
   const body: any = {
     workflow_id: workflowId,
-    vendor_data: subject,
+    vendor_data: buildVendorData(input),
+    callback: process.env.DIDIT_CALLBACK_URL || buildCallbackUrl(input),
   };
-  if (process.env.DIDIT_CALLBACK_URL) body.callback = process.env.DIDIT_CALLBACK_URL;
 
   const url = `${base}/v2/session/`;
   logDebug("createLinkV2 →", url, body);
@@ -241,8 +252,20 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 // ───────────────────────────────────────────────────────────────
 // Real Didit Low-Code API helpers (legacy v1 via OAuth/Bearer)
 // ───────────────────────────────────────────────────────────────
-type CreateLinkInput = { subject: string };
+type CreateLinkInput = { subject: string; merchantId?: string | null };
 type CreateLinkOutput = { url: string; sessionId: string };
+
+function buildVendorData(input: CreateLinkInput) {
+  return input.merchantId ? `${input.merchantId}|${input.subject}` : input.subject;
+}
+
+function buildCallbackUrl(input: CreateLinkInput) {
+  const base = (process.env.BASE_URL || "http://localhost:4000").replace(/\/+$/, "");
+  const qp = new URLSearchParams();
+  qp.set("diditSubject", input.subject);
+  if (input.merchantId) qp.set("merchantId", input.merchantId);
+  return `${base}/webhooks/didit?${qp.toString()}`;
+}
 
 /**
  * Create a Didit Low-Code verification link (v1 OAuth).
@@ -268,6 +291,8 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
     subject: input.subject,
     appId,
     workflowId,
+    vendor_data: buildVendorData(input),
+    callback: process.env.DIDIT_CALLBACK_URL || buildCallbackUrl(input),
     redirectUrl:
       process.env.DIDIT_REDIRECT_URL ||
       `${process.env.BASE_URL || "http://localhost:4000"}/public/kyc/done`,
@@ -348,7 +373,7 @@ export async function createLowCodeLink(input: CreateLinkInput): Promise<CreateL
   const preferV2 = !!process.env.DIDIT_API_KEY && String(process.env.DIDIT_USE_V1 || "") !== "1";
   if (preferV2) {
     try {
-      return await createLinkV2(input.subject);
+      return await createLinkV2(input);
     } catch (e) {
       logDebug("v2 create failed, falling back to v1:", (e as any)?.message || e);
       // fall through to v1

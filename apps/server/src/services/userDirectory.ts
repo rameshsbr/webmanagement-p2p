@@ -11,6 +11,7 @@ export type UserDirectoryFilters = {
 export type UserDirectoryItem = {
   id: string;
   publicId: string;
+  externalId: string | null;
   email: string | null;
   phone: string | null;
   diditSubject: string;
@@ -88,26 +89,33 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     return { total: 0, page, perPage, pages: 1, items: [] };
   }
 
-  const where: any = {
-    paymentReqs: { some: { merchantId: { in: merchantIds } } },
-  };
+  const where: any = { merchantId: { in: merchantIds } };
 
   const search = typeof filters.search === "string" ? filters.search.trim() : "";
   if (search) {
     const searchFilter = {
       OR: [
-        { publicId: { contains: search, mode: "insensitive" } },
+        { externalId: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
-        { phone: { contains: search, mode: "insensitive" } },
         { diditSubject: { contains: search, mode: "insensitive" } },
         {
-          paymentReqs: {
-            some: {
-              OR: [
-                { detailsJson: { path: ["payer", "holderName"], string_contains: search } },
-                { detailsJson: { path: ["destination", "holderName"], string_contains: search } },
-              ],
-            },
+          user: {
+            OR: [
+              { publicId: { contains: search, mode: "insensitive" } },
+              { email: { contains: search, mode: "insensitive" } },
+              { phone: { contains: search, mode: "insensitive" } },
+              {
+                paymentReqs: {
+                  some: {
+                    OR: [
+                      { detailsJson: { path: ["payer", "holderName"], string_contains: search } },
+                      { detailsJson: { path: ["destination", "holderName"], string_contains: search } },
+                    ],
+                    merchantId: { in: merchantIds },
+                  },
+                },
+              },
+            ],
           },
         },
       ],
@@ -115,24 +123,33 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     where.AND = Array.isArray(where.AND) ? [...where.AND, searchFilter] : [searchFilter];
   }
 
-  const [total, users] = await Promise.all([
-    prisma.user.count({ where }),
-    prisma.user.findMany({
+  const [total, clients] = await Promise.all([
+    prisma.merchantClient.count({ where }),
+    prisma.merchantClient.findMany({
       where,
       include: {
-        paymentReqs: {
+        merchant: { select: { id: true, name: true } },
+        user: {
           select: {
-            merchantId: true,
+            id: true,
+            publicId: true,
+            email: true,
+            phone: true,
+            diditSubject: true,
+            verifiedAt: true,
             createdAt: true,
-            detailsJson: true,
+            paymentReqs: {
+              where: { merchantId: { in: merchantIds } },
+              select: { merchantId: true, createdAt: true, detailsJson: true },
+              orderBy: { createdAt: "desc" },
+              take: 5,
+            },
+            kyc: {
+              select: { status: true, createdAt: true },
+              orderBy: { createdAt: "desc" },
+              take: 1,
+            },
           },
-          orderBy: { createdAt: "desc" },
-          take: 5,
-        },
-        kyc: {
-          select: { status: true, createdAt: true },
-          orderBy: { createdAt: "desc" },
-          take: 1,
         },
       },
       orderBy: { createdAt: "desc" },
@@ -142,19 +159,9 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   ]);
 
   const merchantMap = new Map<string, string>();
-  const merchantIdsNeeded = new Set<string>();
-  users.forEach((user) => {
-    user.paymentReqs.forEach((req) => {
-      if (req.merchantId) merchantIdsNeeded.add(req.merchantId);
-    });
+  clients.forEach((row) => {
+    merchantMap.set(row.merchantId, row.merchant?.name || row.merchantId);
   });
-  if (merchantIdsNeeded.size) {
-    const merchants = await prisma.merchant.findMany({
-      where: { id: { in: Array.from(merchantIdsNeeded) } },
-      select: { id: true, name: true },
-    });
-    merchants.forEach((m) => merchantMap.set(m.id, m.name || m.id));
-  }
 
   const shouldFetchDidit = Boolean(
     process.env.DIDIT_CLIENT_ID ||
@@ -165,42 +172,40 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
 
   const diditProfiles: Array<DiditProfile | null> = shouldFetchDidit
     ? await Promise.all(
-        users.map(async (user) => {
+        clients.map(async (client) => {
           try {
-            return await fetchDiditProfile(user.diditSubject);
+            return await fetchDiditProfile(client.user.diditSubject);
           } catch {
             return null;
           }
         })
       )
-    : users.map(() => null);
+    : clients.map(() => null);
 
-  const items: UserDirectoryItem[] = users.map((user, index) => {
-    const payments = user.paymentReqs || [];
+  const items: UserDirectoryItem[] = clients.map((client, index) => {
+    const payments = client.user.paymentReqs || [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
     const manualName = computeFullName(details);
     const profile = diditProfiles[index];
     const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
-    const latestKyc = user.kyc && user.kyc.length ? user.kyc[0].status || null : null;
-    const verificationStatus = computeStatus(user.verifiedAt, latestKyc);
+    const latestKyc = client.user.kyc && client.user.kyc.length ? client.user.kyc[0].status || null : null;
+    const verificationStatus = computeStatus(client.user.verifiedAt, latestKyc);
 
-    const merchants = payments.reduce((acc: Array<{ id: string; name: string }>, req) => {
-      if (!req.merchantId) return acc;
-      if (acc.some((m) => m.id === req.merchantId)) return acc;
-      acc.push({ id: req.merchantId, name: merchantMap.get(req.merchantId) || req.merchantId });
-      return acc;
-    }, []);
+    const merchants: Array<{ id: string; name: string }> = [
+      { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
+    ];
 
     return {
-      id: user.id,
-      publicId: user.publicId,
-      email: user.email ?? null,
-      phone: user.phone ?? null,
-      diditSubject: user.diditSubject,
+      id: client.user.id,
+      publicId: client.user.publicId,
+      externalId: client.externalId,
+      email: client.email ?? client.user.email ?? null,
+      phone: client.user.phone ?? null,
+      diditSubject: client.diditSubject,
       fullName,
-      registeredAt: user.createdAt,
-      verifiedAt: user.verifiedAt,
+      registeredAt: client.user.createdAt,
+      verifiedAt: client.user.verifiedAt,
       verificationStatus,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? null,
@@ -270,6 +275,7 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
 
   items.forEach((user) => {
     lines.push(`${user.publicId} • ${user.fullName || "—"}`);
+    lines.push(`External ID: ${user.externalId || "—"}`);
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
     lines.push(`Status: ${user.verificationStatus}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);

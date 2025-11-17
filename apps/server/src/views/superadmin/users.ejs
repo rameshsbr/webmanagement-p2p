@@ -24,8 +24,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
-  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', merchants: 'Merchants', didit: 'Didit profile' },
+  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
+  labelMap: { externalId: 'External ID', registered: 'Date registered', lastActivity: 'Last activity', merchants: 'Merchants', didit: 'Didit profile' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -40,6 +40,7 @@
   <table class="table">
     <thead>
       <tr>
+        <th data-col="externalId">EXTERNAL ID</th>
         <th data-col="userId">USER ID</th>
         <th data-col="fullName">FULL NAME</th>
         <th data-col="email">EMAIL</th>
@@ -57,6 +58,7 @@
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
+          <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
           <td data-col="fullName"><%= user.fullName || '—' %></td>
           <td data-col="email"><%= user.email || '—' %></td>

@@ -300,8 +300,6 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
     callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
     appId,
     workflowId,
-    vendor_data: buildVendorData({ merchantId: input.merchantId || "", subject: input.subject }),
-    callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
     redirectUrl:
       process.env.DIDIT_REDIRECT_URL ||
       `${process.env.BASE_URL || "http://localhost:4000"}/public/kyc/done`,

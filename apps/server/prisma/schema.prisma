@@ -82,7 +82,7 @@ model User {
 
   // NEW: back-reference for PayerBlocklist.user
   blocklistEntries PayerBlocklist[]
-  merchantClients  MerchantClientMapping[]
+  merchantClients  MerchantClientMapping[] @relation("MerchantClientUser")
 }
 
 model KycVerification {
@@ -399,7 +399,7 @@ model MerchantClientMapping {
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
   externalId   String
   userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User     @relation("MerchantClientUser", fields: [userId], references: [id], onDelete: Cascade)
   diditSubject String   @unique
   email        String?
   createdAt    DateTime @default(now())

@@ -3,9 +3,11 @@ import { z } from "zod";
 import path from "node:path";
 import fs from "node:fs";
 import multer from "multer";
+import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
+import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
@@ -67,18 +69,40 @@ const MIN_CENTS = 50 * 100;
 const MAX_CENTS = 5000 * 100;
 
 const METHOD = z.enum(["OSKO", "PAYID"]);
+const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function normalizeAuMobile(input: string) {
+  const digits = String(input || "").replace(/[^\d]/g, "");
+  if (/^04\d{8}$/.test(digits)) return `+61${digits.slice(1)}`;
+  if (/^614\d{8}$/.test(digits)) return `+61${digits.slice(2)}`;
+  if (/^61\d{9}$/.test(digits)) return `+${digits}`;
+  return input?.trim?.() || "";
+}
 const payerOsko = z.object({
   holderName: z.string().min(2),
   accountNo: z.string().regex(/^\d{10,12}$/),
   bsb: z.string().regex(/^\d{6}$/),
   bankName: z.string().min(1).optional(),
 });
-const payerPayId = z.object({
-  holderName: z.string().min(2),
-  payIdType: z.enum(["mobile", "email"]),
-  payIdValue: z.union([z.string().email(), z.string().regex(/^\+?61\d{9}$/)]),
-  bankName: z.string().min(1).optional(),
-});
+const payerPayId = z
+  .object({
+    holderName: z.string().min(2),
+    payIdType: z.enum(["mobile", "email"]),
+    payIdValue: z.preprocess((v) => (typeof v === "string" ? normalizeAuMobile(v) : v), z.string().min(3)),
+    bankName: z.string().min(1).optional(),
+  })
+  .superRefine((val, ctx) => {
+    if (val.payIdType === "email") {
+      if (!emailRe.test(val.payIdValue)) {
+        ctx.addIssue({ code: "custom", path: ["payIdValue"], message: "Invalid email" });
+      }
+    } else if (!/^\+61\d{9}$/.test(val.payIdValue)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["payIdValue"],
+        message: "Invalid AU mobile (use 04xxxxxxxx or +61xxxxxxxxx)",
+      });
+    }
+  });
 
 function nowIso() { return new Date().toISOString(); }
 
@@ -352,15 +376,41 @@ checkoutPublicRouter.post(
   },
   applyMerchantLimits,
   async (req: any, res) => {
-    const body = z.object({
-      user: z.object({ diditSubject: z.string().min(3) }),
-      currency: z.string().default("AUD"),
-      availableBalanceCents: z.number().int().nonnegative().optional(),
-    }).parse(req.body || {});
+    const UserInput = z.object({
+      diditSubject: z.string().min(3).optional(),
+      externalId: z.string().min(1).optional(),
+      email: z.string().email().optional(),
+    });
+
+    const parsed = z
+      .object({
+        user: UserInput.refine((u) => !!(u.diditSubject || u.externalId), {
+          message: "Provide user.externalId or user.diditSubject",
+        }),
+        currency: z.string().default("AUD"),
+        availableBalanceCents: z.number().int().nonnegative().optional(),
+      })
+      .safeParse(req.body || {});
+    if (!parsed.success) {
+      return res.status(400).json({
+        ok: false,
+        error: "VALIDATION_FAILED",
+        details: parsed.error.flatten(),
+      });
+    }
+    const body = parsed.data;
+
+    let diditSubject = body.user.diditSubject || null;
+    const externalId = body.user.externalId || null;
+    if (!diditSubject && externalId) {
+      diditSubject = deriveDiditSubject(req.merchantId, externalId);
+    }
 
     const token = signCheckoutToken({
       merchantId: req.merchantId,
-      diditSubject: body.user.diditSubject,
+      diditSubject: diditSubject!,
+      externalId,
+      email: body.user.email || null,
       currency: body.currency.toUpperCase(),
       availableBalanceCents: body.availableBalanceCents,
     });
@@ -375,17 +425,21 @@ checkoutPublicRouter.post(
 checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, currency } = req.checkout;
   const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
+  const requestedMethod = String(req.query.method || "").trim().toUpperCase();
 
   const currencyFilter = requestedCurrency
     ? [{ currency: requestedCurrency }, { currency: "ANY" }, { currency: "ALL" }]
     : null;
 
+  const where: any = {
+    merchantId,
+    active: true,
+    ...(currencyFilter ? { OR: currencyFilter } : {}),
+  };
+  if (requestedMethod) where.method = requestedMethod;
+
   const rows = await prisma.bankAccount.findMany({
-    where: {
-      merchantId,
-      active: true,
-      ...(currencyFilter ? { OR: currencyFilter } : {}),
-    },
+    where,
     orderBy: [{ createdAt: "asc" }],
     select: { id: true, method: true, label: true, currency: true, active: true },
   });
@@ -423,13 +477,22 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency } = req.checkout;
 
-  const base = z.object({
+  const intentSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
     payer: z.union([payerOsko, payerPayId]),
     bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
-  }).parse(req.body || {});
+  });
+  const parsedIntent = intentSchema.safeParse(req.body || {});
+  if (!parsedIntent.success) {
+    return res.status(400).json({
+      ok: false,
+      error: "VALIDATION_FAILED",
+      details: parsedIntent.error.flatten(),
+    });
+  }
+  const base = parsedIntent.data;
 
   if (base.amountCents < MIN_CENTS || base.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
@@ -440,6 +503,13 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     where: { diditSubject },
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
+  });
+  await upsertMerchantClientMapping({
+    merchantId,
+    externalId: req.checkout.externalId,
+    userId: user.id,
+    diditSubject,
+    email: req.checkout.email,
   });
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
@@ -628,13 +698,22 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
 
-  const body = z.object({
+  const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
     destination: z.union([payerOsko, payerPayId]),
     bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
-  }).parse(req.body || {});
+  });
+  const parsedWithdrawal = withdrawalSchema.safeParse(req.body || {});
+  if (!parsedWithdrawal.success) {
+    return res.status(400).json({
+      ok: false,
+      error: "VALIDATION_FAILED",
+      details: parsedWithdrawal.error.flatten(),
+    });
+  }
+  const body = parsedWithdrawal.data;
 
   if (body.amountCents < MIN_CENTS || body.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
@@ -663,6 +742,13 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
+  await upsertMerchantClientMapping({
+    merchantId,
+    externalId: req.checkout.externalId,
+    userId: user.id,
+    diditSubject,
+    email: req.checkout.email,
+  });
 
   const hasDeposit = await prisma.paymentRequest.findFirst({
     where: { userId: user.id, merchantId, type: "DEPOSIT", status: "APPROVED" },
@@ -746,19 +832,20 @@ checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLim
 // ───────────────────────────────────────────────
 // 6) KYC: start + status (Didit low-code link)
 checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { diditSubject } = req.checkout;
+  const { diditSubject, merchantId, email, externalId } = req.checkout;
 
   const user = await prisma.user.upsert({
     where: { diditSubject },
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
+  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
 
   let url: string | null = null;
   try {
     const didit = await import("../services/didit.js");
     if (typeof didit.createLowCodeLink === "function") {
-      const out = await didit.createLowCodeLink({ subject: diditSubject });
+      const out = await didit.createLowCodeLink({ subject: diditSubject, merchantId });
       url = out.url;
       await prisma.kycVerification.create({
         data: { userId: user.id, provider: "didit", status: "pending", externalSessionId: out.sessionId },

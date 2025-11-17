@@ -1,6 +1,5 @@
 import { upsertMerchantClientMapping } from "./merchantClient.js";
 import { generateUserId } from "./reference.js";
-import { upsertMerchantClientMapping } from "./merchantClient.js";
 
 // apps/server/src/services/didit.ts
 // Placeholder integration for Didit + real Low-Code API helpers.
@@ -71,15 +70,6 @@ export async function handleDiditWebhook(
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
   }
-  if (metadata?.merchantId) {
-    await upsertMerchantClientMapping({
-      merchantId: metadata.merchantId,
-      userId: user.id,
-      diditSubject,
-      externalId: metadata.externalId,
-      email: metadata.email,
-    });
-  }
   await p.kycVerification.upsert({
     where: { externalSessionId: sessionId },
     create: { externalSessionId: sessionId, provider: "didit", status, userId: user.id },
@@ -90,7 +80,6 @@ export async function handleDiditWebhook(
     await upsertMerchantClientMapping({
       merchantId,
       userId: user.id,
-      diditSubject,
       externalId,
       email,
     });
@@ -209,8 +198,13 @@ async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sess
 
   const body: any = {
     workflow_id: workflowId,
-    vendor_data: buildVendorData(input),
-    callback: process.env.DIDIT_CALLBACK_URL || buildCallbackUrl(input),
+    vendor_data: buildVendorData({
+      merchantId: input.merchantId || "",
+      subject: input.subject,
+      externalId: input.externalId,
+      email: input.email,
+    }),
+    callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
   };
 
   const url = `${base}/v2/session/`;
@@ -265,19 +259,19 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 // ───────────────────────────────────────────────────────────────
 // Real Didit Low-Code API helpers (legacy v1 via OAuth/Bearer)
 // ───────────────────────────────────────────────────────────────
-type CreateLinkInput = { subject: string; merchantId?: string | null };
+type CreateLinkInput = { subject: string; merchantId?: string | null; externalId?: string | null; email?: string | null };
 type CreateLinkOutput = { url: string; sessionId: string };
 
-function buildVendorData(input: CreateLinkInput) {
-  return input.merchantId ? `${input.merchantId}|${input.subject}` : input.subject;
+type DiditMeta = { subject: string; merchantId: string; externalId?: string | null; email?: string | null };
+
+function buildVendorData(meta: DiditMeta) {
+  return `${meta.merchantId}|${meta.subject}`;
 }
 
-function buildCallbackUrl(input: CreateLinkInput) {
-  const base = (process.env.BASE_URL || "http://localhost:4000").replace(/\/+$/, "");
-  const qp = new URLSearchParams();
-  qp.set("diditSubject", input.subject);
-  if (input.merchantId) qp.set("merchantId", input.merchantId);
-  return `${base}/webhooks/didit?${qp.toString()}`;
+function buildCallbackUrl(meta: DiditMeta) {
+  const base = process.env.DIDIT_CALLBACK_URL || `${process.env.PUBLIC_URL || "http://localhost:4000"}/webhooks/didit`;
+  const qp = new URLSearchParams({ merchantId: meta.merchantId, diditSubject: meta.subject });
+  return `${base}?${qp.toString()}`;
 }
 
 /**
@@ -302,12 +296,12 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
 
   const body = {
     subject: input.subject,
-    vendor_data: buildVendorData(input.subject, input.merchantId),
-    callback: buildCallbackUrl(input.subject, input.merchantId),
+    vendor_data: buildVendorData({ merchantId: input.merchantId || "", subject: input.subject }),
+    callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
     appId,
     workflowId,
-    vendor_data: buildVendorData(input),
-    callback: process.env.DIDIT_CALLBACK_URL || buildCallbackUrl(input),
+    vendor_data: buildVendorData({ merchantId: input.merchantId || "", subject: input.subject }),
+    callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
     redirectUrl:
       process.env.DIDIT_REDIRECT_URL ||
       `${process.env.BASE_URL || "http://localhost:4000"}/public/kyc/done`,

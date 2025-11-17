@@ -1,5 +1,6 @@
 import { upsertMerchantClientMapping } from "./merchantClient.js";
 import { generateUserId } from "./reference.js";
+import { upsertMerchantClientMapping } from "./merchantClient.js";
 
 // apps/server/src/services/didit.ts
 // Placeholder integration for Didit + real Low-Code API helpers.
@@ -69,6 +70,15 @@ export async function handleDiditWebhook(
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
+  }
+  if (metadata?.merchantId) {
+    await upsertMerchantClientMapping({
+      merchantId: metadata.merchantId,
+      userId: user.id,
+      diditSubject,
+      externalId: metadata.externalId,
+      email: metadata.email,
+    });
   }
   await p.kycVerification.upsert({
     where: { externalSessionId: sessionId },
@@ -292,6 +302,8 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
 
   const body = {
     subject: input.subject,
+    vendor_data: buildVendorData(input.subject, input.merchantId),
+    callback: buildCallbackUrl(input.subject, input.merchantId),
     appId,
     workflowId,
     vendor_data: buildVendorData(input),

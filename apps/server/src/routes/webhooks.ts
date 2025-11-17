@@ -29,6 +29,15 @@ function parseVendorData(raw: unknown): { merchantId: string; diditSubject: stri
 //   - app.use("/webhooks", diditWebhookRouter) -> POST /didit
 const PATHS = ["/webhooks/didit", "/didit"];
 
+function parseVendorData(raw: string) {
+  const parts = String(raw || "").split("|");
+  if (parts.length >= 2) {
+    const [merchantId, ...rest] = parts;
+    return { merchantId: merchantId || "", diditSubject: rest.join("|") || "" };
+  }
+  return { merchantId: "", diditSubject: String(raw || "") };
+}
+
 /**
  * POST handler (server → server webhook), supports:
  *  - Legacy body: { sessionId, diditSubject, status: "approved"|"rejected" }

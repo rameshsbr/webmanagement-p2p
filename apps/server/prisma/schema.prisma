@@ -12,33 +12,33 @@ datasource db {
  * ───────── EXISTING MODELS (kept as-is, only added safe relations) ─────────
  */
 model Merchant {
-  id           String                @id @default(cuid())
-  name         String
-  webhookUrl   String?
-  balanceCents Int                   @default(0)
-  status       String                @default("active")
-  apiKeys      MerchantApiKey[]
-  bankAccounts BankAccount[]
-  paymentReqs  PaymentRequest[]
-  ledger       LedgerEntry[]
-  accountEntries MerchantAccountEntry[]
+  id               String                    @id @default(cuid())
+  name             String
+  webhookUrl       String?
+  balanceCents     Int                       @default(0)
+  status           String                    @default("active")
+  apiKeys          MerchantApiKey[]
+  bankAccounts     BankAccount[]
+  paymentReqs      PaymentRequest[]
+  ledger           LedgerEntry[]
+  accountEntries   MerchantAccountEntry[]
   apiKeyRevealLogs MerchantApiKeyRevealLog[]
-  createdAt    DateTime              @default(now())
-  updatedAt    DateTime              @updatedAt
-  channels     NotificationChannel[]
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  channels         NotificationChannel[]
 
-  email           String? // NEW: optional
-  defaultCurrency String  @default("USD") // NEW: required with default
-  active          Boolean @default(true)
-  userDirectoryEnabled Boolean @default(false)
+  email                     String? // NEW: optional
+  defaultCurrency           String  @default("USD") // NEW: required with default
+  active                    Boolean @default(true)
+  userDirectoryEnabled      Boolean @default(false)
   /// When false, Merchant Portal cannot create/rotate API keys.
   apiKeysSelfServiceEnabled Boolean @default(true)
 
   // new relations for super-admin features
-  users     MerchantUser[]
-  limits    MerchantLimits?
-  blocklist PayerBlocklist[]
-  clientMappings MerchantClientMapping[]
+  users           MerchantUser[]
+  limits          MerchantLimits?
+  blocklist       PayerBlocklist[]
+  clientDirectory MerchantClientMapping[]
 
   // NEW: per-merchant checkout/SDK form configuration
   // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
@@ -60,7 +60,7 @@ model MerchantApiKey {
   scopes    String[] @default([])
   active    Boolean  @default(true)
 
-  createdAt  DateTime  @default(now())
+  createdAt  DateTime                  @default(now())
   lastUsedAt DateTime?
   expiresAt  DateTime?
   revealLogs MerchantApiKeyRevealLog[]
@@ -82,7 +82,7 @@ model User {
 
   // NEW: back-reference for PayerBlocklist.user
   blocklistEntries PayerBlocklist[]
-  merchantClients MerchantClientMapping[]
+  merchantClients  MerchantClientMapping[]
 }
 
 model KycVerification {
@@ -101,7 +101,7 @@ model BankAccount {
   merchantId String?
   merchant   Merchant? @relation(fields: [merchantId], references: [id], onDelete: SetNull)
 
-  publicId   String    @unique @db.VarChar(32) @default(dbgenerated("'B' || lpad(nextval('bank_public_id_seq')::text, 4, '0')"))
+  publicId     String  @unique @default(dbgenerated("'B' || lpad(nextval('bank_public_id_seq')::text, 4, '0')")) @db.VarChar(32)
   currency     String
   holderName   String
   bankName     String
@@ -141,7 +141,7 @@ model ReceiptFile {
   paymentId String?
   paymentV2 PaymentRequest? @relation("PaymentReceipts", fields: [paymentId], references: [id], onDelete: Cascade)
 
-  accountEntry   MerchantAccountEntry? @relation("AccountEntryReceipt")
+  accountEntry MerchantAccountEntry? @relation("AccountEntryReceipt")
 
   @@index([paymentId, createdAt])
 }
@@ -184,13 +184,13 @@ enum NotificationDirection {
 }
 
 model PaymentRequest {
-  id            String        @id @default(cuid())
-  type          PaymentType
-  status        PaymentStatus @default(PENDING)
-  amountCents   Int
-  currency      String
-  referenceCode String        @unique
-  uniqueReference String     @unique
+  id              String        @id @default(cuid())
+  type            PaymentType
+  status          PaymentStatus @default(PENDING)
+  amountCents     Int
+  currency        String
+  referenceCode   String        @unique
+  uniqueReference String        @unique
 
   processedByAdminId String?
   processedByAdmin   AdminUser? @relation("PaymentProcessedBy", fields: [processedByAdminId], references: [id], onDelete: SetNull)
@@ -249,18 +249,18 @@ enum MerchantAccountEntryType {
 }
 
 model MerchantAccountEntry {
-  id             String                    @id @default(cuid())
-  merchantId     String
-  merchant       Merchant                  @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  type           MerchantAccountEntryType
-  method         String?
-  amountCents    Int
-  note           String?
-  receiptFileId  String?                 @unique
-  receiptFile    ReceiptFile?              @relation("AccountEntryReceipt", fields: [receiptFileId], references: [id], onDelete: SetNull)
-  createdById    String?
-  createdBy      AdminUser?                @relation("AccountEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
-  createdAt      DateTime                  @default(now())
+  id            String                   @id @default(cuid())
+  merchantId    String
+  merchant      Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  type          MerchantAccountEntryType
+  method        String?
+  amountCents   Int
+  note          String?
+  receiptFileId String?                  @unique
+  receiptFile   ReceiptFile?             @relation("AccountEntryReceipt", fields: [receiptFileId], references: [id], onDelete: SetNull)
+  createdById   String?
+  createdBy     AdminUser?               @relation("AccountEntryCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdAt     DateTime                 @default(now())
 
   @@index([merchantId, type, createdAt])
   @@index([createdAt])
@@ -277,28 +277,28 @@ enum AdminRole {
 }
 
 model AdminUser {
-  id               String    @id @default(cuid())
-  email            String    @unique
-  passwordHash     String
-  role             String    @default("admin") // "SUPER" or "ADMIN" (string for now)
-  active           Boolean   @default(true)
-  displayName      String?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @default(now()) @updatedAt // ← add default so backfill works
-  twoFactorEnabled Boolean   @default(false)
-  totpSecret       String?
-  superTwoFactorEnabled Boolean @default(false)
-  superTotpSecret       String?
-  timezone         String?
-  lastLoginAt      DateTime?
-  canViewUserDirectory Boolean @default(true)
-  canRevealMerchantApiKeys Boolean @default(false)
+  id                       String    @id @default(cuid())
+  email                    String    @unique
+  passwordHash             String
+  role                     String    @default("admin") // "SUPER" or "ADMIN" (string for now)
+  active                   Boolean   @default(true)
+  displayName              String?
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @default(now()) @updatedAt // ← add default so backfill works
+  twoFactorEnabled         Boolean   @default(false)
+  totpSecret               String?
+  superTwoFactorEnabled    Boolean   @default(false)
+  superTotpSecret          String?
+  timezone                 String?
+  lastLoginAt              DateTime?
+  canViewUserDirectory     Boolean   @default(true)
+  canRevealMerchantApiKeys Boolean   @default(false)
 
-  auditLogs   AdminAuditLog[]
-  loginLogs   AdminLoginLog[]
-  resetTokens AdminPasswordReset[]
-  processedPayments PaymentRequest[] @relation("PaymentProcessedBy")
-  accountEntries    MerchantAccountEntry[] @relation("AccountEntryCreatedBy")
+  auditLogs         AdminAuditLog[]
+  loginLogs         AdminLoginLog[]
+  resetTokens       AdminPasswordReset[]
+  processedPayments PaymentRequest[]          @relation("PaymentProcessedBy")
+  accountEntries    MerchantAccountEntry[]    @relation("AccountEntryCreatedBy")
   apiKeyRevealLogs  MerchantApiKeyRevealLog[]
 }
 
@@ -338,24 +338,24 @@ enum MerchantRole {
 }
 
 model MerchantUser {
-  id               String       @id @default(cuid())
-  merchantId       String
-  merchant         Merchant     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  email            String       @unique
-  passwordHash     String
-  role             MerchantRole @default(MANAGER)
-  active           Boolean      @default(true)
-  twoFactorEnabled Boolean      @default(false)
-  totpSecret       String?
-  timezone         String?
-  createdAt        DateTime     @default(now())
-  updatedAt        DateTime     @updatedAt
-  lastLoginAt      DateTime?
-  canViewUserDirectory Boolean @default(true)
-  canRevealApiKeys     Boolean @default(false)
+  id                   String       @id @default(cuid())
+  merchantId           String
+  merchant             Merchant     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  email                String       @unique
+  passwordHash         String
+  role                 MerchantRole @default(MANAGER)
+  active               Boolean      @default(true)
+  twoFactorEnabled     Boolean      @default(false)
+  totpSecret           String?
+  timezone             String?
+  createdAt            DateTime     @default(now())
+  updatedAt            DateTime     @updatedAt
+  lastLoginAt          DateTime?
+  canViewUserDirectory Boolean      @default(true)
+  canRevealApiKeys     Boolean      @default(false)
 
-  loginLogs   MerchantLoginLog[]
-  resetTokens MerchantPasswordReset[]
+  loginLogs        MerchantLoginLog[]
+  resetTokens      MerchantPasswordReset[]
   apiKeyRevealLogs MerchantApiKeyRevealLog[]
 
   @@index([merchantId])
@@ -407,8 +407,6 @@ model MerchantClientMapping {
 
   @@unique([merchantId, externalId])
   @@index([userId])
-
-  @@map("MerchantClient")
 }
 
 model MerchantLimits {

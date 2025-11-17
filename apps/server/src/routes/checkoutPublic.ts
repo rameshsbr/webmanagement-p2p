@@ -8,7 +8,6 @@ import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
-import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
 import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
@@ -364,24 +363,6 @@ async function loadMerchantBank(merchantId: string, bankAccountId: string) {
   });
 }
 
-async function upsertMerchantClientMapping(params: {
-  merchantId: string;
-  externalId?: string | null;
-  userId: string;
-  diditSubject: string;
-  email?: string | null;
-}) {
-  const { merchantId, externalId, userId, diditSubject, email } = params;
-  if (!externalId) return;
-  await prisma.merchantClient
-    .upsert({
-      where: { diditSubject },
-      create: { merchantId, externalId, userId, diditSubject, email: email || null },
-      update: { merchantId, externalId, userId, email: email || null },
-    })
-    .catch(() => {});
-}
-
 // ───────────────────────────────────────────────
 // 1) Server-to-server: create a checkout session (API key)
 // ───────────────────────────────────────────────
@@ -528,7 +509,6 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     merchantId,
     externalId: req.checkout.externalId,
     userId: user.id,
-    diditSubject,
     email: req.checkout.email,
   });
   if (!user.verifiedAt) {
@@ -766,7 +746,6 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     merchantId,
     externalId: req.checkout.externalId,
     userId: user.id,
-    diditSubject,
     email: req.checkout.email,
   });
 
@@ -859,7 +838,7 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
-  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, diditSubject, email });
+  await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, email });
 
   let url: string | null = null;
   try {
@@ -881,7 +860,7 @@ checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits
   const { diditSubject, merchantId, externalId, email } = req.checkout;
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (user) {
-    await upsertMerchantClientMapping({ merchantId, userId: user.id, diditSubject, externalId, email });
+    await upsertMerchantClientMapping({ merchantId, userId: user.id, externalId, email });
   }
   if (!user) return res.json({ ok: true, status: "pending" });
 

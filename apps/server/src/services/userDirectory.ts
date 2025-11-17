@@ -125,8 +125,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   }
 
   const [total, clients] = await Promise.all([
-    prisma.merchantClient.count({ where }),
-    prisma.merchantClient.findMany({
+    prisma.merchantClientMapping.count({ where }),
+    prisma.merchantClientMapping.findMany({
       where,
       include: {
         merchant: { select: { id: true, name: true } },

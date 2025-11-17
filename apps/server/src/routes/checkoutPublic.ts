@@ -8,6 +8,7 @@ import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
+import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
 import { upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";

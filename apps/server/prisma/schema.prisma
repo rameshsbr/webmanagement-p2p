@@ -38,7 +38,7 @@ model Merchant {
   users     MerchantUser[]
   limits    MerchantLimits?
   blocklist PayerBlocklist[]
-  clientMappings MerchantClient[]
+  clientMappings MerchantClientMapping[]
 
   // NEW: per-merchant checkout/SDK form configuration
   // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
@@ -82,7 +82,7 @@ model User {
 
   // NEW: back-reference for PayerBlocklist.user
   blocklistEntries PayerBlocklist[]
-  merchantClients MerchantClient[]
+  merchantClients MerchantClientMapping[]
 }
 
 model KycVerification {
@@ -393,7 +393,7 @@ model MerchantLoginLog {
   @@index([email])
 }
 
-model MerchantClient {
+model MerchantClientMapping {
   id           String   @id @default(cuid())
   merchantId   String
   merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
@@ -407,6 +407,8 @@ model MerchantClient {
 
   @@unique([merchantId, externalId])
   @@index([userId])
+
+  @@map("MerchantClient")
 }
 
 model MerchantLimits {

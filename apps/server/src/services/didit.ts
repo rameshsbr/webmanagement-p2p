@@ -1,3 +1,4 @@
+import { upsertMerchantClientMapping } from "./merchantClient.js";
 import { generateUserId } from "./reference.js";
 import { upsertMerchantClientMapping } from "./merchantClient.js";
 
@@ -57,7 +58,9 @@ export async function handleDiditWebhook(
   sessionId: string,
   diditSubject: string,
   status: "approved" | "rejected",
-  metadata?: { merchantId?: string | null; externalId?: string | null; email?: string | null }
+  merchantId?: string | null,
+  externalId?: string | null,
+  email?: string | null
 ) {
   const p = await prisma();
   let user = await p.user.findUnique({ where: { diditSubject } });
@@ -82,6 +85,16 @@ export async function handleDiditWebhook(
     create: { externalSessionId: sessionId, provider: "didit", status, userId: user.id },
     update: { status, userId: user.id },
   });
+
+  if (merchantId) {
+    await upsertMerchantClientMapping({
+      merchantId,
+      userId: user.id,
+      diditSubject,
+      externalId,
+      email,
+    });
+  }
   return user;
 }
 

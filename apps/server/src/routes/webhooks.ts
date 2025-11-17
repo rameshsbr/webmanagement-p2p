@@ -60,7 +60,7 @@ for (const path of PATHS) {
 
       let sessionId = "";
       let diditSubject = "";
-      let merchantId = "";
+      let merchantId: string | null = null;
       let statusNorm: "approved" | "rejected" | "pending" = "pending";
 
       const body = req.body ?? {};
@@ -74,7 +74,7 @@ for (const path of PATHS) {
         sessionId = vb.session_id;
         const vendor = parseVendorData(vb.vendor_data);
         diditSubject = vendor.diditSubject || "";
-        merchantId = vendor.merchantId || "";
+        merchantId = vendor.merchantId || null;
         const s = vb.status.toLowerCase();
         statusNorm = s.includes("approve")
           ? "approved"
@@ -101,9 +101,12 @@ for (const path of PATHS) {
         return res.status(400).json({ ok: false, error: "missing_diditSubject" });
       }
 
-      const user = await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected", {
-        merchantId: merchantId || undefined,
-      });
+      const user = await handleDiditWebhook(
+        sessionId,
+        diditSubject,
+        statusNorm as "approved" | "rejected",
+        merchantId
+      );
       return res.json({ ok: true, userId: user.id, verifiedAt: user.verifiedAt });
     } catch (err: any) {
       console.error("Didit webhook POST error:", err?.message || err);
@@ -129,7 +132,7 @@ for (const path of PATHS) {
         (q.vendor_data as string) || (q.diditSubject as string) || (q.subject as string) || ""
       );
       let diditSubject = vendor.diditSubject;
-      const merchantId = vendor.merchantId;
+      const merchantId = vendor.merchantId || null;
 
       const statusRaw = String(q.status || "").toLowerCase();
       const statusNorm: "approved" | "rejected" | "pending" =
@@ -164,9 +167,7 @@ for (const path of PATHS) {
       }
       if (!diditSubject) return res.status(400).send("Missing vendor_data/diditSubject.");
 
-      await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected", {
-        merchantId: merchantId || undefined,
-      });
+      await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected", merchantId);
 
       // Build bounce URL with optional merchant return
       const ret = process.env.CHECKOUT_RETURN_URL || ""; // e.g. https://merchant.example/checkout

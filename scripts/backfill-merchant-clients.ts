@@ -1,37 +1,36 @@
 import { prisma } from "../apps/server/src/lib/prisma.js";
 
 async function main() {
-  const reqs = await prisma.paymentRequest.findMany({
+  const payments = await prisma.paymentRequest.findMany({
     select: {
       merchantId: true,
       userId: true,
-      user: { select: { diditSubject: true, email: true } },
+      user: { select: { diditSubject: true } },
     },
     where: { userId: { not: null } },
   });
 
   const seen = new Set<string>();
-  for (const pr of reqs) {
-    const key = `${pr.merchantId}:${pr.userId}`;
+  for (const row of payments) {
+    if (!row.userId || !row.merchantId) continue;
+    const key = `${row.merchantId}:${row.userId}`;
     if (seen.has(key)) continue;
     seen.add(key);
 
-    const diditSubject = pr.user?.diditSubject;
+    const diditSubject = row.user?.diditSubject;
     if (!diditSubject) continue;
 
     await prisma.merchantClient.upsert({
       where: { diditSubject },
       create: {
-        merchantId: pr.merchantId,
+        merchantId: row.merchantId,
         externalId: diditSubject,
-        userId: pr.userId,
+        userId: row.userId,
         diditSubject,
-        email: pr.user?.email || null,
       },
       update: {
-        merchantId: pr.merchantId,
-        userId: pr.userId,
-        email: pr.user?.email || null,
+        merchantId: row.merchantId,
+        userId: row.userId,
       },
     });
   }
@@ -39,4 +38,11 @@ async function main() {
   console.log("Backfill complete");
 }
 
-main().finally(() => prisma.$disconnect());
+main()
+  .catch((err) => {
+    console.error(err);
+    process.exitCode = 1;
+  })
+  .finally(async () => {
+    await prisma.$disconnect();
+  });

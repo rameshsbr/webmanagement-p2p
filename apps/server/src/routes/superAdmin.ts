@@ -73,7 +73,7 @@ superAdminRouter.use(async (req: any, res: any, next) => {
     : session || null;
 
   const role = String(adminRecord?.role || session?.role || "").toUpperCase();
-  const adminIsSuper = role === "SUPER";
+  const adminIsSuper = role === "SUPER" || role === "SUPERADMIN";
   res.locals.adminCanRevealMerchantKeys = adminIsSuper || !!adminRecord?.canRevealMerchantApiKeys;
   res.locals.adminRequiresTotp = !!adminRecord?.superTwoFactorEnabled;
 

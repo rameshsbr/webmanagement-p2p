@@ -283,7 +283,7 @@ export async function revealApiKey(params: RevealParams): Promise<RevealResult> 
     }
 
     const adminRole = String(admin.role || "").toUpperCase();
-    const adminIsSuper = adminRole === "SUPER";
+    const adminIsSuper = adminRole === "SUPER" || adminRole === "SUPERADMIN";
 
     if (!adminIsSuper && !admin.canRevealMerchantApiKeys) {
       throw new ApiKeyRevealError("forbidden", 403, "You do not have permission to reveal merchant API keys.");

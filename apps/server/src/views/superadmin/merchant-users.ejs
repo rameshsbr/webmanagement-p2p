@@ -1,10 +1,10 @@
 <% layout('superadmin/layout') -%>
 
 <div class="row between" style="margin-bottom:12px">
-  <div class="title">Merchant Clients – <%= merchant.name %></div>
+  <div class="title"></div>
   <div class="row" style="gap:8px">
     <a class="btn" href="/superadmin/merchants/<%= merchant.id %>/edit">Back to Merchant</a>
-    <a class="btn primary" href="/superadmin/merchants/<%= merchant.id %>/users/new">New client</a>
+    <a class="btn primary" href="/superadmin/merchants/<%= merchant.id %>/users/new">New User</a>
   </div>
 </div>
 
@@ -20,7 +20,7 @@
 
 <% if (credsBlock) { %>
   <div class="card tone-success" style="margin-bottom:12px">
-    <div class="title">Client created</div>
+    <div class="title">User created</div>
     <p>Temporary credentials (shown once):</p>
     <div class="row" style="gap:8px; align-items:center;">
       <input readonly value="<%= credsBlock.email %>" style="max-width:300px"/>
@@ -73,14 +73,14 @@
             <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/force-reset" style="display:inline">
               <button class="btn small" type="submit">Force reset</button>
             </form>
-            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this client?')">
+            <form method="post" action="/superadmin/merchants/<%= merchant.id %>/users/<%= u.id %>/delete" style="display:inline" onsubmit="return confirm('Delete this user?')">
               <button class="btn small" type="submit">Delete</button>
             </form>
           </td>
         </tr>
       <% }) %>
       <% if (!users || users.length === 0) { %>
-        <tr><td colspan="6" style="opacity:.7">No clients yet.</td></tr>
+        <tr><td colspan="6" style="opacity:.7">No users yet.</td></tr>
       <% } %>
     </tbody>
   </table>

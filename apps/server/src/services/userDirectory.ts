@@ -12,7 +12,6 @@ export type UserDirectoryItem = {
   id: string;
   externalId: string | null;
   publicId: string;
-  externalId: string | null;
   email: string | null;
   phone: string | null;
   diditSubject: string;
@@ -98,10 +97,10 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       OR: [
         { externalId: { contains: search, mode: "insensitive" } },
         { email: { contains: search, mode: "insensitive" } },
-        { diditSubject: { contains: search, mode: "insensitive" } },
         {
           user: {
             OR: [
+              { diditSubject: { contains: search, mode: "insensitive" } },
               { publicId: { contains: search, mode: "insensitive" } },
               { email: { contains: search, mode: "insensitive" } },
               { phone: { contains: search, mode: "insensitive" } },
@@ -125,8 +124,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   }
 
   const [total, clients] = await Promise.all([
-    prisma.merchantClientMapping.count({ where }),
-    prisma.merchantClientMapping.findMany({
+    prisma.merchantClient.count({ where }),
+    prisma.merchantClient.findMany({
       where,
       include: {
         merchant: { select: { id: true, name: true } },
@@ -203,13 +202,13 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       externalId: client.externalId,
       email: client.email ?? client.user.email ?? null,
       phone: client.user.phone ?? null,
-      diditSubject: client.diditSubject,
+      diditSubject: client.user.diditSubject,
       fullName,
       registeredAt: client.user.createdAt,
       verifiedAt: client.user.verifiedAt,
       verificationStatus,
       merchants,
-      lastActivityAt: latestPayment?.createdAt ?? mapping.updatedAt ?? null,
+      lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
       diditProfile: profile,
     };
   });

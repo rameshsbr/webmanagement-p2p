@@ -2,7 +2,7 @@
 
   <div class="card">
     <div class="title">
-      <%= user ? "Edit Merchant Client" : "New Merchant Client" %>
+      <%= user ? "Edit Merchant User" : "New Merchant User" %>
     </div>
 
     <form method="post" action="<%= user
@@ -58,7 +58,7 @@
 
       <label class="chk" style="margin-top:6px">
         <input type="checkbox" name="canViewUsers" <%= (user ? user.canViewUserDirectory !== false : true) ? 'checked' : '' %> />
-        May view Clients directory
+        May view Users directory
       </label>
 
       <label class="chk" style="margin-top:6px">

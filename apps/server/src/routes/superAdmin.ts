@@ -1197,7 +1197,7 @@ superAdminRouter.get("/users", async (req, res) => {
     : { total: 0, page: 1, perPage: 25, pages: 1, items: [] };
 
   res.render("superadmin/users", {
-    title: "Users",
+    title: "Clients",
     table,
     query,
     merchants,
@@ -1212,7 +1212,7 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
   const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
   const items = await collectUsersForSuperAdmin(merchants, query.q || null);
   res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", 'attachment; filename="users.csv"');
+  res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
     columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","merchants"],
@@ -1239,7 +1239,7 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
   const merchants = merchantIds.length ? merchantIds : (await prisma.merchant.findMany({ select: { id: true } })).map((m) => m.id);
   const items = await collectUsersForSuperAdmin(merchants, query.q || null);
   const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet("Users");
+  const ws = wb.addWorksheet("Clients");
   ws.columns = [
     { header: "User ID", key: "userId", width: 16 },
     { header: "Full name", key: "fullName", width: 24 },
@@ -1263,7 +1263,7 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
-  res.setHeader("Content-Disposition",'attachment; filename="users.xlsx"');
+  res.setHeader("Content-Disposition",'attachment; filename="clients.xlsx"');
   await wb.xlsx.write(res);
   res.end();
 });
@@ -1808,7 +1808,7 @@ superAdminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────
-// Merchant Users (CRUD, 2FA reset, password reset)
+// Merchant Clients (CRUD, 2FA reset, password reset)
 // ───────────────────────────────────────────────────────────────
 const MERCHANT_ROLES = new Set(["OWNER", "MANAGER", "ANALYST"]);
 
@@ -1848,7 +1848,7 @@ superAdminRouter.get("/merchants/:id/users", async (req, res) => {
   }
 
   res.render("superadmin/merchant-users", {
-    title: `Merchant Users – ${merchant.name}`,
+    title: `Merchant Clients – ${merchant.name}`,
     merchant,
     users,
     newCreds,
@@ -1864,7 +1864,7 @@ superAdminRouter.get("/merchants/:id/users/new", async (req, res) => {
   });
   if (!merchant) return res.status(404).send("Not found");
   res.render("superadmin/merchant-user-edit", {
-    title: "New Merchant User",
+    title: "New Merchant Client",
     merchant,
     user: null,
   });

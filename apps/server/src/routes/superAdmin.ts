@@ -55,6 +55,7 @@ superAdminRouter.use(async (req: any, res: any, next) => {
           email: true,
           displayName: true,
           timezone: true,
+          role: true,
           canRevealMerchantApiKeys: true,
           superTwoFactorEnabled: true,
         },
@@ -71,7 +72,9 @@ superAdminRouter.use(async (req: any, res: any, next) => {
     ? { ...session, ...adminRecord }
     : session || null;
 
-  res.locals.adminCanRevealMerchantKeys = !!adminRecord?.canRevealMerchantApiKeys;
+  const role = String(adminRecord?.role || session?.role || "").toUpperCase();
+  const adminIsSuper = role === "SUPER" || role === "SUPERADMIN" || role === "OWNER";
+  res.locals.adminCanRevealMerchantKeys = adminIsSuper || !!adminRecord?.canRevealMerchantApiKeys;
   res.locals.adminRequiresTotp = !!adminRecord?.superTwoFactorEnabled;
 
   if (session) {
@@ -1808,7 +1811,7 @@ superAdminRouter.post(
 );
 
 // ───────────────────────────────────────────────────────────────
-// Merchant Clients (CRUD, 2FA reset, password reset)
+// Merchant Users (CRUD, 2FA reset, password reset)
 // ───────────────────────────────────────────────────────────────
 const MERCHANT_ROLES = new Set(["OWNER", "MANAGER", "ANALYST"]);
 
@@ -1848,7 +1851,7 @@ superAdminRouter.get("/merchants/:id/users", async (req, res) => {
   }
 
   res.render("superadmin/merchant-users", {
-    title: `Merchant Clients – ${merchant.name}`,
+    title: `Merchant Users – ${merchant.name}`,
     merchant,
     users,
     newCreds,
@@ -1864,7 +1867,7 @@ superAdminRouter.get("/merchants/:id/users/new", async (req, res) => {
   });
   if (!merchant) return res.status(404).send("Not found");
   res.render("superadmin/merchant-user-edit", {
-    title: "New Merchant Client",
+    title: "New Merchant User",
     merchant,
     user: null,
   });

@@ -270,6 +270,7 @@ export async function revealApiKey(params: RevealParams): Promise<RevealResult> 
       where: { id: params.adminId },
       select: {
         id: true,
+        role: true,
         passwordHash: true,
         superTwoFactorEnabled: true,
         superTotpSecret: true,
@@ -277,7 +278,14 @@ export async function revealApiKey(params: RevealParams): Promise<RevealResult> 
       },
     });
 
-    if (!admin?.canRevealMerchantApiKeys) {
+    if (!admin) {
+      throw new ApiKeyRevealError("forbidden", 403, "You do not have permission to reveal merchant API keys.");
+    }
+
+    const adminRole = String(admin.role || "").toUpperCase();
+    const adminIsSuper = adminRole === "SUPER";
+
+    if (!adminIsSuper && !admin.canRevealMerchantApiKeys) {
       throw new ApiKeyRevealError("forbidden", 403, "You do not have permission to reveal merchant API keys.");
     }
 

@@ -1,5 +1,6 @@
 (function () {
   const controllers = new WeakMap();
+  const BOUND_ATTR = "data-reveal-bound";
 
   function toast(message, variant) {
     if (typeof window.toast === 'function') {
@@ -7,7 +8,6 @@
     } else if (message) {
       console.log('[toast]', message);
     }
-  }
 
   function getModal(scope) {
     if (scope) {
@@ -320,15 +320,51 @@
     return controller;
   }
 
-  document.addEventListener('click', (event) => {
-    const target = event.target instanceof Element ? event.target.closest('[data-api-key-reveal-trigger]') : null;
-    if (!target) return;
-    const scope = target.getAttribute('data-reveal-scope') || target.getAttribute('data-scope') || '';
-    const modal = getModal(scope);
-    if (!modal) return;
-    const controller = getController(modal);
-    if (!controller) return;
-    event.preventDefault();
-    controller.handleTrigger(target);
-  });
+  function bindTrigger(trigger) {
+    if (!(trigger instanceof Element)) return;
+    if (trigger.hasAttribute(BOUND_ATTR)) return;
+    trigger.setAttribute(BOUND_ATTR, "1");
+    const handler = (event) => {
+      const scope = trigger.getAttribute("data-reveal-scope") || trigger.getAttribute("data-scope") || "";
+      const modal = getModal(scope);
+      if (!modal) return;
+      const controller = getController(modal);
+      if (!controller) return;
+      if (event) event.preventDefault();
+      controller.handleTrigger(trigger);
+    };
+    trigger.addEventListener("click", handler, { capture: true });
+  }
+
+  function scanTriggers(root = document) {
+    if (!root) return;
+    const list = root.querySelectorAll
+      ? root.querySelectorAll("[data-api-key-reveal-trigger]")
+      : [];
+    list.forEach((trigger) => bindTrigger(trigger));
+    if (root instanceof Element && root.matches("[data-api-key-reveal-trigger]")) {
+      bindTrigger(root);
+    }
+  }
+
+  function init() {
+    if (!document.querySelector("[data-api-key-reveal-modal]")) return;
+    scanTriggers();
+    if (!("MutationObserver" in window) || !document.body) return;
+    const observer = new MutationObserver((mutations) => {
+      for (const mutation of mutations) {
+        for (const node of mutation.addedNodes) {
+          if (!(node instanceof Element)) continue;
+          scanTriggers(node);
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
 })();

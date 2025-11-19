@@ -8,7 +8,6 @@
     } else if (message) {
       console.log('[toast]', message);
     }
-  }
 
   function getModal(scope) {
     if (scope) {

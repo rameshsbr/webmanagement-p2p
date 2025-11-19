@@ -4,13 +4,13 @@
 <% const policyEnabled = typeof revealPolicyEnabled === 'undefined' ? true : !!revealPolicyEnabled; %>
 <% const permissionGranted = typeof revealPermissionGranted === 'undefined' ? false : !!revealPermissionGranted; %>
 <% const allowRevealFlag = typeof revealAllowed === 'undefined' ? (policyEnabled && permissionGranted) : !!revealAllowed; %>
-<% const revealConfig = typeof revealConfig === 'undefined' || !revealConfig ? {} : revealConfig; %>
+<% const revealCfg = typeof revealConfig === 'undefined' || !revealConfig ? {} : revealConfig; %>
 <% const revealStateData = typeof revealState === 'undefined' || !revealState ? {} : revealState; %>
 <% const lastRevealMap = revealStateData.lastRevealed || {}; %>
 <% const requireTotp = !!revealStateData.requireTotp; %>
 <% const requirePassword = !!revealStateData.requirePassword; %>
 <% const stepStorageKey = revealStateData.stepStorage || 'merchant.keyReveal.step'; %>
-<% const autoHideSeconds = Number.isFinite(revealConfig.autoHideSeconds) ? revealConfig.autoHideSeconds : 60; %>
+<% const autoHideSeconds = Number.isFinite(revealCfg.autoHideSeconds) ? revealCfg.autoHideSeconds : 60; %>
 
 <div class="card">
   <div class="title">API Keys</div>
@@ -75,6 +75,7 @@
                 type="button"
                 class="btn small"
                 data-api-key-reveal-trigger
+                data-reveal-scope="merchant"
                 data-endpoint="/merchant/keys/<%= k.id %>/reveal"
                 data-key-id="<%= k.id %>"
                 data-key-prefix="<%= k.prefix %>"

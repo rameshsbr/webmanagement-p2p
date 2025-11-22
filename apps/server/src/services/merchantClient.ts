@@ -55,3 +55,17 @@ export async function getClientStatusBySubject(merchantId: string, diditSubject:
   if (!user?.id) return "ACTIVE";
   return getMerchantClientStatus(merchantId, user.id);
 }
+
+export async function getMerchantClientStatus(merchantId: string, userId: string): Promise<ClientStatus> {
+  const rec = await prisma.merchantClient.findUnique({
+    where: { merchantId_userId: { merchantId, userId } },
+    select: { status: true },
+  });
+  return normalizeClientStatus(rec?.status);
+}
+
+export async function getClientStatusBySubject(merchantId: string, diditSubject: string): Promise<ClientStatus> {
+  const user = await prisma.user.findUnique({ where: { diditSubject }, select: { id: true } });
+  if (!user?.id) return "ACTIVE";
+  return getMerchantClientStatus(merchantId, user.id);
+}

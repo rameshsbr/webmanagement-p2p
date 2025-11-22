@@ -802,11 +802,6 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     return rejectInactiveClient(res, clientStatus, "withdrawal");
   }
 
-  const withdrawalStatus = normalizeClientStatus(mapping?.status);
-  if (withdrawalStatus !== "ACTIVE") {
-    return rejectForClientStatus(res, withdrawalStatus);
-  }
-
   const hasDeposit = await prisma.paymentRequest.findFirst({
     where: { userId: user.id, merchantId, type: "DEPOSIT", status: "APPROVED" },
   });

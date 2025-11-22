@@ -27,7 +27,7 @@ export async function upsertMerchantClientMapping(params: {
   if (externalId) {
     return prisma.merchantClient.upsert({
       where: { merchantId_externalId: { merchantId, externalId } },
-      create: { merchantId, userId, externalId, email: email ?? null },
+      create: { merchantId, userId, externalId, email: email ?? null, status: "ACTIVE" },
       update: { userId, email: email ?? null },
       select: { merchantId: true, userId: true, status: true },
     });
@@ -35,10 +35,25 @@ export async function upsertMerchantClientMapping(params: {
 
   return prisma.merchantClient.upsert({
     where: { merchantId_userId: { merchantId, userId } },
-    create: { merchantId, userId, externalId: null, email: email ?? null },
+    create: { merchantId, userId, externalId: null, email: email ?? null, status: "ACTIVE" },
     update: { email: email ?? null },
     select: { merchantId: true, userId: true, status: true },
   });
+  return { id: mapping?.id || null, status: normalizeClientStatus(mapping?.status) };
+}
+
+export async function getMerchantClientStatus(merchantId: string, userId: string): Promise<ClientStatus> {
+  const rec = await prisma.merchantClient.findUnique({
+    where: { merchantId_userId: { merchantId, userId } },
+    select: { status: true },
+  });
+  return normalizeClientStatus(rec?.status);
+}
+
+export async function getClientStatusBySubject(merchantId: string, diditSubject: string): Promise<ClientStatus> {
+  const user = await prisma.user.findUnique({ where: { diditSubject }, select: { id: true } });
+  if (!user?.id) return "ACTIVE";
+  return getMerchantClientStatus(merchantId, user.id);
 }
 
 export async function getMerchantClientStatus(merchantId: string, userId: string): Promise<ClientStatus> {

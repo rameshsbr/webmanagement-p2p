@@ -76,6 +76,15 @@ const upload = multer({
 const MIN_CENTS = 50 * 100;
 const MAX_CENTS = 5000 * 100;
 
+function rejectForClientStatus(res: any, status: ClientStatus) {
+  const code = status === "BLOCKED" ? "CLIENT_BLOCKED" : "CLIENT_DEACTIVATED";
+  const message =
+    status === "BLOCKED"
+      ? "This account is blocked and cannot perform deposits or withdrawals."
+      : "This account is temporarily deactivated and cannot perform deposits or withdrawals.";
+  return res.status(403).json({ ok: false, error: code, message });
+}
+
 const METHOD = z.enum(["OSKO", "PAYID"]);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function normalizeAuMobile(input: string) {

@@ -19,6 +19,11 @@ const upload = multer({ dest: uploadDir, limits: { fileSize: 10 * 1024 * 1024 } 
 
 export const merchantApiRouter = Router();
 
+function rejectForClientStatus(res: any, status: ClientStatus) {
+  const message = status === 'BLOCKED' ? 'User is blocked' : 'User is deactivated';
+  return res.forbidden ? res.forbidden(message) : res.status(403).json({ ok: false, error: message });
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    API Key auth: Authorization: Bearer <prefix>.<secret>  (or X-API-Key)
    Optional integrity: X-Signature = hex(HMAC-SHA256(rawBody, <secret>))

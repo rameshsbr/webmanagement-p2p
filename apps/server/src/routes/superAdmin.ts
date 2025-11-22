@@ -30,6 +30,7 @@ import {
   listAccountEntries,
   listMerchantBalances,
 } from "../services/merchantAccounts.js";
+import { clientStatusLabel, CLIENT_STATUS_VALUES, normalizeClientStatus } from "../services/merchantClient.js";
 import type { MerchantAccountEntryType } from "@prisma/client";
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
@@ -156,6 +157,20 @@ function normalizeMerchantFilter(raw: unknown): string[] {
     return trimmed ? [trimmed] : [];
   }
   return [];
+}
+
+function resolveSuperReturnTo(raw: unknown, fallback: string) {
+  if (typeof raw === "string" && raw.startsWith("/superadmin")) return raw;
+  return fallback;
+}
+
+function withStatusNotice(target: string, message: string, variant: "success" | "error") {
+  const url = new URL(target, "http://localhost");
+  url.searchParams.delete("statusMessage");
+  url.searchParams.delete("statusVariant");
+  if (message) url.searchParams.set("statusMessage", message);
+  url.searchParams.set("statusVariant", variant);
+  return url.pathname + url.search;
 }
 function sortSpec(s?: string) {
   // allowlist of sortable columns + default
@@ -1187,6 +1202,8 @@ superAdminRouter.post("/merchants/:id/user-directory", async (req, res) => {
 });
 
 superAdminRouter.get("/users", async (req, res) => {
+  const statusMessage = typeof req.query.statusMessage === "string" ? req.query.statusMessage : "";
+  const statusVariant = req.query.statusVariant === "error" ? "error" : req.query.statusVariant === "success" ? "success" : "";
   const query = superUserQuery.parse(req.query);
   const merchants = await prisma.merchant.findMany({
     select: { id: true, name: true, userDirectoryEnabled: true },

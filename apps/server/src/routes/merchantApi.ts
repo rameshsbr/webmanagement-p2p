@@ -11,7 +11,7 @@ import { generateTransactionId, generateUniqueReference, generateUserId } from '
 import { tgNotify } from '../services/telegram.js';
 import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
-import { normalizeClientStatus, upsertMerchantClientMapping } from '../services/merchantClient.js';
+import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus } from '../services/merchantClient.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });

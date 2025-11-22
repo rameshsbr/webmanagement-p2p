@@ -30,12 +30,11 @@ import {
   listAccountEntries,
   listMerchantBalances,
 } from "../services/merchantAccounts.js";
-import { clientStatusLabel, CLIENT_STATUS_VALUES, normalizeClientStatus } from "../services/merchantClient.js";
+import { formatClientStatusLabel, normalizeClientStatus } from "../services/merchantClient.js";
 import type { MerchantAccountEntryType } from "@prisma/client";
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
-import { formatClientStatusLabel, normalizeClientStatus } from "../services/merchantClient.js";
 
 export const superAdminRouter = Router();
 
@@ -1202,8 +1201,6 @@ superAdminRouter.post("/merchants/:id/user-directory", async (req, res) => {
 });
 
 superAdminRouter.get("/users", async (req, res) => {
-  const statusMessage = typeof req.query.statusMessage === "string" ? req.query.statusMessage : "";
-  const statusVariant = req.query.statusVariant === "error" ? "error" : req.query.statusVariant === "success" ? "success" : "";
   const query = superUserQuery.parse(req.query);
   const merchants = await prisma.merchant.findMany({
     select: { id: true, name: true, userDirectoryEnabled: true },

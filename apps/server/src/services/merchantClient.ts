@@ -1,6 +1,12 @@
 import { prisma } from "../lib/prisma.js";
 
 export type ClientStatus = "ACTIVE" | "DEACTIVATED" | "BLOCKED";
+export const CLIENT_STATUS_VALUES: ClientStatus[] = ["ACTIVE", "DEACTIVATED", "BLOCKED"];
+export const clientStatusLabel: Record<ClientStatus, string> = {
+  ACTIVE: "Active",
+  DEACTIVATED: "Deactivated",
+  BLOCKED: "Blocked",
+};
 
 export function normalizeClientStatus(input?: string | null): ClientStatus {
   const normalized = String(input || "ACTIVE").toUpperCase();
@@ -11,9 +17,7 @@ export function normalizeClientStatus(input?: string | null): ClientStatus {
 
 export function formatClientStatusLabel(input?: string | null): string {
   const status = normalizeClientStatus(input);
-  if (status === "DEACTIVATED") return "Deactivated";
-  if (status === "BLOCKED") return "Blocked";
-  return "Active";
+  return clientStatusLabel[status];
 }
 
 export async function upsertMerchantClientMapping(params: {
@@ -39,21 +43,6 @@ export async function upsertMerchantClientMapping(params: {
     update: { email: email ?? null },
     select: { merchantId: true, userId: true, status: true },
   });
-  return { id: mapping?.id || null, status: normalizeClientStatus(mapping?.status) };
-}
-
-export async function getMerchantClientStatus(merchantId: string, userId: string): Promise<ClientStatus> {
-  const rec = await prisma.merchantClient.findUnique({
-    where: { merchantId_userId: { merchantId, userId } },
-    select: { status: true },
-  });
-  return normalizeClientStatus(rec?.status);
-}
-
-export async function getClientStatusBySubject(merchantId: string, diditSubject: string): Promise<ClientStatus> {
-  const user = await prisma.user.findUnique({ where: { diditSubject }, select: { id: true } });
-  if (!user?.id) return "ACTIVE";
-  return getMerchantClientStatus(merchantId, user.id);
 }
 
 export async function getMerchantClientStatus(merchantId: string, userId: string): Promise<ClientStatus> {

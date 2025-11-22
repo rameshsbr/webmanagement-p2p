@@ -24,7 +24,6 @@ export type UserDirectoryItem = {
   verificationStatus: string;
   accountStatus: ClientStatus;
   accountStatusLabel: string;
-  merchantId: string;
   merchantClientId: string | null;
   merchants: Array<{ id: string; name: string }>;
   lastActivityAt: Date | null;
@@ -242,6 +241,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     const key = user?.id ? `${user.id}:${client.merchantId}` : null;
     const counts = (key && totals.get(key)) || { deposits: 0, withdrawals: 0 };
     const clientStatus = normalizeClientStatus((client as any)?.status);
+    const accountStatus = clientStatus;
+    const accountStatusLabel = formatClientStatusLabel(accountStatus);
 
     return {
       id: user?.id ?? client.id,
@@ -258,7 +259,6 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       verificationStatus,
       accountStatus,
       accountStatusLabel,
-      merchantId: client.merchantId,
       merchantClientId: (client as any).id || null,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,

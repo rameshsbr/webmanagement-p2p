@@ -92,7 +92,6 @@ export async function listMerchantBalances() {
       name: true,
       defaultCurrency: true,
       balanceCents: true,
-      defaultCurrency: true,
       updatedAt: true,
       accountEntries: {
         select: { createdAt: true },
@@ -107,7 +106,6 @@ export async function listMerchantBalances() {
     name: m.name,
     currency: m.defaultCurrency,
     balanceCents: m.balanceCents,
-    currency: m.defaultCurrency,
     lastActivityAt: m.accountEntries[0]?.createdAt ?? m.updatedAt,
   }));
 }

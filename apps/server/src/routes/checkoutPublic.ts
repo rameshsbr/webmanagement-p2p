@@ -9,7 +9,14 @@ import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
-import { upsertMerchantClientMapping } from "../services/merchantClient.js";
+import {
+  formatClientStatusLabel,
+  getClientStatusBySubject,
+  getMerchantClientStatus,
+  normalizeClientStatus,
+  upsertMerchantClientMapping,
+  type ClientStatus,
+} from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 
@@ -106,6 +113,15 @@ const payerPayId = z
   });
 
 function nowIso() { return new Date().toISOString(); }
+
+function rejectInactiveClient(res: any, status: ClientStatus, action: "deposit" | "withdrawal") {
+  const error = status === "BLOCKED" ? "CLIENT_BLOCKED" : "CLIENT_DEACTIVATED";
+  const message =
+    status === "BLOCKED"
+      ? "Your account is blocked and cannot perform deposits or withdrawals."
+      : "Your account is temporarily deactivated and cannot perform deposits or withdrawals.";
+  return res.status(403).json({ ok: false, error, message, action, status: formatClientStatusLabel(status) });
+}
 
 // Auth via short-lived checkout token (browser)
 function checkoutAuth(req: any, res: any, next: any) {
@@ -407,6 +423,11 @@ checkoutPublicRouter.post(
       diditSubject = deriveDiditSubject(req.merchantId, externalId);
     }
 
+    const clientStatus = await getClientStatusBySubject(req.merchantId, diditSubject!);
+    if (clientStatus !== "ACTIVE") {
+      return rejectInactiveClient(res, clientStatus, "deposit");
+    }
+
     const token = signCheckoutToken({
       merchantId: req.merchantId,
       diditSubject: diditSubject!,
@@ -414,9 +435,15 @@ checkoutPublicRouter.post(
       email: body.user.email || null,
       currency: body.currency.toUpperCase(),
       availableBalanceCents: body.availableBalanceCents,
+      clientStatus,
     });
 
-    res.json({ ok: true, token, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+    res.json({
+      ok: true,
+      token,
+      clientStatus: formatClientStatusLabel(clientStatus),
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    });
   }
 );
 
@@ -424,7 +451,11 @@ checkoutPublicRouter.post(
 // 2a) Public: list active bank rails for method (merchant + global)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, currency } = req.checkout;
+  const { merchantId, currency, diditSubject } = req.checkout;
+  const clientStatus = await getClientStatusBySubject(merchantId, diditSubject);
+  if (clientStatus !== "ACTIVE") {
+    return rejectInactiveClient(res, clientStatus, "deposit");
+  }
   const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
   const requestedMethod = String(req.query.method || "").trim().toUpperCase();
 
@@ -505,12 +536,16 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
-  await upsertMerchantClientMapping({
+  const mapping = await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
     userId: user.id,
     email: req.checkout.email,
   });
+  const clientStatus = normalizeClientStatus(mapping?.status);
+  if (clientStatus !== "ACTIVE") {
+    return rejectInactiveClient(res, clientStatus, "deposit");
+  }
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
   }
@@ -610,6 +645,11 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
   }
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
+  }
+
+  const clientStatus = await getMerchantClientStatus(merchantId, user.id);
+  if (clientStatus !== "ACTIVE") {
+    return rejectInactiveClient(res, clientStatus, "deposit");
   }
 
   const bank = await loadMerchantBank(merchantId, payload.bankAccountId);
@@ -742,12 +782,16 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
-  await upsertMerchantClientMapping({
+  const mapping = await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
     userId: user.id,
     email: req.checkout.email,
   });
+  const clientStatus = normalizeClientStatus(mapping?.status);
+  if (clientStatus !== "ACTIVE") {
+    return rejectInactiveClient(res, clientStatus, "withdrawal");
+  }
 
   const hasDeposit = await prisma.paymentRequest.findFirst({
     where: { userId: user.id, merchantId, type: "DEPOSIT", status: "APPROVED" },

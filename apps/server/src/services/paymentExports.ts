@@ -18,6 +18,7 @@ export interface PaymentExportItem {
   currency: string;
   referenceCode: string;
   uniqueReference?: string | null;
+  userId?: string | null;
   createdAt: Date;
   updatedAt: Date;
   processedAt?: Date | null;
@@ -200,8 +201,10 @@ function formatColumnValue(item: PaymentExportItem, key: string, context: Paymen
   switch (key) {
     case "txnId":
       return item.referenceCode || "-";
-    case "userId":
-      return item.user?.publicId || "-";
+    case "userId": {
+      const userLabel = item.user?.publicId || item.userId || "-";
+      return userLabel;
+    }
     case "merchant":
       return item.merchant?.name || "-";
     case "type":

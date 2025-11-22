@@ -1,5 +1,4 @@
 import crypto from "node:crypto";
-import type { Prisma, User } from "@prisma/client";
 import { Router } from "express";
 import { z } from "zod";
 import path from "node:path";
@@ -78,25 +77,6 @@ function normalizeAuMobile(input: string) {
   if (/^614\d{8}$/.test(digits)) return `+61${digits.slice(2)}`;
   if (/^61\d{9}$/.test(digits)) return `+${digits}`;
   return input?.trim?.() || "";
-}
-
-async function findActiveUserBySubject(diditSubject: string) {
-  return prisma.user.findFirst({ where: { diditSubject, deletedAt: null } });
-}
-
-async function findActiveUserById(userId: string) {
-  return prisma.user.findFirst({ where: { id: userId, deletedAt: null } });
-}
-
-async function ensureActiveUser(
-  diditSubject: string,
-  createData: Prisma.UserCreateInput
-): Promise<{ user: User | null; deleted: boolean }> {
-  const existing = await prisma.user.findUnique({ where: { diditSubject } });
-  if (existing?.deletedAt) return { user: null, deleted: true };
-  if (existing) return { user: existing, deleted: false };
-  const user = await prisma.user.create({ data: createData });
-  return { user, deleted: false };
 }
 const payerOsko = z.object({
   holderName: z.string().min(2),
@@ -520,14 +500,11 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   }
 
   // Find or create user; enforce KYC gate
-  const { user, deleted } = await ensureActiveUser(diditSubject, {
-    publicId: generateUserId(),
-    diditSubject,
-    verifiedAt: null,
+  const user = await prisma.user.upsert({
+    where: { diditSubject },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
+    update: {},
   });
-  if (deleted || !user) {
-    return res.status(403).json({ ok: false, error: "USER_DELETED" });
-  }
   await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
@@ -627,7 +604,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
     return res.status(400).json({ ok: false, error: "Intent mismatch" });
   }
 
-  const user = await findActiveUserById(payload.userId);
+  const user = await prisma.user.findUnique({ where: { id: payload.userId } });
   if (!user || user.diditSubject !== diditSubject) {
     return res.status(403).json({ ok: false, error: "USER_MISMATCH" });
   }
@@ -763,9 +740,8 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       .json({ ok: false, error: v.error, field: v.field || undefined });
   const sanitizedExtras = v.values || {};
 
-  const user = await findActiveUserBySubject(diditSubject);
-  if (!user) return res.status(403).json({ ok: false, error: "USER_DELETED" });
-  if (!user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
+  const user = await prisma.user.findUnique({ where: { diditSubject } });
+  if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
   await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
@@ -835,7 +811,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
   const claims = { merchantId, diditSubject, currency, availableBalanceCents };
-  const user = await findActiveUserBySubject(diditSubject);
+  const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user) return res.json({ ok: true, draft: null, claims });
 
   const pr = await prisma.paymentRequest.findFirst({
@@ -857,14 +833,11 @@ checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLim
 checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { diditSubject, merchantId, email, externalId } = req.checkout;
 
-  const { user, deleted } = await ensureActiveUser(diditSubject, {
-    publicId: generateUserId(),
-    diditSubject,
-    verifiedAt: null,
+  const user = await prisma.user.upsert({
+    where: { diditSubject },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
+    update: {},
   });
-  if (deleted || !user) {
-    return res.status(403).json({ ok: false, error: "USER_DELETED" });
-  }
   await upsertMerchantClientMapping({ merchantId, externalId, userId: user.id, email });
 
   let url: string | null = null;
@@ -885,9 +858,7 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
 
 checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { diditSubject, merchantId, externalId, email } = req.checkout;
-  const userRecord = await prisma.user.findUnique({ where: { diditSubject } });
-  if (userRecord?.deletedAt) return res.status(403).json({ ok: false, status: "deleted" });
-  const user = userRecord;
+  const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (user) {
     await upsertMerchantClientMapping({ merchantId, userId: user.id, externalId, email });
   }

@@ -71,7 +71,6 @@ model User {
   email         String?                 @unique
   phone         String?                 @unique
   diditSubject  String                  @unique
-  deletedAt     DateTime?
   verifiedAt    DateTime?
   kyc           KycVerification[]
   paymentReqs   PaymentRequest[]
@@ -82,14 +81,12 @@ model User {
   // NEW: back-reference for PayerBlocklist.user
   blocklistEntries PayerBlocklist[]
   merchantClients  MerchantClient[]
-
-  @@index([deletedAt])
 }
 
 model KycVerification {
   id                String   @id @default(cuid())
   userId            String
-  user              User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   provider          String
   status            String // pending|approved|rejected
   externalSessionId String   @unique
@@ -201,7 +198,7 @@ model PaymentRequest {
   merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
 
   userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   bankAccountId String?
   bankAccount   BankAccount? @relation("BankToPayment", fields: [bankAccountId], references: [id])
@@ -225,7 +222,7 @@ model PaymentRequest {
 model WithdrawalDestination {
   id         String   @id @default(cuid())
   userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   currency   String
   bankName   String
   holderName String
@@ -386,7 +383,7 @@ model MerchantClient {
   updatedAt  DateTime @updatedAt
 
   merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@unique([merchantId, userId])
   @@unique([merchantId, externalId])

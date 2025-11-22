@@ -555,24 +555,18 @@ async function ensureTestUser(merchantId: string, requestedSubject?: string | nu
   const subject = normalized || fallbackSubjectForMerchant(merchantId);
   const now = new Date();
 
-  const existing = await prisma.user.findUnique({ where: { diditSubject: subject } });
-  if (existing?.deletedAt) throw new TestPaymentError("User deleted", 403);
-
-  if (existing) {
-    await prisma.user.update({ where: { id: existing.id }, data: { verifiedAt: now } });
-    return { userId: existing.id, subject: existing.diditSubject };
-  }
-
-  const created = await prisma.user.create({
-    data: {
+  const user = await prisma.user.upsert({
+    where: { diditSubject: subject },
+    create: {
       diditSubject: subject,
       publicId: refs.generateUserId(),
       verifiedAt: now,
     },
+    update: { verifiedAt: now },
     select: { id: true, diditSubject: true },
   });
 
-  return { userId: created.id, subject: created.diditSubject };
+  return { userId: user.id, subject: user.diditSubject };
 }
 
 function parseAmountCents(raw: unknown, fallback: number): number {

@@ -7,6 +7,10 @@
     var amount = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     return amount + ' ' + currency;
   }
+
+  function normalizeCurrency(code) {
+    return (typeof code === 'string' ? code : '').trim();
+  }
 %>
 
 <div class="panel">
@@ -18,7 +22,7 @@
     <thead>
       <tr>
         <th>MERCHANT</th>
-        <th style="text-align:right">BALANCE</th>
+        <th style="text-align:right">BALANCE (CURRENCY)</th>
         <th style="width:220px">LAST UPDATE</th>
       </tr>
     </thead>

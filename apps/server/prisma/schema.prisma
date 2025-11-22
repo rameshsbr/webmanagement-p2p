@@ -71,7 +71,6 @@ model User {
   email         String?                 @unique
   phone         String?                 @unique
   diditSubject  String                  @unique
-  /// Soft delete flag. Keep rows for audit; avoid hard deletes (DB FKs are RESTRICT).
   deletedAt     DateTime?
   verifiedAt    DateTime?
   kyc           KycVerification[]

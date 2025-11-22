@@ -1,11 +1,9 @@
 <% layout('superadmin/layout') -%>
 
 <%
-  function formatAmount(cents, currency) {
-    if (typeof cents !== 'number' || !isFinite(cents)) return '—';
-    if (!currency) return '—';
-    var amount = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-    return amount + ' ' + currency;
+  function formatAmount(cents) {
+    if (typeof cents !== 'number' || !isFinite(cents)) return '-';
+    return (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   }
 %>
 
@@ -31,7 +29,15 @@
       <% balances.forEach(function(item){ %>
         <tr>
           <td><%= item.name %></td>
-          <td style="text-align:right"><span class="mono"><%= formatAmount(item.balanceCents, item.currency) %></span></td>
+          <% var currency = normalizeCurrency(item.currency); %>
+          <td style="text-align:right">
+            <% if (currency) { %>
+              <span class="mono"><%= formatAmount(item.balanceCents) %></span>
+              <span class="mono" style="margin-left:8px"><%= currency %></span>
+            <% } else { %>
+              <span class="muted">—</span>
+            <% } %>
+          </td>
           <td><%- renderDateTime(item.lastActivityAt) %></td>
         </tr>
       <% }) %>

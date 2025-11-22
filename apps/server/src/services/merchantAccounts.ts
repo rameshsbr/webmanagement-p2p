@@ -90,6 +90,7 @@ export async function listMerchantBalances() {
     select: {
       id: true,
       name: true,
+      defaultCurrency: true,
       balanceCents: true,
       updatedAt: true,
       accountEntries: {
@@ -103,6 +104,7 @@ export async function listMerchantBalances() {
   return merchants.map((m) => ({
     id: m.id,
     name: m.name,
+    currency: m.defaultCurrency,
     balanceCents: m.balanceCents,
     lastActivityAt: m.accountEntries[0]?.createdAt ?? m.updatedAt,
   }));

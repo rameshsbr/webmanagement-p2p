@@ -8,6 +8,9 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+// Cascading deletes are intentionally avoided to preserve historical financial and audit data.
+// Relations should use RESTRICT or SET NULL semantics; full cleanup must be performed explicitly.
+
 /**
  * ───────── EXISTING MODELS (kept as-is, only added safe relations) ─────────
  */
@@ -48,7 +51,7 @@ model Merchant {
 model MerchantApiKey {
   id String @id @default(cuid())
 
-  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   merchantId String
 
   prefix    String   @unique
@@ -85,8 +88,8 @@ model User {
 
 model KycVerification {
   id                String   @id @default(cuid())
-  userId            String
-  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId            String?
+  user              User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   provider          String
   status            String // pending|approved|rejected
   externalSessionId String   @unique
@@ -137,7 +140,7 @@ model ReceiptFile {
 
   // NEW multi-receipt relation (Phase 2, nullable for backfill)
   paymentId String?
-  paymentV2 PaymentRequest? @relation("PaymentReceipts", fields: [paymentId], references: [id], onDelete: Cascade)
+  paymentV2 PaymentRequest? @relation("PaymentReceipts", fields: [paymentId], references: [id], onDelete: SetNull)
 
   accountEntry MerchantAccountEntry? @relation("AccountEntryReceipt")
 
@@ -153,7 +156,7 @@ model NotificationChannel {
   active     Boolean               @default(true)
   createdAt  DateTime              @default(now())
 
-  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
 
   @@unique([merchantId, type, chatId, direction])
   @@index([merchantId])
@@ -195,10 +198,10 @@ model PaymentRequest {
   processedAt        DateTime?
 
   merchantId String
-  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
 
-  userId String
-  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId String?
+  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   bankAccountId String?
   bankAccount   BankAccount? @relation("BankToPayment", fields: [bankAccountId], references: [id])
@@ -221,8 +224,8 @@ model PaymentRequest {
 
 model WithdrawalDestination {
   id         String   @id @default(cuid())
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId     String?
+  user       User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   currency   String
   bankName   String
   holderName String
@@ -234,7 +237,7 @@ model WithdrawalDestination {
 model LedgerEntry {
   id          String   @id @default(cuid())
   merchantId  String
-  merchant    Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant    Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   amountCents Int // + credit, - debit
   reason      String
   paymentId   String?
@@ -249,7 +252,7 @@ enum MerchantAccountEntryType {
 model MerchantAccountEntry {
   id            String                   @id @default(cuid())
   merchantId    String
-  merchant      Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant      Merchant                 @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   type          MerchantAccountEntryType
   method        String?
   amountCents   Int
@@ -338,7 +341,7 @@ enum MerchantRole {
 model MerchantUser {
   id                   String       @id @default(cuid())
   merchantId           String
-  merchant             Merchant     @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant             Merchant     @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   email                String       @unique
   passwordHash         String
   role                 MerchantRole @default(MANAGER)
@@ -376,14 +379,14 @@ model MerchantLoginLog {
 model MerchantClient {
   id         String   @id @default(cuid())
   merchantId String
-  userId     String
+  userId     String?
   externalId String?
   email      String?
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
-  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   @@unique([merchantId, userId])
   @@unique([merchantId, externalId])
@@ -393,7 +396,7 @@ model MerchantClient {
 
 model MerchantLimits {
   merchantId   String   @id
-  merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant     Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   maxReqPerMin Int?
   ipAllowList  String[] @default([])
   createdAt    DateTime @default(now())
@@ -418,8 +421,8 @@ model PayerBlocklist {
 
 model AdminPasswordReset {
   id        String    @id @default(cuid())
-  adminId   String
-  admin     AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  adminId   String?
+  admin     AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
   token     String    @unique
   expiresAt DateTime
   usedAt    DateTime?
@@ -430,8 +433,8 @@ model AdminPasswordReset {
 
 model MerchantPasswordReset {
   id             String       @id @default(cuid())
-  merchantUserId String
-  merchantUser   MerchantUser @relation(fields: [merchantUserId], references: [id], onDelete: Cascade)
+  merchantUserId String?
+  merchantUser   MerchantUser? @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
   token          String       @unique
   expiresAt      DateTime
   usedAt         DateTime?
@@ -443,9 +446,9 @@ model MerchantPasswordReset {
 model MerchantApiKeyRevealLog {
   id               String         @id @default(cuid())
   merchantApiKeyId String
-  merchantApiKey   MerchantApiKey @relation(fields: [merchantApiKeyId], references: [id], onDelete: Cascade)
+  merchantApiKey   MerchantApiKey @relation(fields: [merchantApiKeyId], references: [id], onDelete: Restrict)
   merchantId       String
-  merchant         Merchant       @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant         Merchant       @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   actorType        String
   merchantUserId   String?
   merchantUser     MerchantUser?  @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
@@ -481,10 +484,10 @@ model IdempotencyKey {
 model MerchantFormConfig {
   id         String   @id @default(cuid())
   merchantId String
-  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Cascade)
+  merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
 
   bankAccountId String?
-  bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: Cascade)
+  bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
 
   // JSON arrays of { name,display,field,placeholder,required,minDigits?,maxDigits?,options? }
   deposit    Json?

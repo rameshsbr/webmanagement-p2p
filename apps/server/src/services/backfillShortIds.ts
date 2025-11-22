@@ -81,7 +81,7 @@ export async function backfillShortIdentifiers() {
     }
 
     const users = await prisma.user.findMany({
-      where: { publicId: { not: { startsWith: "U" } }, deletedAt: null },
+      where: { publicId: { not: { startsWith: "U" } } },
       select: { id: true, publicId: true },
       take: 500,
     });

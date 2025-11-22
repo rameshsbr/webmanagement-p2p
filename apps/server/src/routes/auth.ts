@@ -603,6 +603,10 @@ router.post('/merchant/reset', async (req, res) => {
     return res.status(400).render('auth-merchant-reset', { title: 'Reset Merchant Password', token, error: 'This reset link is invalid or expired.' });
   }
 
+  if (!row.merchantUserId) {
+    return res.status(400).render('auth-merchant-reset', { title: 'Reset Merchant Password', token, error: 'This reset link is invalid or expired.' });
+  }
+
   const hash = await bcrypt.hash(pass1, 10);
 
   await prisma.$transaction([
@@ -649,6 +653,10 @@ router.post('/admin/reset', async (req, res) => {
   const row = await prisma.adminPasswordReset.findUnique({ where: { token } });
   const now = new Date();
   if (!row || row.usedAt || row.expiresAt < now) {
+    return res.status(400).render('auth-admin-reset', { title: 'Reset Password', token, error: 'This reset link is invalid or expired.' });
+  }
+
+  if (!row.adminId) {
     return res.status(400).render('auth-admin-reset', { title: 'Reset Password', token, error: 'This reset link is invalid or expired.' });
   }
 

@@ -205,8 +205,10 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   const diditProfiles: Array<DiditProfile | null> = shouldFetchDidit
     ? await Promise.all(
         clients.map(async (client) => {
+          const subject = client.user?.diditSubject;
+          if (!subject) return null;
           try {
-            return await fetchDiditProfile(client.user.diditSubject);
+            return await fetchDiditProfile(subject);
           } catch {
             return null;
           }
@@ -214,47 +216,52 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       )
     : clients.map(() => null);
 
-  const items: UserDirectoryItem[] = clients.map((client, index) => {
-    const payments = client.user.paymentReqs || [];
-    const latestPayment = payments[0] || null;
-    const details = latestPayment?.detailsJson || {};
-    const manualName = computeFullName(details);
-    const profile = diditProfiles[index];
-    const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
-    const latestKyc = client.user.kyc && client.user.kyc.length ? client.user.kyc[0].status || null : null;
-    const verificationStatus = computeStatus(client.user.verifiedAt, latestKyc);
-    const accountStatus = normalizeClientStatus((client as any).status);
-    const accountStatusLabel = clientStatusLabel(accountStatus);
+  const items: UserDirectoryItem[] = clients
+    .map((client, index) => {
+      if (!client.user) return null;
 
-    const merchants: Array<{ id: string; name: string }> = [
-      { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
-    ];
+      const payments = client.user?.paymentReqs ?? [];
+      const latestPayment = payments[0] || null;
+      const details = latestPayment?.detailsJson || {};
+      const manualName = computeFullName(details);
+      const profile = diditProfiles[index];
+      const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
+      const kycEntries = client.user?.kyc ?? [];
+      const latestKyc = kycEntries.length ? kycEntries[0]?.status ?? null : null;
+      const verificationStatus = computeStatus(client.user?.verifiedAt ?? null, latestKyc);
+      const accountStatus = normalizeClientStatus((client as any).status);
+      const accountStatusLabel = clientStatusLabel(accountStatus);
 
-    const key = `${client.user.id}:${client.merchantId}`;
-    const counts = totals.get(key) || { deposits: 0, withdrawals: 0 };
+      const merchants: Array<{ id: string; name: string }> = [
+        { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
+      ];
 
-    return {
-      id: client.user.id,
-      publicId: client.user.publicId,
-      externalId: client.externalId,
-      email: client.email ?? client.user.email ?? null,
-      phone: client.user.phone ?? null,
-      diditSubject: client.user.diditSubject,
-      fullName,
-      registeredAt: client.user.createdAt,
-      verifiedAt: client.user.verifiedAt,
-      verificationStatus,
-      accountStatus,
-      accountStatusLabel,
-      merchantId: client.merchantId,
-      merchantClientId: (client as any).id || null,
-      merchants,
-      lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
-      totalApprovedDeposits: counts.deposits,
-      totalApprovedWithdrawals: counts.withdrawals,
-      diditProfile: profile,
-    };
-  });
+      const key = client.user?.id ? `${client.user.id}:${client.merchantId}` : null;
+      const counts = key ? totals.get(key) || { deposits: 0, withdrawals: 0 } : { deposits: 0, withdrawals: 0 };
+
+      return {
+        id: client.user.id,
+        publicId: client.user.publicId,
+        externalId: client.externalId,
+        email: client.user?.email ?? client.email ?? null,
+        phone: client.user?.phone ?? null,
+        diditSubject: client.user.diditSubject ?? "",
+        fullName,
+        registeredAt: client.user.createdAt,
+        verifiedAt: client.user.verifiedAt ?? null,
+        verificationStatus,
+        accountStatus,
+        accountStatusLabel,
+        merchantId: client.merchantId,
+        merchantClientId: (client as any).id || null,
+        merchants,
+        lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
+        totalApprovedDeposits: counts.deposits,
+        totalApprovedWithdrawals: counts.withdrawals,
+        diditProfile: profile,
+      };
+    })
+    .filter(Boolean) as UserDirectoryItem[];
 
   const pages = Math.max(1, Math.ceil(total / perPage));
   return { total, page, perPage, pages, items };

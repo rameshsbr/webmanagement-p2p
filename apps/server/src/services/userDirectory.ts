@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { fetchDiditProfile } from "./didit.js";
+import { normalizeClientStatus, formatClientStatusLabel, type ClientStatus } from "./merchantClient.js";
 
 export type UserDirectoryFilters = {
   merchantIds?: string[];
@@ -12,15 +13,19 @@ export type UserDirectoryItem = {
   id: string;
   externalId: string | null;
   publicId: string;
+  merchantId: string;
   email: string | null;
   phone: string | null;
   diditSubject: string;
   fullName: string | null;
   registeredAt: Date;
   verifiedAt: Date | null;
+  clientStatus: ClientStatus;
   verificationStatus: string;
   merchants: Array<{ id: string; name: string }>;
   lastActivityAt: Date | null;
+  totalApprovedDeposits: number;
+  totalApprovedWithdrawals: number;
   diditProfile?: DiditProfile | null;
 };
 
@@ -127,7 +132,13 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     prisma.merchantClient.count({ where }),
     prisma.merchantClient.findMany({
       where,
-      include: {
+      select: {
+        id: true,
+        merchantId: true,
+        externalId: true,
+        email: true,
+        status: true,
+        updatedAt: true,
         merchant: { select: { id: true, name: true } },
         user: {
           select: {
@@ -158,6 +169,31 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     }),
   ]);
 
+  const userIds = clients.map((row) => row.user?.id).filter(Boolean) as string[];
+
+  const paymentCounts = userIds.length
+    ? await prisma.paymentRequest.groupBy({
+        where: {
+          status: "APPROVED",
+          userId: { in: userIds },
+          merchantId: { in: merchantIds },
+        },
+        by: ["userId", "merchantId", "type"],
+        _count: { _all: true },
+      })
+    : [];
+
+  const totals = new Map<string, { deposits: number; withdrawals: number }>();
+
+  paymentCounts.forEach((row) => {
+    if (!row.userId) return;
+    const key = `${row.userId}:${row.merchantId}`;
+    const current = totals.get(key) || { deposits: 0, withdrawals: 0 };
+    if (row.type === "DEPOSIT") current.deposits = row._count._all;
+    else if (row.type === "WITHDRAWAL") current.withdrawals = row._count._all;
+    totals.set(key, current);
+  });
+
   const merchantMap = new Map<string, string>();
   clients.forEach((row) => {
     merchantMap.set(row.merchantId, row.merchant?.name || row.merchantId);
@@ -174,7 +210,9 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     ? await Promise.all(
         clients.map(async (client) => {
           try {
-            return await fetchDiditProfile(client.user.diditSubject);
+            return client.user?.diditSubject
+              ? await fetchDiditProfile(client.user.diditSubject)
+              : null;
           } catch {
             return null;
           }
@@ -183,32 +221,41 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     : clients.map(() => null);
 
   const items: UserDirectoryItem[] = clients.map((client, index) => {
-    const payments = client.user.paymentReqs || [];
+    const user = client.user;
+    const payments = user?.paymentReqs ?? [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
     const manualName = computeFullName(details);
     const profile = diditProfiles[index];
     const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
-    const latestKyc = client.user.kyc && client.user.kyc.length ? client.user.kyc[0].status || null : null;
-    const verificationStatus = computeStatus(client.user.verifiedAt, latestKyc);
+    const latestKyc = (user?.kyc && user.kyc.length ? user.kyc[0].status || null : null) ?? null;
+    const verificationStatus = computeStatus(user?.verifiedAt ?? null, latestKyc);
 
     const merchants: Array<{ id: string; name: string }> = [
       { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
     ];
 
+    const key = user?.id ? `${user.id}:${client.merchantId}` : null;
+    const counts = (key && totals.get(key)) || { deposits: 0, withdrawals: 0 };
+    const clientStatus = normalizeClientStatus((client as any)?.status);
+
     return {
-      id: client.user.id,
-      publicId: client.user.publicId,
+      id: user?.id ?? client.id,
+      publicId: user?.publicId ?? client.id,
       externalId: client.externalId,
-      email: client.email ?? client.user.email ?? null,
-      phone: client.user.phone ?? null,
-      diditSubject: client.user.diditSubject,
+      merchantId: client.merchantId,
+      email: client.email ?? user?.email ?? null,
+      phone: user?.phone ?? null,
+      diditSubject: user?.diditSubject ?? client.externalId ?? client.id,
       fullName,
-      registeredAt: client.user.createdAt,
-      verifiedAt: client.user.verifiedAt,
+      registeredAt: user?.createdAt ?? client.updatedAt ?? new Date(0),
+      verifiedAt: user?.verifiedAt ?? null,
+      clientStatus,
       verificationStatus,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
+      totalApprovedDeposits: counts.deposits,
+      totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
     };
   });
@@ -277,7 +324,10 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
     lines.push(`${user.publicId} • ${user.fullName || "—"}`);
     lines.push(`External ID: ${user.externalId || "—"}`);
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
+    lines.push(`Client status: ${formatClientStatusLabel(user.clientStatus)}`);
     lines.push(`Status: ${user.verificationStatus}`);
+    lines.push(`Total approved deposits: ${user.totalApprovedDeposits}`);
+    lines.push(`Total approved withdrawals: ${user.totalApprovedWithdrawals}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);
     if (user.lastActivityAt) {
       lines.push(`Last activity: ${user.lastActivityAt.toISOString()}`);

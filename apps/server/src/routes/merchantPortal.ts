@@ -24,6 +24,7 @@ import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 import { ipFromReq, uaFromReq } from "../services/audit.js";
+import { formatClientStatusLabel, getClientStatusBySubject } from "../services/merchantClient.js";
 
 const router = Router();
 
@@ -812,8 +813,20 @@ router.post("/payments/test/session", async (req: any, res) => {
   const externalId = normalizeTestSubject(req.body?.subject || req.query?.subject, merchantId);
   const subject = deriveDiditSubject(merchantId, externalId);
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
-  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
-  res.json({ ok: true, token, subject, expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString() });
+  const clientStatus = await getClientStatusBySubject(merchantId, subject);
+  if (clientStatus !== "ACTIVE") {
+    return res
+      .status(403)
+      .json({ ok: false, error: "CLIENT_INACTIVE", message: `Client is ${formatClientStatusLabel(clientStatus)}` });
+  }
+  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId, clientStatus });
+  res.json({
+    ok: true,
+    token,
+    subject,
+    clientStatus: formatClientStatusLabel(clientStatus),
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+  });
 });
 
 router.get("/users", async (req: any, res) => {
@@ -1003,7 +1016,7 @@ router.get("/export/users.csv", async (req: any, res) => {
   res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity"],
+    columns: ["userId","fullName","email","phone","verificationStatus","clientStatus","registeredAt","lastActivity","totalDeposits","totalWithdrawals"],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1012,9 +1025,12 @@ router.get("/export/users.csv", async (req: any, res) => {
       fullName: user.fullName || "",
       email: user.email || "",
       phone: user.phone || "",
-      status: user.verificationStatus,
+      verificationStatus: user.verificationStatus,
+      clientStatus: formatClientStatusLabel(user.clientStatus),
       registeredAt: user.registeredAt.toISOString(),
       lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
+      totalDeposits: user.totalApprovedDeposits,
+      totalWithdrawals: user.totalApprovedWithdrawals,
     });
   });
   csv.end();
@@ -1032,9 +1048,12 @@ router.get("/export/users.xlsx", async (req: any, res) => {
     { header: "Full name", key: "fullName", width: 24 },
     { header: "Email", key: "email", width: 24 },
     { header: "Phone", key: "phone", width: 18 },
-    { header: "Status", key: "status", width: 14 },
+    { header: "Verification status", key: "status", width: 18 },
+    { header: "Client status", key: "clientStatus", width: 16 },
     { header: "Registered", key: "registeredAt", width: 24 },
     { header: "Last activity", key: "lastActivity", width: 24 },
+    { header: "Total deposits", key: "totalDeposits", width: 18 },
+    { header: "Total withdrawals", key: "totalWithdrawals", width: 20 },
   ];
   items.forEach((user) => {
     ws.addRow({
@@ -1043,8 +1062,11 @@ router.get("/export/users.xlsx", async (req: any, res) => {
       email: user.email || "",
       phone: user.phone || "",
       status: user.verificationStatus,
+      clientStatus: formatClientStatusLabel(user.clientStatus),
       registeredAt: user.registeredAt,
       lastActivity: user.lastActivityAt || null,
+      totalDeposits: user.totalApprovedDeposits,
+      totalWithdrawals: user.totalApprovedWithdrawals,
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

@@ -1102,7 +1102,7 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
   res.setHeader('Content-Disposition', 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: ['userId','fullName','email','phone','status','registeredAt','lastActivity','merchants'],
+    columns: ['userId','fullName','email','phone','status','registeredAt','lastActivity','totalDeposits','totalWithdrawals','merchants'],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1114,6 +1114,8 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
       status: user.verificationStatus,
       registeredAt: user.registeredAt.toISOString(),
       lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : '',
+      totalDeposits: user.totalApprovedDeposits,
+      totalWithdrawals: user.totalApprovedWithdrawals,
       merchants: user.merchants.map((m) => m.name).join(', '),
     });
   });
@@ -1136,6 +1138,8 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
     { header: 'Status', key: 'status', width: 14 },
     { header: 'Registered', key: 'registeredAt', width: 24 },
     { header: 'Last activity', key: 'lastActivity', width: 24 },
+    { header: 'Total deposits', key: 'totalDeposits', width: 18 },
+    { header: 'Total withdrawals', key: 'totalWithdrawals', width: 20 },
     { header: 'Merchants', key: 'merchants', width: 32 },
   ];
   items.forEach((user) => {
@@ -1147,6 +1151,8 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
       status: user.verificationStatus,
       registeredAt: user.registeredAt,
       lastActivity: user.lastActivityAt,
+      totalDeposits: user.totalApprovedDeposits,
+      totalWithdrawals: user.totalApprovedWithdrawals,
       merchants: user.merchants.map((m) => m.name).join(', '),
     });
   });

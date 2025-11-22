@@ -63,6 +63,7 @@ export async function handleDiditWebhook(
 ) {
   const p = await prisma();
   let user = await p.user.findUnique({ where: { diditSubject } });
+  if (user?.deletedAt) throw new Error("User deleted");
   if (!user) {
     user = await p.user.create({
       data: { publicId: generateUserId(), diditSubject, verifiedAt: status === "approved" ? new Date() : null },

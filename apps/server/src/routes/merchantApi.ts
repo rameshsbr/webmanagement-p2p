@@ -134,11 +134,15 @@ merchantApiRouter.post(
     const idemKey = req.header('Idempotency-Key') ?? undefined;
 
     const result = await withIdempotency(scope, idemKey, async () => {
-      const user = await prisma.user.upsert({
-        where: { diditSubject: body.user.diditSubject },
-        create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
-        update: {},
-      });
+      const existingUser = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
+
+      if (existingUser?.deletedAt) throw new Error('User is deleted');
+
+      const user =
+        existingUser ||
+        (await prisma.user.create({
+          data: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
+        }));
 
       if (!user.verifiedAt) throw new Error('User not verified');
 
@@ -260,7 +264,8 @@ merchantApiRouter.post(
     const merchantId = (req as any).merchantId as string;
 
     const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
-    if (!user || !user.verifiedAt) return res.forbidden('User not verified');
+    if (!user || user.deletedAt) return res.forbidden('User not found');
+    if (!user.verifiedAt) return res.forbidden('User not verified');
 
     // Blocklist check (merchant + user)
     const blocked = await prisma.payerBlocklist.findFirst({

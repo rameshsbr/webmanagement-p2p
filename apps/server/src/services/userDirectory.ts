@@ -89,7 +89,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     return { total: 0, page, perPage, pages: 1, items: [] };
   }
 
-  const where: any = { merchantId: { in: merchantIds } };
+  const where: any = { merchantId: { in: merchantIds }, user: { deletedAt: null } };
 
   const search = typeof filters.search === "string" ? filters.search.trim() : "";
   if (search) {

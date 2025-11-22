@@ -22,6 +22,10 @@ export type UserDirectoryItem = {
   verifiedAt: Date | null;
   clientStatus: ClientStatus;
   verificationStatus: string;
+  accountStatus: ClientStatus;
+  accountStatusLabel: string;
+  merchantId: string;
+  merchantClientId: string | null;
   merchants: Array<{ id: string; name: string }>;
   lastActivityAt: Date | null;
   totalApprovedDeposits: number;
@@ -252,6 +256,10 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       verifiedAt: user?.verifiedAt ?? null,
       clientStatus,
       verificationStatus,
+      accountStatus,
+      accountStatusLabel,
+      merchantId: client.merchantId,
+      merchantClientId: (client as any).id || null,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
       totalApprovedDeposits: counts.deposits,

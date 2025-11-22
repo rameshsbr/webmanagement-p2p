@@ -22,6 +22,12 @@
   </div>
 </form>
 
+<% if (statusMessage) { %>
+  <div class="card" style="margin:12px 0; background:<%= statusVariant==='error' ? '#fff1f2' : '#ecfdf3' %>; border:1px solid <%= statusVariant==='error' ? '#fecdd3' : '#bbf7d0' %>; color:<%= statusVariant==='error' ? '#b91c1c' : '#166534' %>;">
+    <%= statusMessage %>
+  </div>
+<% } %>
+
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
   defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },

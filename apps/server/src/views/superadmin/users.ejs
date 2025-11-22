@@ -24,8 +24,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
-  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
-  labelMap: { externalId: 'External ID', registered: 'Date registered', lastActivity: 'Last activity', merchants: 'Merchants', didit: 'Didit profile' },
+  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
+  labelMap: { externalId: 'External ID', registered: 'Date registered', lastActivity: 'Last activity', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', merchants: 'Merchants', didit: 'Didit profile' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -48,13 +48,15 @@
         <th data-col="status">VERIFICATION STATUS</th>
         <th data-col="registered">DATE REGISTERED</th>
         <th data-col="lastActivity">LAST ACTIVITY</th>
+        <th data-col="totalDeposits">TOTAL DEPOSITS</th>
+        <th data-col="totalWithdrawals">TOTAL WITHDRAWALS</th>
         <th data-col="merchants">MERCHANTS</th>
         <th data-col="didit">DIDIT PROFILE</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="12" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
@@ -66,6 +68,8 @@
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
+          <td data-col="totalDeposits"><%= user.totalApprovedDeposits %></td>
+          <td data-col="totalWithdrawals"><%= user.totalApprovedWithdrawals %></td>
           <td data-col="merchants" class="info-cell">
             <% if (user.merchants && user.merchants.length) { %>
               <ul class="list-unstyled">

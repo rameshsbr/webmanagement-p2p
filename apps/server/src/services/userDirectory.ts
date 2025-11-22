@@ -21,6 +21,8 @@ export type UserDirectoryItem = {
   verificationStatus: string;
   merchants: Array<{ id: string; name: string }>;
   lastActivityAt: Date | null;
+  totalApprovedDeposits: number;
+  totalApprovedWithdrawals: number;
   diditProfile?: DiditProfile | null;
 };
 
@@ -158,6 +160,31 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     }),
   ]);
 
+  const userIds = clients.map((row) => row.user?.id).filter(Boolean) as string[];
+
+  const paymentCounts = userIds.length
+    ? await prisma.paymentRequest.groupBy({
+        where: {
+          status: "APPROVED",
+          userId: { in: userIds },
+          merchantId: { in: merchantIds },
+        },
+        by: ["userId", "merchantId", "type"],
+        _count: { _all: true },
+      })
+    : [];
+
+  const totals = new Map<string, { deposits: number; withdrawals: number }>();
+
+  paymentCounts.forEach((row) => {
+    if (!row.userId) return;
+    const key = `${row.userId}:${row.merchantId}`;
+    const current = totals.get(key) || { deposits: 0, withdrawals: 0 };
+    if (row.type === "DEPOSIT") current.deposits = row._count._all;
+    else if (row.type === "WITHDRAWAL") current.withdrawals = row._count._all;
+    totals.set(key, current);
+  });
+
   const merchantMap = new Map<string, string>();
   clients.forEach((row) => {
     merchantMap.set(row.merchantId, row.merchant?.name || row.merchantId);
@@ -196,6 +223,9 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
     ];
 
+    const key = `${client.user.id}:${client.merchantId}`;
+    const counts = totals.get(key) || { deposits: 0, withdrawals: 0 };
+
     return {
       id: client.user.id,
       publicId: client.user.publicId,
@@ -209,6 +239,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       verificationStatus,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
+      totalApprovedDeposits: counts.deposits,
+      totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
     };
   });
@@ -278,6 +310,8 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
     lines.push(`External ID: ${user.externalId || "—"}`);
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
     lines.push(`Status: ${user.verificationStatus}`);
+    lines.push(`Total approved deposits: ${user.totalApprovedDeposits}`);
+    lines.push(`Total approved withdrawals: ${user.totalApprovedWithdrawals}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);
     if (user.lastActivityAt) {
       lines.push(`Last activity: ${user.lastActivityAt.toISOString()}`);

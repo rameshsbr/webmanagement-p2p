@@ -1218,7 +1218,7 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
   res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","merchants"],
+    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","totalDeposits","totalWithdrawals","merchants"],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1230,6 +1230,8 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
       status: user.verificationStatus,
       registeredAt: user.registeredAt.toISOString(),
       lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
+      totalDeposits: user.totalApprovedDeposits,
+      totalWithdrawals: user.totalApprovedWithdrawals,
       merchants: user.merchants.map((m) => m.name).join(", "),
     });
   });
@@ -1251,6 +1253,8 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
     { header: "Status", key: "status", width: 14 },
     { header: "Registered", key: "registeredAt", width: 24 },
     { header: "Last activity", key: "lastActivity", width: 24 },
+    { header: "Total deposits", key: "totalDeposits", width: 18 },
+    { header: "Total withdrawals", key: "totalWithdrawals", width: 20 },
     { header: "Merchants", key: "merchants", width: 30 },
   ];
   items.forEach((user) => {
@@ -1262,6 +1266,8 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
       status: user.verificationStatus,
       registeredAt: user.registeredAt,
       lastActivity: user.lastActivityAt || null,
+      totalDeposits: user.totalApprovedDeposits,
+      totalWithdrawals: user.totalApprovedWithdrawals,
       merchants: user.merchants.map((m) => m.name).join(", "),
     });
   });

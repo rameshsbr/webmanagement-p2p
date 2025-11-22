@@ -30,6 +30,7 @@ import {
   listAccountEntries,
   listMerchantBalances,
 } from "../services/merchantAccounts.js";
+import { clientStatusLabel, CLIENT_STATUS_VALUES, normalizeClientStatus } from "../services/merchantClient.js";
 import type { MerchantAccountEntryType } from "@prisma/client";
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
@@ -155,6 +156,20 @@ function normalizeMerchantFilter(raw: unknown): string[] {
     return trimmed ? [trimmed] : [];
   }
   return [];
+}
+
+function resolveSuperReturnTo(raw: unknown, fallback: string) {
+  if (typeof raw === "string" && raw.startsWith("/superadmin")) return raw;
+  return fallback;
+}
+
+function withStatusNotice(target: string, message: string, variant: "success" | "error") {
+  const url = new URL(target, "http://localhost");
+  url.searchParams.delete("statusMessage");
+  url.searchParams.delete("statusVariant");
+  if (message) url.searchParams.set("statusMessage", message);
+  url.searchParams.set("statusVariant", variant);
+  return url.pathname + url.search;
 }
 function sortSpec(s?: string) {
   // allowlist of sortable columns + default
@@ -1186,6 +1201,8 @@ superAdminRouter.post("/merchants/:id/user-directory", async (req, res) => {
 });
 
 superAdminRouter.get("/users", async (req, res) => {
+  const statusMessage = typeof req.query.statusMessage === "string" ? req.query.statusMessage : "";
+  const statusVariant = req.query.statusVariant === "error" ? "error" : req.query.statusVariant === "success" ? "success" : "";
   const query = superUserQuery.parse(req.query);
   const merchants = await prisma.merchant.findMany({
     select: { id: true, name: true, userDirectoryEnabled: true },
@@ -1206,7 +1223,76 @@ superAdminRouter.get("/users", async (req, res) => {
     merchants,
     selectedIds: merchantIds,
     rawQuery: req.query,
+    statusMessage,
+    statusVariant,
+    currentPath: req.originalUrl || req.url || "/superadmin/users",
   });
+});
+
+superAdminRouter.post("/users/:id/status", async (req, res) => {
+  const merchantClientId = req.params.id;
+  const targetRaw = typeof req.body?.status === "string" ? req.body.status : "";
+  const targetStatus = normalizeClientStatus(targetRaw);
+  const back = resolveSuperReturnTo(req.body?.returnTo, "/superadmin/users");
+
+  if (!CLIENT_STATUS_VALUES.includes(targetStatus)) {
+    const redirectTo = withStatusNotice(back, "Invalid status selection.", "error");
+    return res.redirect(redirectTo);
+  }
+
+  const mapping = await prisma.merchantClient.findUnique({
+    where: { id: merchantClientId },
+    select: { id: true, status: true, merchantId: true, userId: true },
+  });
+
+  if (!mapping) {
+    const redirectTo = withStatusNotice(back, "Client mapping not found.", "error");
+    return res.redirect(redirectTo);
+  }
+
+  const currentStatus = normalizeClientStatus(mapping.status);
+  if (currentStatus === targetStatus) {
+    const redirectTo = withStatusNotice(back, "Status unchanged.", "success");
+    return res.redirect(redirectTo);
+  }
+
+  const requiresTotp = currentStatus === "BLOCKED" && targetStatus !== "BLOCKED";
+  if (requiresTotp) {
+    const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+    const admin = adminId
+      ? await prisma.adminUser.findUnique({
+          where: { id: adminId },
+          select: { superTwoFactorEnabled: true, superTotpSecret: true },
+        })
+      : null;
+
+    if (admin?.superTwoFactorEnabled) {
+      const totp = typeof req.body?.totp === "string" ? req.body.totp.replace(/\s+/g, "") : "";
+      const secret = admin?.superTotpSecret || "";
+      const ok = secret
+        ? speakeasy.totp.verify({ secret, encoding: "base32", token: totp, window: 1 })
+        : false;
+      if (!ok) {
+        const redirectTo = withStatusNotice(back, "Invalid or missing 2FA code to unblock client.", "error");
+        return res.redirect(redirectTo);
+      }
+    }
+  }
+
+  await prisma.merchantClient.update({
+    where: { id: mapping.id },
+    data: { status: targetStatus },
+  });
+
+  await auditAdmin(req, "client.status.change", "MERCHANT_CLIENT", mapping.id, {
+    merchantId: mapping.merchantId,
+    userId: mapping.userId,
+    from: currentStatus,
+    to: targetStatus,
+  });
+
+  const redirectTo = withStatusNotice(back, `Status updated to ${clientStatusLabel(targetStatus)}.`, "success");
+  return res.redirect(redirectTo);
 });
 
 superAdminRouter.get("/export/users.csv", async (req, res) => {
@@ -1218,7 +1304,19 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
   res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: ["userId","fullName","email","phone","status","registeredAt","lastActivity","totalDeposits","totalWithdrawals","merchants"],
+    columns: [
+      "userId",
+      "fullName",
+      "email",
+      "phone",
+      "status",
+      "accountStatus",
+      "registeredAt",
+      "lastActivity",
+      "totalDeposits",
+      "totalWithdrawals",
+      "merchants",
+    ],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1228,6 +1326,7 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
       email: user.email || "",
       phone: user.phone || "",
       status: user.verificationStatus,
+      accountStatus: user.accountStatusLabel,
       registeredAt: user.registeredAt.toISOString(),
       lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
       totalDeposits: user.totalApprovedDeposits,
@@ -1251,6 +1350,7 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
     { header: "Email", key: "email", width: 24 },
     { header: "Phone", key: "phone", width: 18 },
     { header: "Status", key: "status", width: 14 },
+    { header: "Account status", key: "accountStatus", width: 18 },
     { header: "Registered", key: "registeredAt", width: 24 },
     { header: "Last activity", key: "lastActivity", width: 24 },
     { header: "Total deposits", key: "totalDeposits", width: 18 },
@@ -1264,6 +1364,7 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
       email: user.email || "",
       phone: user.phone || "",
       status: user.verificationStatus,
+      accountStatus: user.accountStatusLabel,
       registeredAt: user.registeredAt,
       lastActivity: user.lastActivityAt || null,
       totalDeposits: user.totalApprovedDeposits,

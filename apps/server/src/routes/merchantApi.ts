@@ -11,12 +11,18 @@ import { generateTransactionId, generateUniqueReference, generateUserId } from '
 import { tgNotify } from '../services/telegram.js';
 import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
+import { ClientStatus, normalizeClientStatus, upsertMerchantClientMapping } from '../services/merchantClient.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ dest: uploadDir, limits: { fileSize: 10 * 1024 * 1024 } });
 
 export const merchantApiRouter = Router();
+
+function rejectForClientStatus(res: any, status: ClientStatus) {
+  const message = status === 'BLOCKED' ? 'User is blocked' : 'User is deactivated';
+  return res.forbidden ? res.forbidden(message) : res.status(403).json({ ok: false, error: message });
+}
 
 /* ────────────────────────────────────────────────────────────────────────────
    API Key auth: Authorization: Bearer <prefix>.<secret>  (or X-API-Key)
@@ -133,15 +139,25 @@ merchantApiRouter.post(
     const scope = `deposit:${merchantId}:${body.user.diditSubject}`;
     const idemKey = req.header('Idempotency-Key') ?? undefined;
 
+    const user = await prisma.user.upsert({
+      where: { diditSubject: body.user.diditSubject },
+      create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
+      update: {},
+    });
+
+    if (!user.verifiedAt) {
+      return res.forbidden
+        ? res.forbidden('User not verified')
+        : res.status(403).json({ ok: false, error: 'User not verified' });
+    }
+
+    const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
+    const status = normalizeClientStatus(mapping?.status);
+    if (status !== 'ACTIVE') {
+      return rejectForClientStatus(res, status);
+    }
+
     const result = await withIdempotency(scope, idemKey, async () => {
-      const user = await prisma.user.upsert({
-        where: { diditSubject: body.user.diditSubject },
-        create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
-        update: {},
-      });
-
-      if (!user.verifiedAt) throw new Error('User not verified');
-
       // Blocklist check (merchant + user)
       const blocked = await prisma.payerBlocklist.findFirst({
         where: { merchantId, userId: user.id, active: true },
@@ -261,6 +277,12 @@ merchantApiRouter.post(
 
     const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
     if (!user || !user.verifiedAt) return res.forbidden('User not verified');
+
+    const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
+    const status = normalizeClientStatus(mapping?.status);
+    if (status !== 'ACTIVE') {
+      return rejectForClientStatus(res, status);
+    }
 
     // Blocklist check (merchant + user)
     const blocked = await prisma.payerBlocklist.findFirst({

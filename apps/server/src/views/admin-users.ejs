@@ -24,9 +24,10 @@
 
 <%- include('partials/column-settings', {
   key: 'admin.columns.users',
-  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, accountStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
+  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
   labelMap: {
     externalId: 'External ID',
+    clientStatus: 'Client status',
     registered: 'Date registered',
     lastActivity: 'Last activity',
     totalDeposits: 'Total deposits',
@@ -55,7 +56,7 @@
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
         <th data-col="status">VERIFICATION STATUS</th>
-        <th data-col="accountStatus">ACCOUNT STATUS</th>
+        <th data-col="clientStatus">CLIENT STATUS</th>
         <th data-col="registered">DATE REGISTERED</th>
         <th data-col="lastActivity">LAST ACTIVITY</th>
         <th data-col="totalDeposits">TOTAL DEPOSITS</th>
@@ -76,7 +77,12 @@
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? '' : 'warn' %>"><%= user.verificationStatus %></span></td>
-          <td data-col="accountStatus"><span class="badge <%= user.accountStatus === 'ACTIVE' ? 'success' : (user.accountStatus === 'DEACTIVATED' ? 'warn' : 'danger') %>"><%= user.accountStatusLabel %></span></td>
+          <td data-col="clientStatus">
+            <% const clientStatus = (user.clientStatus || '').toUpperCase(); %>
+            <span class="badge <%= clientStatus === 'ACTIVE' ? 'success' : 'warn' %>">
+              <%= clientStatus === 'BLOCKED' ? 'Blocked' : clientStatus === 'DEACTIVATED' ? 'Deactivated' : 'Active' %>
+            </span>
+          </td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
           <td data-col="totalDeposits"><%= user.totalApprovedDeposits %></td>

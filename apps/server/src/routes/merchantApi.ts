@@ -11,7 +11,7 @@ import { generateTransactionId, generateUniqueReference, generateUserId } from '
 import { tgNotify } from '../services/telegram.js';
 import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
-import { ClientStatus, normalizeClientStatus, upsertMerchantClientMapping } from '../services/merchantClient.js';
+import { normalizeClientStatus, upsertMerchantClientMapping } from '../services/merchantClient.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -139,69 +139,70 @@ merchantApiRouter.post(
     const scope = `deposit:${merchantId}:${body.user.diditSubject}`;
     const idemKey = req.header('Idempotency-Key') ?? undefined;
 
-    const user = await prisma.user.upsert({
-      where: { diditSubject: body.user.diditSubject },
-      create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
-      update: {},
-    });
+    try {
+      const result = await withIdempotency(scope, idemKey, async () => {
+        const user = await prisma.user.upsert({
+          where: { diditSubject: body.user.diditSubject },
+          create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
+          update: {},
+        });
 
-    if (!user.verifiedAt) {
-      return res.forbidden
-        ? res.forbidden('User not verified')
-        : res.status(403).json({ ok: false, error: 'User not verified' });
-    }
+        if (!user.verifiedAt) throw new Error('User not verified');
 
-    const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
-    const status = normalizeClientStatus(mapping?.status);
-    if (status !== 'ACTIVE') {
-      return rejectForClientStatus(res, status);
-    }
+        const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
+        const clientStatus = normalizeClientStatus(mapping?.status);
+        if (clientStatus !== 'ACTIVE') throw new Error('CLIENT_INACTIVE');
 
-    const result = await withIdempotency(scope, idemKey, async () => {
-      // Blocklist check (merchant + user)
-      const blocked = await prisma.payerBlocklist.findFirst({
-        where: { merchantId, userId: user.id, active: true },
-        select: { id: true },
-      });
-      if (blocked) throw new Error('User is blocked');
+        // Blocklist check (merchant + user)
+        const blocked = await prisma.payerBlocklist.findFirst({
+          where: { merchantId, userId: user.id, active: true },
+          select: { id: true },
+        });
+        if (blocked) throw new Error('User is blocked');
 
-      const bank = await prisma.bankAccount.findFirst({
-        where: { active: true, merchantId: null, currency: body.currency },
-      });
-      if (!bank) throw new Error('No active bank account for currency');
+        const bank = await prisma.bankAccount.findFirst({
+          where: { active: true, merchantId: null, currency: body.currency },
+        });
+        if (!bank) throw new Error('No active bank account for currency');
 
-      const referenceCode = generateTransactionId();
-      const uniqueReference = generateUniqueReference();
-      const pr = await prisma.paymentRequest.create({
-        data: {
-          type: 'DEPOSIT',
-          status: 'PENDING',
-          amountCents: body.amountCents,
-          currency: body.currency,
+        const referenceCode = generateTransactionId();
+        const uniqueReference = generateUniqueReference();
+        const pr = await prisma.paymentRequest.create({
+          data: {
+            type: 'DEPOSIT',
+            status: 'PENDING',
+            amountCents: body.amountCents,
+            currency: body.currency,
+            referenceCode,
+            uniqueReference,
+            merchantId,
+            userId: user.id,
+            bankAccountId: bank.id,
+          },
+        });
+        await tgNotify(
+          `🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
+        );
+        return {
+          id: pr.id,
           referenceCode,
-          uniqueReference,
-          merchantId,
-          userId: user.id,
-          bankAccountId: bank.id,
-        },
+          bankDetails: {
+            holderName: bank.holderName,
+            bankName: bank.bankName,
+            accountNo: bank.accountNo,
+            iban: bank.iban,
+            instructions: bank.instructions,
+          },
+        };
       });
-      await tgNotify(
-        `🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
-      );
-      return {
-        id: pr.id,
-        referenceCode,
-        bankDetails: {
-          holderName: bank.holderName,
-          bankName: bank.bankName,
-          accountNo: bank.accountNo,
-          iban: bank.iban,
-          instructions: bank.instructions,
-        },
-      };
-    });
 
-    res.ok(result);
+      res.ok(result);
+    } catch (err: any) {
+      const message = err?.message || '';
+      if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
+      if (message === 'User is blocked') return res.forbidden('User is blocked');
+      return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
+    }
   }
 );
 
@@ -279,10 +280,8 @@ merchantApiRouter.post(
     if (!user || !user.verifiedAt) return res.forbidden('User not verified');
 
     const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
-    const status = normalizeClientStatus(mapping?.status);
-    if (status !== 'ACTIVE') {
-      return rejectForClientStatus(res, status);
-    }
+    const clientStatus = normalizeClientStatus(mapping?.status);
+    if (clientStatus !== 'ACTIVE') return res.forbidden('Client is blocked or deactivated');
 
     // Blocklist check (merchant + user)
     const blocked = await prisma.payerBlocklist.findFirst({

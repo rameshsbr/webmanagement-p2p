@@ -15,6 +15,7 @@ import {
   PaymentExportItem,
 } from '../services/paymentExports.js';
 import { normalizeTimezone, resolveTimezone } from '../lib/timezone.js';
+import { formatClientStatusLabel } from '../services/merchantClient.js';
 
 async function safeNotify(text: string) {
   try {
@@ -1102,9 +1103,7 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
   res.setHeader('Content-Disposition', 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: [
-      'userId','fullName','email','phone','status','accountStatus','registeredAt','lastActivity','totalDeposits','totalWithdrawals','merchants'
-    ],
+    columns: ['userId','fullName','email','phone','verificationStatus','clientStatus','registeredAt','lastActivity','totalDeposits','totalWithdrawals','merchants'],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1113,8 +1112,8 @@ router.get('/export/users.csv', async (req: Request, res: Response) => {
       fullName: user.fullName || '',
       email: user.email || '',
       phone: user.phone || '',
-      status: user.verificationStatus,
-      accountStatus: user.accountStatusLabel,
+      verificationStatus: user.verificationStatus,
+      clientStatus: formatClientStatusLabel(user.clientStatus),
       registeredAt: user.registeredAt.toISOString(),
       lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : '',
       totalDeposits: user.totalApprovedDeposits,
@@ -1138,8 +1137,8 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
     { header: 'Full name', key: 'fullName', width: 24 },
     { header: 'Email', key: 'email', width: 24 },
     { header: 'Phone', key: 'phone', width: 18 },
-    { header: 'Status', key: 'status', width: 14 },
-    { header: 'Account status', key: 'accountStatus', width: 18 },
+    { header: 'Verification status', key: 'status', width: 18 },
+    { header: 'Client status', key: 'clientStatus', width: 16 },
     { header: 'Registered', key: 'registeredAt', width: 24 },
     { header: 'Last activity', key: 'lastActivity', width: 24 },
     { header: 'Total deposits', key: 'totalDeposits', width: 18 },
@@ -1153,7 +1152,7 @@ router.get('/export/users.xlsx', async (req: Request, res: Response) => {
       email: user.email || '',
       phone: user.phone || '',
       status: user.verificationStatus,
-      accountStatus: user.accountStatusLabel,
+      clientStatus: formatClientStatusLabel(user.clientStatus),
       registeredAt: user.registeredAt,
       lastActivity: user.lastActivityAt,
       totalDeposits: user.totalApprovedDeposits,

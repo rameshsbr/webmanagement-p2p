@@ -30,10 +30,17 @@
 
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
-  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, accountStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
-  labelMap: { externalId: 'External ID', registered: 'Date registered', lastActivity: 'Last activity', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', merchants: 'Merchants', didit: 'Didit profile', accountStatus: 'Account status' },
+  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
+  labelMap: { externalId: 'External ID', clientStatus: 'Client status', registered: 'Date registered', lastActivity: 'Last activity', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', merchants: 'Merchants', didit: 'Didit profile' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
+
+<% if (statusMessage) { %>
+  <div class="alert success"><%= statusMessage %></div>
+<% } %>
+<% if (statusError) { %>
+  <div class="alert error"><%= statusError %></div>
+<% } %>
 
 <div class="table-wrap">
   <% const qp = new URLSearchParams(rawQuery || {}); %>
@@ -52,7 +59,7 @@
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
         <th data-col="status">VERIFICATION STATUS</th>
-        <th data-col="accountStatus">ACCOUNT STATUS</th>
+        <th data-col="clientStatus">CLIENT STATUS</th>
         <th data-col="registered">DATE REGISTERED</th>
         <th data-col="lastActivity">LAST ACTIVITY</th>
         <th data-col="totalDeposits">TOTAL DEPOSITS</th>
@@ -73,23 +80,28 @@
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
-          <td data-col="accountStatus">
-            <% if (user.merchantClientId) { %>
-              <form method="POST" action="/superadmin/users/<%= user.merchantClientId %>/status" class="inline-form" style="display:flex; gap:6px; align-items:center; flex-wrap:wrap;">
-                <input type="hidden" name="returnTo" value="<%= currentPath %>">
-                <select name="status">
-                  <option value="ACTIVE" <%= user.accountStatus === 'ACTIVE' ? 'selected' : '' %>>Active</option>
-                  <option value="DEACTIVATED" <%= user.accountStatus === 'DEACTIVATED' ? 'selected' : '' %>>Deactivated</option>
-                  <option value="BLOCKED" <%= user.accountStatus === 'BLOCKED' ? 'selected' : '' %>>Blocked</option>
-                </select>
-                <% if (adminRequiresTotp) { %>
-                  <input type="text" name="totp" placeholder="2FA code" inputmode="numeric" pattern="[0-9]*" style="max-width:120px">
-                <% } %>
-                <button type="submit" class="btn small">Update</button>
-              </form>
-            <% } else { %>
-              <span class="badge warn">Unavailable</span>
-            <% } %>
+          <td data-col="clientStatus" class="info-cell">
+            <% const clientStatus = (user.clientStatus || '').toUpperCase(); %>
+            <div class="info-line" style="align-items:center; gap:6px;">
+              <span class="badge <%= clientStatus === 'ACTIVE' ? 'success' : 'warn' %>">
+                <%= clientStatus === 'BLOCKED' ? 'Blocked' : clientStatus === 'DEACTIVATED' ? 'Deactivated' : 'Active' %>
+              </span>
+            </div>
+            <form method="post" action="/superadmin/users/status" class="inline-form" style="margin-top:6px; gap:6px; align-items:flex-start;">
+              <input type="hidden" name="merchantId" value="<%= user.merchantId %>">
+              <input type="hidden" name="userId" value="<%= user.id %>">
+              <input type="hidden" name="returnTo" value="/superadmin/users?<%= qp.toString() %>">
+              <select name="status" style="min-width:140px;">
+                <option value="ACTIVE" <%= clientStatus==='ACTIVE' ? 'selected' : '' %>>Active</option>
+                <option value="DEACTIVATED" <%= clientStatus==='DEACTIVATED' ? 'selected' : '' %>>Deactivated</option>
+                <option value="BLOCKED" <%= clientStatus==='BLOCKED' ? 'selected' : '' %>>Blocked</option>
+              </select>
+              <div style="display:flex; flex-direction:column; gap:4px;">
+                <input type="text" name="totp" inputmode="numeric" pattern="\d*" placeholder="2FA code" style="width:110px;">
+                <small style="opacity:.7">Unblock requires 2FA when enabled.</small>
+              </div>
+              <button type="submit" class="btn small">Update</button>
+            </form>
           </td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>

@@ -1,5 +1,6 @@
 // apps/server/src/services/checkoutToken.ts
 import { seal, open } from "./secretBox.js";
+import type { ClientStatus } from "./merchantClient.js";
 
 export type CheckoutClaims = {
   merchantId: string;
@@ -8,6 +9,7 @@ export type CheckoutClaims = {
   email?: string | null;
   currency: string; // e.g. "AUD"
   availableBalanceCents?: number; // optional hint for withdrawal UX
+  clientStatus?: ClientStatus;
   iat: number; // unix seconds
   exp: number; // unix seconds
 };

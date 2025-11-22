@@ -382,6 +382,7 @@ model MerchantClient {
   userId     String?
   externalId String?
   email      String?
+  status     ClientStatus @default(ACTIVE)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
@@ -392,6 +393,12 @@ model MerchantClient {
   @@unique([merchantId, externalId])
   @@index([merchantId])
   @@index([userId])
+}
+
+enum ClientStatus {
+  ACTIVE
+  DEACTIVATED
+  BLOCKED
 }
 
 model MerchantLimits {

@@ -24,13 +24,16 @@
 
 <%- include('partials/column-settings', {
   key: 'admin.columns.users',
-  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, registered:true, lastActivity:true, merchants:true, didit:true },
+  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, accountStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
   labelMap: {
     externalId: 'External ID',
     registered: 'Date registered',
     lastActivity: 'Last activity',
+    totalDeposits: 'Total deposits',
+    totalWithdrawals: 'Total withdrawals',
     merchants: 'Merchants',
-    didit: 'Didit profile'
+    didit: 'Didit profile',
+    accountStatus: 'Account status'
   },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
@@ -52,15 +55,18 @@
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
         <th data-col="status">VERIFICATION STATUS</th>
+        <th data-col="accountStatus">ACCOUNT STATUS</th>
         <th data-col="registered">DATE REGISTERED</th>
         <th data-col="lastActivity">LAST ACTIVITY</th>
+        <th data-col="totalDeposits">TOTAL DEPOSITS</th>
+        <th data-col="totalWithdrawals">TOTAL WITHDRAWALS</th>
         <th data-col="merchants">MERCHANTS</th>
         <th data-col="didit">DIDIT PROFILE</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="9" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="13" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
@@ -70,8 +76,11 @@
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? '' : 'warn' %>"><%= user.verificationStatus %></span></td>
+          <td data-col="accountStatus"><span class="badge <%= user.accountStatus === 'ACTIVE' ? 'success' : (user.accountStatus === 'DEACTIVATED' ? 'warn' : 'danger') %>"><%= user.accountStatusLabel %></span></td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
+          <td data-col="totalDeposits"><%= user.totalApprovedDeposits %></td>
+          <td data-col="totalWithdrawals"><%= user.totalApprovedWithdrawals %></td>
           <td data-col="merchants">
             <% if (user.merchants && user.merchants.length) { %>
               <ul class="list-unstyled">

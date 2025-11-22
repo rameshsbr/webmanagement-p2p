@@ -9,7 +9,7 @@ import { prisma } from "../lib/prisma.js";
 import { open as sbOpen, seal, tscmp } from "../services/secretBox.js";
 import { signCheckoutToken, verifyCheckoutToken } from "../services/checkoutToken.js";
 import { generateTransactionId, generateUniqueReference, generateUserId } from "../services/reference.js";
-import { upsertMerchantClientMapping } from "../services/merchantClient.js";
+import { ClientStatus, getMerchantClientStatus, normalizeClientStatus, upsertMerchantClientMapping } from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 
@@ -68,6 +68,15 @@ const upload = multer({
 // ───────────────────────────────────────────────
 const MIN_CENTS = 50 * 100;
 const MAX_CENTS = 5000 * 100;
+
+function rejectForClientStatus(res: any, status: ClientStatus) {
+  const code = status === "BLOCKED" ? "CLIENT_BLOCKED" : "CLIENT_DEACTIVATED";
+  const message =
+    status === "BLOCKED"
+      ? "This account is blocked and cannot perform deposits or withdrawals."
+      : "This account is temporarily deactivated and cannot perform deposits or withdrawals.";
+  return res.status(403).json({ ok: false, error: code, message });
+}
 
 const METHOD = z.enum(["OSKO", "PAYID"]);
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -505,12 +514,16 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
-  await upsertMerchantClientMapping({
+  const mapping = await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
     userId: user.id,
     email: req.checkout.email,
   });
+  const clientStatus = normalizeClientStatus(mapping?.status);
+  if (clientStatus !== "ACTIVE") {
+    return rejectForClientStatus(res, clientStatus);
+  }
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
   }
@@ -610,6 +623,11 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
   }
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
+  }
+
+  const { status: submitStatus } = await getMerchantClientStatus(merchantId, user.id);
+  if (submitStatus !== "ACTIVE") {
+    return rejectForClientStatus(res, submitStatus);
   }
 
   const bank = await loadMerchantBank(merchantId, payload.bankAccountId);
@@ -742,12 +760,17 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
-  await upsertMerchantClientMapping({
+  const mapping = await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
     userId: user.id,
     email: req.checkout.email,
   });
+
+  const withdrawalStatus = normalizeClientStatus(mapping?.status);
+  if (withdrawalStatus !== "ACTIVE") {
+    return rejectForClientStatus(res, withdrawalStatus);
+  }
 
   const hasDeposit = await prisma.paymentRequest.findFirst({
     where: { userId: user.id, merchantId, type: "DEPOSIT", status: "APPROVED" },

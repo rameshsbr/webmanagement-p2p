@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { fetchDiditProfile } from "./didit.js";
+import { ClientStatus, clientStatusLabel, normalizeClientStatus } from "./merchantClient.js";
 
 export type UserDirectoryFilters = {
   merchantIds?: string[];
@@ -19,8 +20,14 @@ export type UserDirectoryItem = {
   registeredAt: Date;
   verifiedAt: Date | null;
   verificationStatus: string;
+  accountStatus: ClientStatus;
+  accountStatusLabel: string;
+  merchantId: string;
+  merchantClientId: string | null;
   merchants: Array<{ id: string; name: string }>;
   lastActivityAt: Date | null;
+  totalApprovedDeposits: number;
+  totalApprovedWithdrawals: number;
   diditProfile?: DiditProfile | null;
 };
 
@@ -158,6 +165,31 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     }),
   ]);
 
+  const userIds = clients.map((row) => row.user?.id).filter(Boolean) as string[];
+
+  const paymentCounts = userIds.length
+    ? await prisma.paymentRequest.groupBy({
+        where: {
+          status: "APPROVED",
+          userId: { in: userIds },
+          merchantId: { in: merchantIds },
+        },
+        by: ["userId", "merchantId", "type"],
+        _count: { _all: true },
+      })
+    : [];
+
+  const totals = new Map<string, { deposits: number; withdrawals: number }>();
+
+  paymentCounts.forEach((row) => {
+    if (!row.userId) return;
+    const key = `${row.userId}:${row.merchantId}`;
+    const current = totals.get(key) || { deposits: 0, withdrawals: 0 };
+    if (row.type === "DEPOSIT") current.deposits = row._count._all;
+    else if (row.type === "WITHDRAWAL") current.withdrawals = row._count._all;
+    totals.set(key, current);
+  });
+
   const merchantMap = new Map<string, string>();
   clients.forEach((row) => {
     merchantMap.set(row.merchantId, row.merchant?.name || row.merchantId);
@@ -191,10 +223,15 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
     const latestKyc = client.user.kyc && client.user.kyc.length ? client.user.kyc[0].status || null : null;
     const verificationStatus = computeStatus(client.user.verifiedAt, latestKyc);
+    const accountStatus = normalizeClientStatus((client as any).status);
+    const accountStatusLabel = clientStatusLabel(accountStatus);
 
     const merchants: Array<{ id: string; name: string }> = [
       { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
     ];
+
+    const key = `${client.user.id}:${client.merchantId}`;
+    const counts = totals.get(key) || { deposits: 0, withdrawals: 0 };
 
     return {
       id: client.user.id,
@@ -207,8 +244,14 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       registeredAt: client.user.createdAt,
       verifiedAt: client.user.verifiedAt,
       verificationStatus,
+      accountStatus,
+      accountStatusLabel,
+      merchantId: client.merchantId,
+      merchantClientId: (client as any).id || null,
       merchants,
       lastActivityAt: latestPayment?.createdAt ?? client.updatedAt ?? null,
+      totalApprovedDeposits: counts.deposits,
+      totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
     };
   });
@@ -277,7 +320,10 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
     lines.push(`${user.publicId} • ${user.fullName || "—"}`);
     lines.push(`External ID: ${user.externalId || "—"}`);
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
+    lines.push(`Account status: ${user.accountStatusLabel}`);
     lines.push(`Status: ${user.verificationStatus}`);
+    lines.push(`Total approved deposits: ${user.totalApprovedDeposits}`);
+    lines.push(`Total approved withdrawals: ${user.totalApprovedWithdrawals}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);
     if (user.lastActivityAt) {
       lines.push(`Last activity: ${user.lastActivityAt.toISOString()}`);

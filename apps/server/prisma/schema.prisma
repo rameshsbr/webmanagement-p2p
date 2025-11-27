@@ -494,6 +494,7 @@ model MerchantFormConfig {
   merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
 
   bankAccountId String?
+  // Keep configuration rows even if a bank account is deleted; avoid cascading loss of settings.
   bankAccount   BankAccount? @relation(fields: [bankAccountId], references: [id], onDelete: SetNull)
 
   // JSON arrays of { name,display,field,placeholder,required,minDigits?,maxDigits?,options? }

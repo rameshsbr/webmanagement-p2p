@@ -720,8 +720,9 @@
         renderDepositInstructions({ box, header, token, claims, intent: resp, close });
         clearDraft("deposit", claims);
       } catch (e) {
-        status.textContent = (e && e.error) ? String(e.error) : "Error";
-        safeCallback("onError", e);
+        const message = (e && (e.message || e.error)) ? String(e.message || e.error) : "Error";
+        status.textContent = message;
+        safeCallback("onError", { ...(e || {}), message });
       }
     });
   }
@@ -945,7 +946,8 @@
         try {
           await ensureKyc(token);
         } catch (e) {
-          status.textContent = (e && e.error) ? String(e.error) : "KYC error";
+          const message = (e && (e.message || e.error)) ? String(e.message || e.error) : "KYC error";
+          status.textContent = message;
           return;
         }
         status.textContent = "Submitting…";
@@ -966,8 +968,9 @@
           id: resp.id, referenceCode: resp.referenceCode, uniqueReference: resp.uniqueReference, amountCents, currency: resp.currency || currencyUnit()
         });
       } catch (e) {
-        status.textContent = (e && e.error) ? String(e.error) : "Error";
-        safeCallback("onError", e);
+        const message = (e && (e.message || e.error)) ? String(e.message || e.error) : "Error";
+        status.textContent = message;
+        safeCallback("onError", { ...(e || {}), message });
       }
     });
 

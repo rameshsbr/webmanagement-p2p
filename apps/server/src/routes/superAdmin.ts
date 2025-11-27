@@ -2180,7 +2180,27 @@ superAdminRouter.post(
     if (!user || user.merchantId !== req.params.id)
       return res.status(404).send("Not found");
 
-    await prisma.merchantUser.delete({ where: { id: user.id } });
+    try {
+      await prisma.merchantUser.delete({ where: { id: user.id } });
+    } catch (err) {
+      if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+        const target = withStatusNotice(
+          `/superadmin/merchants/${req.params.id}/users`,
+          "Cannot delete merchant user while related logs or resets exist.",
+          "error",
+        );
+        return res.redirect(target);
+      }
+
+      console.error("[superadmin merchantUser delete] failed", err);
+      const target = withStatusNotice(
+        `/superadmin/merchants/${req.params.id}/users`,
+        "Failed to delete merchant user",
+        "error",
+      );
+      return res.redirect(target);
+    }
+
     await auditAdmin(req, "merchantUser.delete", "MERCHANT_USER", user.id, {
       merchantId: user.merchantId,
       email: user.email,

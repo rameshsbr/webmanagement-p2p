@@ -28,3 +28,10 @@ Use the token with the PayX widget. A stable internal subject is derived from `(
 ## Deletion policy
 
 Production data is designed to be durable. Cascading deletes are disabled for user, admin, merchant, and payment relations so that removing a parent row will not silently wipe financial history or audit logs. Foreign keys now use `RESTRICT` or `SET NULL` behaviour; if you need to purge related records, do it explicitly with a dedicated cleanup routine instead of relying on implicit cascades.
+
+When deleting rows directly in Prisma Studio or via scripts, expect one of two outcomes:
+
+- If dependent rows exist on a restrictive relation, the delete will fail with a foreign-key error so you can handle the children explicitly.
+- If the relationship is nullable, the parent row deletes cleanly and child foreign keys are nulled without deleting the child records.
+
+This keeps payment history, KYC records, and audit logs intact even when a parent entity is removed.

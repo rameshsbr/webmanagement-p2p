@@ -31,7 +31,7 @@ import {
   listMerchantBalances,
 } from "../services/merchantAccounts.js";
 import { formatClientStatusLabel, normalizeClientStatus } from "../services/merchantClient.js";
-import type { MerchantAccountEntryType } from "@prisma/client";
+import { Prisma, type MerchantAccountEntryType } from "@prisma/client";
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
@@ -963,9 +963,24 @@ superAdminRouter.post("/admins/:id/reset-2fa", async (req, res) => {
 superAdminRouter.post("/admins/:id/delete", async (req, res) => {
   const id = req.params.id;
   const a = await prisma.adminUser.findUnique({ where: { id } });
-  await prisma.adminUser.delete({ where: { id } });
+  try {
+    await prisma.adminUser.delete({ where: { id } });
+  } catch (err) {
+    if (err instanceof Prisma.PrismaClientKnownRequestError && err.code === "P2003") {
+      const target = withStatusNotice(
+        "/superadmin/admins",
+        "Cannot delete admin while audit/login/reset records exist.",
+        "error",
+      );
+      return res.redirect(target);
+    }
+
+    console.error("[superadmin admin delete] failed", err);
+    return res.redirect(withStatusNotice("/superadmin/admins", "Failed to delete admin", "error"));
+  }
+
   await auditAdmin(req, "admin.delete", "ADMIN", id, { email: a?.email });
-  res.redirect("/superadmin/admins");
+  res.redirect(withStatusNotice("/superadmin/admins", "Admin deleted", "success"));
 });
 
 // Create a password reset link for an Admin

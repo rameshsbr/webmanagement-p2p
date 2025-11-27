@@ -596,17 +596,28 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   const sessionEndpoint = root.getAttribute('data-session-endpoint') || '/merchant/payments/test/session';
   let subject = root.getAttribute('data-default-subject') || '';
   let bootstrapToken = root.getAttribute('data-initial-token') || '';
+  let locked = false;
 
   const notify = (msg) => {
     if (typeof window.toast === 'function') window.toast(msg || 'Something went wrong');
     else if (msg) console.warn(msg);
   };
 
+  const messageEl = root.querySelector('[data-test-message]');
+  const setMessage = (text, variant = 'info') => {
+    if (!messageEl) return;
+    messageEl.textContent = text || '';
+    messageEl.style.display = text ? '' : 'none';
+    messageEl.style.color = variant === 'error' ? 'var(--danger, #b91c1c)' : '';
+    messageEl.style.opacity = text ? '.9' : '.85';
+  };
+
   const setBusy = (busy) => {
     buttons.forEach((btn) => {
-      btn.disabled = !!busy;
+      btn.disabled = !!busy || locked;
       btn.style.opacity = busy ? '.6' : '';
     });
+    if (busy) setMessage('Preparing checkout…');
   };
 
   const loadPayX = (() => {
@@ -639,9 +650,12 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data || !data.ok) {
-      const err = (data && data.error) || 'Unable to prepare checkout';
-      throw new Error(err);
+      const err = new Error((data && (data.message || data.error)) || 'Unable to prepare checkout');
+      err.code = data && data.error ? data.error : '';
+      err.clientStatus = data && data.clientStatus ? data.clientStatus : '';
+      throw err;
     }
+    if (data.clientStatus) setMessage(`Client status: ${data.clientStatus}`);
     subject = data.subject || subject;
     return data.token;
   };
@@ -664,7 +678,14 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       if (kind === 'deposit') PayX.openDeposit();
       else PayX.openWithdrawal();
     } catch (err) {
-      notify((err && err.message) || 'Unable to open checkout');
+      const message = (err && err.message) || 'Unable to open checkout';
+      notify(message);
+      if (err && (err.code === 'CLIENT_INACTIVE' || err.clientStatus)) {
+        locked = true;
+        setMessage(message, 'error');
+      } else {
+        setMessage(message, 'error');
+      }
     } finally {
       setBusy(false);
     }

@@ -817,7 +817,12 @@ router.post("/payments/test/session", async (req: any, res) => {
   if (clientStatus !== "ACTIVE") {
     return res
       .status(403)
-      .json({ ok: false, error: "CLIENT_INACTIVE", message: `Client is ${formatClientStatusLabel(clientStatus)}` });
+      .json({
+        ok: false,
+        error: "CLIENT_INACTIVE",
+        message: `Client is ${formatClientStatusLabel(clientStatus)}`,
+        clientStatus: formatClientStatusLabel(clientStatus),
+      });
   }
   const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId, clientStatus });
   res.json({

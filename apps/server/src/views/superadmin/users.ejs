@@ -22,9 +22,19 @@
   </div>
 </form>
 
-<% if (statusMessage) { %>
-  <div class="card" style="margin:12px 0; background:<%= statusVariant==='error' ? '#fff1f2' : '#ecfdf3' %>; border:1px solid <%= statusVariant==='error' ? '#fecdd3' : '#bbf7d0' %>; color:<%= statusVariant==='error' ? '#b91c1c' : '#166534' %>;">
-    <%= statusMessage %>
+<%
+  const hasStatus = !!(statusMessage || statusError);
+  const statusVariant = statusError ? 'error' : 'success';
+  const flashText = statusError || statusMessage;
+%>
+
+<% if (hasStatus) { %>
+  <div class="card"
+       style="margin:12px 0;
+              background:<%= statusVariant === 'error' ? '#fff1f2' : '#ecfdf3' %>;
+              border:1px solid <%= statusVariant === 'error' ? '#fecdd3' : '#bbf7d0' %>;
+              color:<%= statusVariant === 'error' ? '#b91c1c' : '#166534' %>;">
+    <%= flashText %>
   </div>
 <% } %>
 

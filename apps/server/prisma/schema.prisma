@@ -204,11 +204,11 @@ model PaymentRequest {
   user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   bankAccountId String?
-  bankAccount   BankAccount? @relation("BankToPayment", fields: [bankAccountId], references: [id])
+  bankAccount   BankAccount? @relation("BankToPayment", fields: [bankAccountId], references: [id], onDelete: SetNull)
 
   // OLD single receipt (kept)
   receiptFileId String?      @unique
-  receiptFile   ReceiptFile? @relation("ReceiptToPayment", fields: [receiptFileId], references: [id])
+  receiptFile   ReceiptFile? @relation("ReceiptToPayment", fields: [receiptFileId], references: [id], onDelete: SetNull)
 
   // NEW multi-receipt (Phase 2)
   receipts ReceiptFile[] @relation("PaymentReceipts")

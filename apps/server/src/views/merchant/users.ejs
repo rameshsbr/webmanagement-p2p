@@ -16,7 +16,7 @@
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
   defaults: { userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', didit: 'Didit subject', clientStatus: 'Client status', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals' },
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', clientStatus: 'Client status', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -43,7 +43,6 @@
         <th data-col="lastActivity">LAST ACTIVITY</th>
         <th data-col="totalDeposits">TOTAL DEPOSITS</th>
         <th data-col="totalWithdrawals">TOTAL WITHDRAWALS</th>
-        <th data-col="didit">DIDIT SUBJECT</th>
       </tr>
     </thead>
     <tbody>
@@ -69,7 +68,6 @@
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
           <td data-col="totalDeposits"><%= user.totalApprovedDeposits %></td>
           <td data-col="totalWithdrawals"><%= user.totalApprovedWithdrawals %></td>
-          <td data-col="didit"><span class="mono"><%= user.diditSubject %></span></td>
         </tr>
       <% }) %>
     </tbody>

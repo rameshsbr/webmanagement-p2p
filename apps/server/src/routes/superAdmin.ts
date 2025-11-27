@@ -38,6 +38,11 @@ import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 
 export const superAdminRouter = Router();
 
+function normalizeCurrency(currency: string | null | undefined) {
+  if (!currency) return null;
+  return currency.toUpperCase();
+}
+
 // Require SUPER role
 superAdminRouter.use(requireRole(["SUPER"]));
 
@@ -2348,6 +2353,8 @@ superAdminRouter.get("/accounts/balance", async (_req, res) => {
   res.render("superadmin/accounts-balance", {
     title: "Accounts · Balance",
     balances,
+    normalizeCurrency,
+    formatAmount: (v: number) => (v / 100).toFixed(2),
   });
 });
 

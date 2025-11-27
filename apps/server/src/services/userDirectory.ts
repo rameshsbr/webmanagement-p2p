@@ -1,3 +1,4 @@
+import { PaymentStatus, PaymentType } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { fetchDiditProfile } from "./didit.js";
 import { normalizeClientStatus, formatClientStatusLabel, type ClientStatus } from "./merchantClient.js";
@@ -177,7 +178,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   const paymentCounts = userIds.length
     ? await prisma.paymentRequest.groupBy({
         where: {
-          status: "APPROVED",
+          status: PaymentStatus.APPROVED,
           userId: { in: userIds },
           merchantId: { in: merchantIds },
         },
@@ -192,8 +193,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     if (!row.userId) return;
     const key = `${row.userId}:${row.merchantId}`;
     const current = totals.get(key) || { deposits: 0, withdrawals: 0 };
-    if (row.type === "DEPOSIT") current.deposits = row._count._all;
-    else if (row.type === "WITHDRAWAL") current.withdrawals = row._count._all;
+    if (row.type === PaymentType.DEPOSIT) current.deposits = row._count._all;
+    else if (row.type === PaymentType.WITHDRAWAL) current.withdrawals = row._count._all;
     totals.set(key, current);
   });
 

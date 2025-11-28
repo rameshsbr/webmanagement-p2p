@@ -31,6 +31,9 @@ export type UserDirectoryItem = {
   totalApprovedDeposits: number;
   totalApprovedWithdrawals: number;
   diditProfile?: DiditProfile | null;
+
+  /** true when manual name and Didit name differ significantly */
+  nameMismatchWarning?: boolean;
 };
 
 export type UserDirectoryResult = {
@@ -52,7 +55,10 @@ const DEFAULT_PAGE = 1;
 const DEFAULT_PER_PAGE = 25;
 const MAX_PER_PAGE = 250;
 
-function normalizePagination(pageRaw: number | string | null | undefined, perPageRaw: number | string | null | undefined) {
+function normalizePagination(
+  pageRaw: number | string | null | undefined,
+  perPageRaw: number | string | null | undefined
+) {
   const pageNum = Number(pageRaw);
   const perPageNum = Number(perPageRaw);
   const page = Number.isFinite(pageNum) && pageNum > 0 ? Math.floor(pageNum) : DEFAULT_PAGE;
@@ -62,6 +68,9 @@ function normalizePagination(pageRaw: number | string | null | undefined, perPag
   return { page, perPage };
 }
 
+/**
+ * Pull a name from the payment request JSON (payer / destination / extras).
+ */
 function computeFullName(candidate: any): string | null {
   if (!candidate) return null;
   const payer = candidate?.payer || {};
@@ -75,6 +84,34 @@ function computeFullName(candidate: any): string | null {
   ].map((v: any) => (typeof v === "string" ? v.trim() : ""));
   const name = names.find((n) => n.length > 1);
   return name || null;
+}
+
+/**
+ * Very simple token-based similarity for names.
+ * Returns 0–1, where 1 = all words match (order doesn’t matter).
+ */
+function normalizeNameTokens(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function computeNameSimilarity(a: string | null, b: string | null): number {
+  if (!a || !b) return 0;
+  const tokensA = new Set(normalizeNameTokens(a));
+  const tokensB = new Set(normalizeNameTokens(b));
+  if (!tokensA.size || !tokensB.size) return 0;
+
+  let intersection = 0;
+  tokensA.forEach((t) => {
+    if (tokensB.has(t)) intersection += 1;
+  });
+
+  // Sørensen–Dice on tokens
+  return (2 * intersection) / (tokensA.size + tokensB.size);
 }
 
 function computeStatus(verifiedAt: Date | null, latestKyc: string | null): string {
@@ -229,9 +266,35 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     const payments = user?.paymentReqs ?? [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
+
+    // 1) Manual name from payment (payer / account holder field)
     const manualName = computeFullName(details);
+
+    // 2) Name from Didit profile (if any)
     const profile = diditProfiles[index];
-    const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
+    const diditName = profile?.fullName ? profile.fullName.trim() : null;
+
+    // 3) Decide which name to display + whether to flag mismatch
+    let fullName: string | null = manualName || diditName || null;
+    let nameMismatchWarning = false;
+
+    if (diditName) {
+      if (!manualName) {
+        // Only Didit name available → use it
+        fullName = diditName;
+      } else {
+        const similarity = computeNameSimilarity(manualName, diditName);
+        if (similarity < 0.8) {
+          // < 80% similar → override with Didit + show warning
+          fullName = diditName;
+          nameMismatchWarning = true;
+        } else {
+          // Names close enough → keep the payer-typed name
+          fullName = manualName;
+        }
+      }
+    }
+
     const latestKyc = (user?.kyc && user.kyc.length ? user.kyc[0].status || null : null) ?? null;
     const verificationStatus = computeStatus(user?.verifiedAt ?? null, latestKyc);
 
@@ -266,6 +329,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       totalApprovedDeposits: counts.deposits,
       totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
+      nameMismatchWarning,
     };
   });
 

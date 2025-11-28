@@ -54,7 +54,18 @@
           <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
           <td data-col="diditSubject"><span class="mono"><%= user.diditSubject %></span></td>
-          <td data-col="fullName"><%= user.fullName || '—' %></td>
+          <td data-col="fullName" class="info-cell">
+            <div class="info-line" style="align-items:center; gap:6px;">
+              <span>
+                <%= user.fullName || '—' %>
+              </span>
+              <% if (user.nameMismatchWarning) { %>
+                <span class="badge warn" title="Name entered by payer does not match Didit-verified name">
+                  Name mismatch
+                </span>
+                <% } %>
+            </div>
+          </td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>

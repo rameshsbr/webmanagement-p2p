@@ -2,23 +2,26 @@ import { upsertMerchantClientMapping } from "./merchantClient.js";
 import { generateUserId } from "./reference.js";
 
 // apps/server/src/services/didit.ts
-// Placeholder integration for Didit + real Low-Code API helpers.
-// Uses env:
-//   DIDIT_API_BASE (default https://api.didit.me)
+// Integration for Didit Low-Code + profile helpers.
+//
+// Env used:
+//   DIDIT_API_BASE        (default https://api.didit.me)
 //   DIDIT_APP_ID
 //   DIDIT_WORKFLOW_ID
 //   DIDIT_REDIRECT_URL
-//   DIDIT_API_KEY                (optional; may not work for Low-Code endpoints)
-//   DIDIT_CLIENT_ID              (recommended; OAuth client credentials)
-//   DIDIT_CLIENT_SECRET          (recommended; OAuth client credentials)
-//   DIDIT_AUTH_URL               (recommended; e.g. https://auth.didit.me/oauth/token)
-//   DIDIT_AUDIENCE               (optional; if Didit requires an 'audience' for the token)
-//   DIDIT_DEBUG                  (optional; set to "1" to log auth/link details)
+//   DIDIT_API_KEY         (for v2 /session and optionally profile)
+//   DIDIT_CLIENT_ID       (for OAuth client credentials; recommended for profile/v1 APIs)
+//   DIDIT_CLIENT_SECRET
+//   DIDIT_AUTH_URL        (e.g. https://auth.didit.me/oauth/token or similar)
+//   DIDIT_AUDIENCE        (optional; if Didit requires audience)
+//   DIDIT_DEBUG           ("1" to log extra info)
 //
-// Additional (for v2 Verification Links):
-//   DIDIT_VERIFICATION_BASE      (default https://verification.didit.me)
-//   DIDIT_CALLBACK_URL           (optional; webhook for v2)
-//   DIDIT_USE_V1                 ("1" to force legacy v1 flow even if API key exists)
+// Additional (v2 Verification Links):
+//   DIDIT_VERIFICATION_BASE (default https://verification.didit.me)
+//   DIDIT_CALLBACK_URL      (optional; webhook for v2)
+//   DIDIT_USE_V1            ("1" to force legacy v1 even if API key exists)
+//
+// NOTE: Low-code v2 uses x-api-key. Management/profile APIs usually use Bearer tokens.
 
 const DIDIT_DEBUG = String(process.env.DIDIT_DEBUG || "") === "1";
 
@@ -65,14 +68,24 @@ export async function handleDiditWebhook(
   let user = await p.user.findUnique({ where: { diditSubject } });
   if (!user) {
     user = await p.user.create({
-      data: { publicId: generateUserId(), diditSubject, verifiedAt: status === "approved" ? new Date() : null },
+      data: {
+        publicId: generateUserId(),
+        diditSubject,
+        verifiedAt: status === "approved" ? new Date() : null,
+      },
     });
   } else if (status === "approved" && !user.verifiedAt) {
     await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
   }
+
   await p.kycVerification.upsert({
     where: { externalSessionId: sessionId },
-    create: { externalSessionId: sessionId, provider: "didit", status, userId: user.id },
+    create: {
+      externalSessionId: sessionId,
+      provider: "didit",
+      status,
+      userId: user.id,
+    },
     update: { status, userId: user.id },
   });
 
@@ -94,32 +107,97 @@ export type DiditProfile = {
   status?: string | null;
 };
 
+// ───────────────────────────────────────────────────────────────
+// PROFILE FETCH
+// ───────────────────────────────────────────────────────────────
+
 export async function fetchDiditProfile(subject: string): Promise<DiditProfile | null> {
   if (!subject) return null;
-  const token = await getDiditAccessToken();
-  if (!token) return null;
+
+  // Some setups store things like "m:<merchantId>:<something>".
+  // If that’s the case, also try the last segment as a fallback ID.
+  const candidates = [subject];
+  if (subject.includes(":")) {
+    const last = subject.split(":").pop() || "";
+    if (last && last !== subject) candidates.push(last);
+  }
 
   const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
-  const url = `${base}/users/${encodeURIComponent(subject)}`;
 
-  try {
-    const res = await fetch(url, {
+  // Prefer OAuth bearer if configured
+  const oauthToken = await getDiditAccessToken(); // only OAuth / access-token flows
+  const apiKey = process.env.DIDIT_API_KEY || null;
+
+  // We will try in this order:
+  //  1) OAuth bearer (if available)
+  //  2) Bearer API key (if available)
+  //  3) x-api-key (if available)
+  const headerVariants: Array<{ kind: string; headers: Record<string, string> }> = [];
+
+  if (oauthToken) {
+    headerVariants.push({
+      kind: "oauth-bearer",
       headers: {
-        Authorization: `Bearer ${token}`,
+        Authorization: `Bearer ${oauthToken}`,
         Accept: "application/json",
       },
     });
-    if (!res.ok) return null;
-    const json: any = await res.json();
-    return {
-      fullName: json?.name || json?.full_name || json?.fullName || null,
-      email: json?.email || null,
-      phone: json?.phone || json?.phone_number || null,
-      status: json?.status || null,
-    };
-  } catch {
+  }
+
+  if (apiKey) {
+    headerVariants.push({
+      kind: "api-key-bearer",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        Accept: "application/json",
+      },
+    });
+    headerVariants.push({
+      kind: "api-key-header",
+      headers: {
+        "x-api-key": apiKey,
+        Accept: "application/json",
+      },
+    });
+  }
+
+  if (!headerVariants.length) {
+    logDebug("fetchDiditProfile: no auth configured (no OAuth, no API key)");
     return null;
   }
+
+  for (const idCandidate of candidates) {
+    const url = `${base}/users/${encodeURIComponent(idCandidate)}`;
+    for (const variant of headerVariants) {
+      try {
+        logDebug("fetchDiditProfile", idCandidate, "via", variant.kind, "→", url);
+        const res = await fetch(url, { headers: variant.headers });
+        logDebug("fetchDiditProfile", idCandidate, variant.kind, "status", res.status);
+
+        if (res.status === 401 || res.status === 403) {
+          // auth issue – try next variant
+          continue;
+        }
+        if (!res.ok) {
+          // 404 / 500 / etc — try next candidate id
+          continue;
+        }
+
+        const json: any = await res.json();
+        return {
+          fullName: json?.name || json?.full_name || json?.fullName || null,
+          email: json?.email || null,
+          phone: json?.phone || json?.phone_number || null,
+          status: json?.status || null,
+        };
+      } catch (e) {
+        logDebug("fetchDiditProfile error", (e as any)?.message || e);
+      }
+    }
+  }
+
+  // If we got here, nothing worked
+  return null;
 }
 
 // ───────────────────────────────────────────────────────────────
@@ -139,9 +217,9 @@ async function getDiditAccessToken(): Promise<string | null> {
   if (clientId && clientSecret) {
     const apiBase = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
     const candidates = [
-      process.env.DIDIT_AUTH_URL,                 // preferred if you set it
-      "https://auth.didit.me/oauth/token",        // common pattern
-      `${apiBase}/oauth/token`,                   // fallback guess
+      process.env.DIDIT_AUTH_URL, // preferred if you set it
+      "https://auth.didit.me/oauth/token", // common pattern
+      `${apiBase}/oauth/token`, // fallback guess
     ].filter(Boolean) as string[];
 
     const audience = process.env.DIDIT_AUDIENCE || undefined;
@@ -176,10 +254,10 @@ async function getDiditAccessToken(): Promise<string | null> {
     return null;
   }
 
-  // No client creds—try the old API key as bearer (may not work for Low-Code)
+  // No client creds – do NOT treat API key as OAuth token here.
+  // API key is handled separately (x-api-key / Bearer) by callers.
   if (process.env.DIDIT_API_KEY) {
-    logDebug("Falling back to DIDIT_API_KEY as bearer");
-    return process.env.DIDIT_API_KEY;
+    logDebug("DIDIT_API_KEY present (used directly by callers, not as OAuth token)");
   }
 
   return null;
@@ -188,9 +266,45 @@ async function getDiditAccessToken(): Promise<string | null> {
 // ───────────────────────────────────────────────────────────────
 // v2 Verification Links helpers (preferred if DIDIT_API_KEY is present)
 // ───────────────────────────────────────────────────────────────
+type CreateLinkInput = {
+  subject: string;
+  merchantId?: string | null;
+  externalId?: string | null;
+  email?: string | null;
+};
+type CreateLinkOutput = { url: string; sessionId: string };
+
+type DiditMeta = {
+  subject: string;
+  merchantId: string;
+  externalId?: string | null;
+  email?: string | null;
+};
+
+function buildVendorData(meta: DiditMeta) {
+  // NOTE: You mentioned seeing something like "m:cmiboed...:KgU4ApS..."
+  // in Didit "Vendor data" – that likely comes from here or the caller.
+  // Keeping this simple; the important part is that `subject` is stable per user.
+  return `${meta.merchantId}|${meta.subject}`;
+}
+
+function buildCallbackUrl(meta: DiditMeta) {
+  const base =
+    process.env.DIDIT_CALLBACK_URL ||
+    `${process.env.PUBLIC_URL || "http://localhost:4000"}/webhooks/didit`;
+  const qp = new URLSearchParams({
+    merchantId: meta.merchantId,
+    diditSubject: meta.subject,
+  });
+  return `${base}?${qp.toString()}`;
+}
+
 async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sessionId: string }> {
   const apiKey = process.env.DIDIT_API_KEY;
-  const base = (process.env.DIDIT_VERIFICATION_BASE || "https://verification.didit.me").replace(/\/+$/, "");
+  const base = (process.env.DIDIT_VERIFICATION_BASE || "https://verification.didit.me").replace(
+    /\/+$/,
+    ""
+  );
   const workflowId = process.env.DIDIT_WORKFLOW_ID;
 
   if (!apiKey) throw new Error("DIDIT_API_KEY missing");
@@ -204,7 +318,12 @@ async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sess
       externalId: input.externalId,
       email: input.email,
     }),
-    callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
+    callback: buildCallbackUrl({
+      merchantId: input.merchantId || "",
+      subject: input.subject,
+      externalId: input.externalId,
+      email: input.email,
+    }),
   };
 
   const url = `${base}/v2/session/`;
@@ -230,16 +349,20 @@ async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sess
   const sessionId = json?.session_id || json?.id || json?.sessionId;
   const link = json?.url || json?.verification_url || json?.link;
 
-  if (!sessionId || !link) throw new Error("Didit v2 create link: unexpected response shape");
+  if (!sessionId || !link) {
+    throw new Error("Didit v2 create link: unexpected response shape");
+  }
   return { url: String(link), sessionId: String(sessionId) };
 }
 
 async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | "rejected"> {
   const apiKey = process.env.DIDIT_API_KEY;
-  const base = (process.env.DIDIT_VERIFICATION_BASE || "https://verification.didit.me").replace(/\/+$/, "");
+  const base = (process.env.DIDIT_VERIFICATION_BASE || "https://verification.didit.me").replace(
+    /\/+$/,
+    ""
+  );
   if (!apiKey) throw new Error("DIDIT_API_KEY missing");
 
-  // API works both with and without the trailing slash; include it to match docs
   const url = `${base}/v2/session/${encodeURIComponent(sessionId)}/`;
   logDebug("getStatusV2 →", url);
 
@@ -250,34 +373,19 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 
   const json: any = JSON.parse(raw);
   const st = String(json?.status || "").toLowerCase();
-  // Didit returns e.g. "Not Started", "In Progress", "Approved", "Rejected", "Completed"
   if (st.includes("approve") || st.includes("complete")) return "approved";
   if (st.includes("reject") || st.includes("fail")) return "rejected";
   return "pending";
 }
 
 // ───────────────────────────────────────────────────────────────
-// Real Didit Low-Code API helpers (legacy v1 via OAuth/Bearer)
+// v1 Low-Code helpers (OAuth/Bearer)
 // ───────────────────────────────────────────────────────────────
-type CreateLinkInput = { subject: string; merchantId?: string | null; externalId?: string | null; email?: string | null };
-type CreateLinkOutput = { url: string; sessionId: string };
-
-type DiditMeta = { subject: string; merchantId: string; externalId?: string | null; email?: string | null };
-
-function buildVendorData(meta: DiditMeta) {
-  return `${meta.merchantId}|${meta.subject}`;
-}
-
-function buildCallbackUrl(meta: DiditMeta) {
-  const base = process.env.DIDIT_CALLBACK_URL || `${process.env.PUBLIC_URL || "http://localhost:4000"}/webhooks/didit`;
-  const qp = new URLSearchParams({ merchantId: meta.merchantId, diditSubject: meta.subject });
-  return `${base}?${qp.toString()}`;
-}
 
 /**
  * Create a Didit Low-Code verification link (v1 OAuth).
- * Prefers OAuth access token; falls back to raw API key if present.
- * Requires DIDIT_APP_ID + DIDIT_WORKFLOW_ID.
+ * Prefers OAuth access token; does NOT use API key as OAuth.
+ * Requires DIDIT_APP_ID + DIDIT_WORKFLOW_ID (+ OAuth creds).
  */
 async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
   const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
@@ -290,14 +398,24 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
   const token = await getDiditAccessToken();
   if (!token) {
     throw new Error(
-      "Didit auth not configured. Set DIDIT_CLIENT_ID/DIDIT_CLIENT_SECRET (+DIDIT_AUTH_URL) or DIDIT_API_KEY."
+      "Didit auth not configured. Set DIDIT_CLIENT_ID/DIDIT_CLIENT_SECRET (+DIDIT_AUTH_URL) for v1 endpoints."
     );
   }
 
   const body = {
     subject: input.subject,
-    vendor_data: buildVendorData({ merchantId: input.merchantId || "", subject: input.subject }),
-    callback: buildCallbackUrl({ merchantId: input.merchantId || "", subject: input.subject }),
+    vendor_data: buildVendorData({
+      merchantId: input.merchantId || "",
+      subject: input.subject,
+      externalId: input.externalId,
+      email: input.email,
+    }),
+    callback: buildCallbackUrl({
+      merchantId: input.merchantId || "",
+      subject: input.subject,
+      externalId: input.externalId,
+      email: input.email,
+    }),
     appId,
     workflowId,
     redirectUrl:
@@ -320,7 +438,6 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
   logDebug("createLinkV1 status", res.status, raw);
 
   if (!res.ok) {
-    // Be explicit on the common auth failure to save time
     if (res.status === 401 || res.status === 403) {
       throw new Error(
         `Didit auth failed (${res.status}). Ensure OAuth client creds are correct. Response: ${raw}`

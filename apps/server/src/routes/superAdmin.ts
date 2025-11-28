@@ -1345,7 +1345,7 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
   res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: ["userId","fullName","email","phone","verificationStatus","clientStatus","registeredAt","lastActivity","totalDeposits","totalWithdrawals","merchants","latestSessionId"],
+    columns: ["userId","fullName","email","phone","verificationStatus","clientStatus","registeredAt","lastActivity","totalDeposits","totalWithdrawals","merchants"],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1361,7 +1361,6 @@ superAdminRouter.get("/export/users.csv", async (req, res) => {
       totalDeposits: user.totalApprovedDeposits,
       totalWithdrawals: user.totalApprovedWithdrawals,
       merchants: user.merchants.map((m) => m.name).join(", "),
-      latestSessionId: user.latestSessionId || "",
     });
   });
   csv.end();
@@ -1386,7 +1385,6 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
     { header: "Total deposits", key: "totalDeposits", width: 18 },
     { header: "Total withdrawals", key: "totalWithdrawals", width: 20 },
     { header: "Merchants", key: "merchants", width: 30 },
-    { header: "Latest Session ID", key: "latestSessionId", width: 28 },
   ];
   items.forEach((user) => {
     ws.addRow({
@@ -1401,7 +1399,6 @@ superAdminRouter.get("/export/users.xlsx", async (req, res) => {
       totalDeposits: user.totalApprovedDeposits,
       totalWithdrawals: user.totalApprovedWithdrawals,
       merchants: user.merchants.map((m) => m.name).join(", "),
-      latestSessionId: user.latestSessionId || "",
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

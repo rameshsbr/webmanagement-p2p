@@ -1021,7 +1021,7 @@ router.get("/export/users.csv", async (req: any, res) => {
   res.setHeader("Content-Disposition", 'attachment; filename="clients.csv"');
   const csv = stringify({
     header: true,
-    columns: ["userId","fullName","email","phone","verificationStatus","clientStatus","registeredAt","lastActivity","totalDeposits","totalWithdrawals","latestSessionId"],
+    columns: ["userId","fullName","email","phone","verificationStatus","clientStatus","registeredAt","lastActivity","totalDeposits","totalWithdrawals"],
   });
   csv.pipe(res);
   items.forEach((user) => {
@@ -1036,7 +1036,6 @@ router.get("/export/users.csv", async (req: any, res) => {
       lastActivity: user.lastActivityAt ? user.lastActivityAt.toISOString() : "",
       totalDeposits: user.totalApprovedDeposits,
       totalWithdrawals: user.totalApprovedWithdrawals,
-      latestSessionId: user.latestSessionId || "",
     });
   });
   csv.end();
@@ -1060,7 +1059,6 @@ router.get("/export/users.xlsx", async (req: any, res) => {
     { header: "Last activity", key: "lastActivity", width: 24 },
     { header: "Total deposits", key: "totalDeposits", width: 18 },
     { header: "Total withdrawals", key: "totalWithdrawals", width: 20 },
-    { header: "Latest Session ID", key: "latestSessionId", width: 28 },
   ];
   items.forEach((user) => {
     ws.addRow({
@@ -1074,7 +1072,6 @@ router.get("/export/users.xlsx", async (req: any, res) => {
       lastActivity: user.lastActivityAt || null,
       totalDeposits: user.totalApprovedDeposits,
       totalWithdrawals: user.totalApprovedWithdrawals,
-      latestSessionId: user.latestSessionId || "",
     });
   });
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");

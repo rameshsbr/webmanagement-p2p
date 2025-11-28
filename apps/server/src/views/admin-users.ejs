@@ -24,7 +24,7 @@
 
 <%- include('partials/column-settings', {
   key: 'admin.columns.users',
-  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true },
+  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true, latestSessionId:false },
   labelMap: {
     externalId: 'External ID',
     clientStatus: 'Client status',
@@ -34,7 +34,8 @@
     totalWithdrawals: 'Total withdrawals',
     merchants: 'Merchants',
     didit: 'Didit profile',
-    accountStatus: 'Account status'
+    accountStatus: 'Account status',
+    latestSessionId: 'Latest session ID'
   },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
@@ -63,11 +64,12 @@
         <th data-col="totalWithdrawals">TOTAL WITHDRAWALS</th>
         <th data-col="merchants">MERCHANTS</th>
         <th data-col="didit">DIDIT PROFILE</th>
+        <th data-col="latestSessionId">LATEST SESSION ID</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="13" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
@@ -117,6 +119,9 @@
             <% } else { %>
               -
             <% } %>
+          </td>
+          <td data-col="latestSessionId">
+            <span class="mono"><%= user.latestSessionId || '—' %></span>
           </td>
         </tr>
       <% }) %>

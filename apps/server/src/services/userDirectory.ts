@@ -31,6 +31,7 @@ export type UserDirectoryItem = {
   totalApprovedDeposits: number;
   totalApprovedWithdrawals: number;
   diditProfile?: DiditProfile | null;
+  latestSessionId?: string | null;
 };
 
 export type UserDirectoryResult = {
@@ -160,7 +161,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
               take: 5,
             },
             kyc: {
-              select: { status: true, createdAt: true },
+              select: { status: true, createdAt: true, externalSessionId: true },
               orderBy: { createdAt: "desc" },
               take: 1,
             },
@@ -232,8 +233,10 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     const manualName = computeFullName(details);
     const profile = diditProfiles[index];
     const fullName = (profile?.fullName && profile.fullName.trim()) || manualName;
-    const latestKyc = (user?.kyc && user.kyc.length ? user.kyc[0].status || null : null) ?? null;
-    const verificationStatus = computeStatus(user?.verifiedAt ?? null, latestKyc);
+    const latestKycRow = user?.kyc && user.kyc.length ? user.kyc[0] : null;
+    const latestKycStatus = latestKycRow?.status || null;
+    const latestSessionId = latestKycRow?.externalSessionId || null;
+    const verificationStatus = computeStatus(user?.verifiedAt ?? null, latestKycStatus);
 
     const merchants: Array<{ id: string; name: string }> = [
       { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
@@ -266,6 +269,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       totalApprovedDeposits: counts.deposits,
       totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
+    
+      latestSessionId,
     };
   });
 
@@ -335,6 +340,9 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
     lines.push(`Client status: ${formatClientStatusLabel(user.clientStatus)}`);
     lines.push(`Status: ${user.verificationStatus}`);
+    if (user.latestSessionId) {
+      lines.push(`Latest session ID: ${user.latestSessionId}`);
+    }
     lines.push(`Total approved deposits: ${user.totalApprovedDeposits}`);
     lines.push(`Total approved withdrawals: ${user.totalApprovedWithdrawals}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);

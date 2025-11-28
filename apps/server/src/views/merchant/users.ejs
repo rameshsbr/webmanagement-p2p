@@ -15,8 +15,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
-  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', clientStatus: 'Client status', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals' },
+  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, latestSessionId:false },
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', clientStatus: 'Client status', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', latestSessionId: 'Latest session ID' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -43,11 +43,12 @@
         <th data-col="lastActivity">LAST ACTIVITY</th>
         <th data-col="totalDeposits">TOTAL DEPOSITS</th>
         <th data-col="totalWithdrawals">TOTAL WITHDRAWALS</th>
+        <th data-col="latestSessionId">LATEST SESSION ID</th>
       </tr>
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="12" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="13" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
@@ -68,6 +69,9 @@
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>
           <td data-col="totalDeposits"><%= user.totalApprovedDeposits %></td>
           <td data-col="totalWithdrawals"><%= user.totalApprovedWithdrawals %></td>
+          <td data-col="latestSessionId">
+            <span class="mono"><%= user.latestSessionId || '—' %></span>
+          </td>
         </tr>
       <% }) %>
     </tbody>

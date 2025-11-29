@@ -40,8 +40,52 @@
 
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
-  defaults: { externalId:true, userId:true, firstName:true, lastName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true, latestSessionId:false },
-  labelMap: { externalId: 'External ID', clientStatus: 'Client status', registered: 'Date registered', lastActivity: 'Last activity', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', merchants: 'Merchants', didit: 'Didit profile', latestSessionId: 'Latest session ID', firstName: 'First name', lastName: 'Last name' },
+  defaults: {
+    externalId:true,
+    userId:true,
+    firstName:true,
+    lastName:true,
+    documentType:true,
+    documentNumber:true,
+    documentIssuingCountry:true,
+    documentIssuingState:true,
+    dateOfBirth:true,
+    documentExpiry:true,
+    gender:true,
+    address:true,
+    email:true,
+    phone:true,
+    status:true,
+    clientStatus:true,
+    registered:true,
+    lastActivity:true,
+    totalDeposits:true,
+    totalWithdrawals:true,
+    merchants:true,
+    didit:true,
+    latestSessionId:false
+  },
+  labelMap: {
+    externalId: 'External ID',
+    clientStatus: 'Client status',
+    registered: 'Date registered',
+    lastActivity: 'Last activity',
+    totalDeposits: 'Total deposits',
+    totalWithdrawals: 'Total withdrawals',
+    merchants: 'Merchants',
+    didit: 'Didit profile',
+    latestSessionId: 'Latest session ID',
+    firstName: 'First name',
+    lastName: 'Last name',
+    documentType: 'Document Type',
+    documentNumber: 'Document Number',
+    documentIssuingCountry: 'Issuing Country',
+    documentIssuingState: 'Issuing State',
+    dateOfBirth: 'Date of Birth',
+    documentExpiry: 'Document Expiry',
+    gender: 'Gender',
+    address: 'Address'
+  },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -67,6 +111,14 @@
         <th data-col="userId">USER ID</th>
         <th data-col="firstName">FIRST NAME</th>
         <th data-col="lastName">LAST NAME</th>
+        <th data-col="documentType">DOCUMENT TYPE</th>
+        <th data-col="documentNumber">DOCUMENT NUMBER</th>
+        <th data-col="documentIssuingCountry">ISSUING COUNTRY</th>
+        <th data-col="documentIssuingState">ISSUING STATE</th>
+        <th data-col="dateOfBirth">DOB</th>
+        <th data-col="documentExpiry">EXPIRY</th>
+        <th data-col="gender">GENDER</th>
+        <th data-col="address">ADDRESS</th>
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
         <th data-col="status">VERIFICATION STATUS</th>
@@ -82,14 +134,26 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="15" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="25" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
           <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
-          <td data-col="firstName"><%= user.firstName || '—' %></td>
-          <td data-col="lastName"><%= user.lastName || '—' %></td>
+          <td data-col="firstName"><%= user.firstName || '-' %></td>
+          <td data-col="lastName"><%= user.lastName || '-' %></td>
+          <td data-col="documentType"><%= user.documentType || '-' %></td>
+          <td data-col="documentNumber"><%= user.documentNumber || '-' %></td>
+          <td data-col="documentIssuingCountry"><%= user.documentIssuingCountry || '-' %></td>
+          <td data-col="documentIssuingState"><%= user.documentIssuingState || '-' %></td>
+          <td data-col="dateOfBirth">
+            <%= user.dateOfBirth ? user.dateOfBirth.toISOString().slice(0,10) : '-' %>
+          </td>
+          <td data-col="documentExpiry">
+            <%= user.documentExpiry ? user.documentExpiry.toISOString().slice(0,10) : '-' %>
+          </td>
+          <td data-col="gender"><%= user.gender || '-' %></td>
+          <td data-col="address"><%= user.address || '-' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
@@ -150,42 +214,39 @@
                   <% if (user.documentType || user.documentNumber) { %>
                     <div class="info-line">
                       <span class="info-label">Document</span>
-                      <span class="info-value">
-                        <%= user.documentType || '—' %> <%= user.documentNumber || '' %>
-                      </span>
+                      <span class="info-value"><%= user.documentType || '' %> <%= user.documentNumber || '' %></span>
                     </div>
                   <% } %>
+
                   <% if (user.documentIssuingCountry || user.documentIssuingState) { %>
                     <div class="info-line">
                       <span class="info-label">Issuing</span>
-                      <span class="info-value">
-                        <%= [user.documentIssuingCountry, user.documentIssuingState].filter(Boolean).join(', ') || '—' %>
-                      </span>
+                      <span class="info-value"><%= [user.documentIssuingCountry, user.documentIssuingState].filter(Boolean).join(', ') %></span>
                     </div>
                   <% } %>
+
                   <% if (user.dateOfBirth) { %>
                     <div class="info-line">
                       <span class="info-label">DOB</span>
-                      <span class="info-value"><%= user.dateOfBirth.toISOString().slice(0, 10) %></span>
+                      <span class="info-value"><%= user.dateOfBirth.toISOString().slice(0,10) %></span>
                     </div>
                   <% } %>
+
                   <% if (user.documentExpiry) { %>
                     <div class="info-line">
                       <span class="info-label">Expiry</span>
-                      <span class="info-value"><%= user.documentExpiry.toISOString().slice(0, 10) %></span>
+                      <span class="info-value"><%= user.documentExpiry.toISOString().slice(0,10) %></span>
                     </div>
                   <% } %>
+
                   <% if (user.gender) { %>
-                    <div class="info-line">
-                      <span class="info-label">Gender</span>
-                      <span class="info-value"><%= user.gender %></span>
-                    </div>
+                    <div class="info-line"><span class="info-label">Gender</span>
+                    <span class="info-value"><%= user.gender %></span></div>
                   <% } %>
+
                   <% if (user.address) { %>
-                    <div class="info-line">
-                      <span class="info-label">Address</span>
-                      <span class="info-value"><%= user.address %></span>
-                    </div>
+                    <div class="info-line"><span class="info-label">Address</span>
+                    <span class="info-value"><%= user.address %></span></div>
                   <% } %>
                 </div>
               <% } else { %>

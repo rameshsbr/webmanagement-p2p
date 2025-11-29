@@ -15,8 +15,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'merchant.columns.users',
-  defaults: { userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, latestSessionId:false },
-  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', clientStatus: 'Client status', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', latestSessionId: 'Latest session ID' },
+  defaults: { userId:true, firstName:true, lastName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, latestSessionId:false, diditSubject:true, externalId:true },
+  labelMap: { registered: 'Date registered', lastActivity: 'Last activity', externalId: 'External ID', clientStatus: 'Client status', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', latestSessionId: 'Latest session ID', diditSubject: 'Didit subject', firstName: 'First name', lastName: 'Last name' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -34,7 +34,8 @@
         <th data-col="externalId">EXTERNAL ID</th>
         <th data-col="userId">USER ID</th>
         <th data-col="diditSubject">DIDIT SUBJECT</th>
-        <th data-col="fullName">FULL NAME</th>
+        <th data-col="firstName">FIRST NAME</th>
+        <th data-col="lastName">LAST NAME</th>
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
         <th data-col="status">VERIFICATION STATUS</th>
@@ -48,25 +49,15 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="13" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
           <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
           <td data-col="diditSubject"><span class="mono"><%= user.diditSubject %></span></td>
-          <td data-col="fullName" class="info-cell">
-            <div class="info-line" style="align-items:center; gap:6px;">
-              <span>
-                <%= user.fullName || '—' %>
-              </span>
-              <% if (user.nameMismatchWarning) { %>
-                <span class="badge warn" title="Name entered by payer does not match Didit-verified name">
-                  Name mismatch
-                </span>
-                <% } %>
-            </div>
-          </td>
+          <td data-col="firstName"><%= user.firstName || '—' %></td>
+          <td data-col="lastName"><%= user.lastName || '—' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>

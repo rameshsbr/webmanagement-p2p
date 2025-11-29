@@ -72,9 +72,20 @@ model User {
   id            String                  @id @default(cuid())
   publicId      String                  @unique
   email         String?                 @unique
-  phone         String?                 @unique
-  fullName      String?   
-  diditSubject  String                  @unique
+  phone         String?
+  fullName      String?
+  diditSubject  String?                 @unique
+
+  firstName             String?
+  lastName              String?
+  documentType          String?
+  documentNumber        String?
+  documentIssuingState  String?
+  documentIssuingCountry String?
+  dateOfBirth           DateTime?
+  documentExpiry        DateTime?
+  gender                String?
+  address               String?
   verifiedAt    DateTime?
   kyc           KycVerification[]
   paymentReqs   PaymentRequest[]

@@ -321,7 +321,7 @@
                 <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= payerBankName || '-' %></span></div>
               <% } %>
               <% if (!hasAnyExtraLabel('account holder name', 'account name')) { %>
-                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || payer.holder || payer.accountName || payer.name || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || payer.holder || payer.accountName || payer.name || '-' %> <% if (p.nameMismatchWarning) { %><span title="Name mismatch">⚠️</span><% } %></span></div>
               <% } %>
               <% if (method === 'OSKO') { %>
                 <% if (!hasAnyExtraLabel('account number')) { %>

@@ -73,6 +73,7 @@ model User {
   publicId      String                  @unique
   email         String?                 @unique
   phone         String?                 @unique
+  fullName      String?   
   diditSubject  String                  @unique
   verifiedAt    DateTime?
   kyc           KycVerification[]

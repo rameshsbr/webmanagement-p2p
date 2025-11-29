@@ -1,3 +1,4 @@
+// apps/server/src/services/didit.ts
 import { upsertMerchantClientMapping } from "./merchantClient.js";
 import { generateUserId } from "./reference.js";
 
@@ -53,8 +54,18 @@ export async function startDiditSession(diditSubjectHint?: string) {
   return { sessionId, url };
 }
 
+export type DiditProfile = {
+  fullName?: string | null;
+  email?: string | null;
+  phone?: string | null;
+  status?: string | null;
+};
+
 /**
  * Legacy webhook handler (kept for dev). Marks user verified/rejected and records KYC row.
+ *
+ * ⚠️ Extended: can now accept profile data (fullName/email/phone) and store it
+ * into the user record when KYC is approved.
  */
 export async function handleDiditWebhook(
   sessionId: string,
@@ -62,20 +73,55 @@ export async function handleDiditWebhook(
   status: "approved" | "rejected",
   merchantId?: string | null,
   externalId?: string | null,
-  email?: string | null
+  email?: string | null,
+  profile?: DiditProfile | null
 ) {
   const p = await prisma();
+
   let user = await p.user.findUnique({ where: { diditSubject } });
+  const now = new Date();
+
+  const incomingFullName = profile?.fullName?.trim?.() || null;
+  const incomingEmail = (profile?.email || email)?.trim?.() || null;
+  const incomingPhone = profile?.phone?.trim?.() || null;
+
   if (!user) {
+    // New user: we can set fullName/email/phone directly
     user = await p.user.create({
       data: {
         publicId: generateUserId(),
         diditSubject,
-        verifiedAt: status === "approved" ? new Date() : null,
+        verifiedAt: status === "approved" ? now : null,
+        fullName: incomingFullName || null,
+        email: incomingEmail || null,
+        phone: incomingPhone || null,
       },
     });
-  } else if (status === "approved" && !user.verifiedAt) {
-    await p.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
+  } else {
+    const data: any = {};
+
+    if (status === "approved" && !user.verifiedAt) {
+      data.verifiedAt = now;
+    }
+
+    // Only overwrite if we don't have a value yet, to avoid clobbering
+    // any manually-set / existing data.
+    if (incomingFullName && !user.fullName) {
+      data.fullName = incomingFullName;
+    }
+    if (incomingEmail && !user.email) {
+      data.email = incomingEmail;
+    }
+    if (incomingPhone && !user.phone) {
+      data.phone = incomingPhone;
+    }
+
+    if (Object.keys(data).length) {
+      user = await p.user.update({
+        where: { id: user.id },
+        data,
+      });
+    }
   }
 
   await p.kycVerification.upsert({
@@ -94,109 +140,21 @@ export async function handleDiditWebhook(
       merchantId,
       userId: user.id,
       externalId,
-      email,
+      email: incomingEmail || email || null,
     });
   }
+
   return user;
 }
 
-export type DiditProfile = {
-  fullName?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  status?: string | null;
-};
-
 // ───────────────────────────────────────────────────────────────
-// PROFILE FETCH
+// PROFILE FETCH (kept as-is, subject-based; you can keep or delete
+// if you no longer use it in your UI)
 // ───────────────────────────────────────────────────────────────
-
-export async function fetchDiditProfile(subject: string): Promise<DiditProfile | null> {
-  if (!subject) return null;
-
-  // Some setups store things like "m:<merchantId>:<something>".
-  // If that’s the case, also try the last segment as a fallback ID.
-  const candidates = [subject];
-  if (subject.includes(":")) {
-    const last = subject.split(":").pop() || "";
-    if (last && last !== subject) candidates.push(last);
-  }
-
-  const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
-
-  // Prefer OAuth bearer if configured
-  const oauthToken = await getDiditAccessToken(); // only OAuth / access-token flows
-  const apiKey = process.env.DIDIT_API_KEY || null;
-
-  // We will try in this order:
-  //  1) OAuth bearer (if available)
-  //  2) Bearer API key (if available)
-  //  3) x-api-key (if available)
-  const headerVariants: Array<{ kind: string; headers: Record<string, string> }> = [];
-
-  if (oauthToken) {
-    headerVariants.push({
-      kind: "oauth-bearer",
-      headers: {
-        Authorization: `Bearer ${oauthToken}`,
-        Accept: "application/json",
-      },
-    });
-  }
-
-  if (apiKey) {
-    headerVariants.push({
-      kind: "api-key-bearer",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        Accept: "application/json",
-      },
-    });
-    headerVariants.push({
-      kind: "api-key-header",
-      headers: {
-        "x-api-key": apiKey,
-        Accept: "application/json",
-      },
-    });
-  }
-
-  if (!headerVariants.length) {
-    logDebug("fetchDiditProfile: no auth configured (no OAuth, no API key)");
-    return null;
-  }
-
-  for (const idCandidate of candidates) {
-    const url = `${base}/users/${encodeURIComponent(idCandidate)}`;
-    for (const variant of headerVariants) {
-      try {
-        logDebug("fetchDiditProfile", idCandidate, "via", variant.kind, "→", url);
-        const res = await fetch(url, { headers: variant.headers });
-        logDebug("fetchDiditProfile", idCandidate, variant.kind, "status", res.status);
-
-        if (res.status === 401 || res.status === 403) {
-          // auth issue – try next variant
-          continue;
-        }
-        if (!res.ok) {
-          // 404 / 500 / etc — try next candidate id
-          continue;
-        }
-
-        const json: any = await res.json();
-        return {
-          fullName: json?.name || json?.full_name || json?.fullName || null,
-          email: json?.email || null,
-          phone: json?.phone || json?.phone_number || null,
-          status: json?.status || null,
-        };
-      } catch (e) {
-        logDebug("fetchDiditProfile error", (e as any)?.message || e);
-      }
-    }
-  }
-
-  // If we got here, nothing worked
+export async function fetchDiditProfile(_subjectOrSession: string): Promise<DiditProfile | null> {
+  // If you still want to use the remote decision/profile API, you can implement it here.
+  // For now we just no-op so you stop getting 404s from calling it with diditSubject.
+  // (All important data is coming via webhooks instead.)
   return null;
 }
 
@@ -282,9 +240,6 @@ type DiditMeta = {
 };
 
 function buildVendorData(meta: DiditMeta) {
-  // NOTE: You mentioned seeing something like "m:cmiboed...:KgU4ApS..."
-  // in Didit "Vendor data" – that likely comes from here or the caller.
-  // Keeping this simple; the important part is that `subject` is stable per user.
   return `${meta.merchantId}|${meta.subject}`;
 }
 
@@ -382,11 +337,6 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 // v1 Low-Code helpers (OAuth/Bearer)
 // ───────────────────────────────────────────────────────────────
 
-/**
- * Create a Didit Low-Code verification link (v1 OAuth).
- * Prefers OAuth access token; does NOT use API key as OAuth.
- * Requires DIDIT_APP_ID + DIDIT_WORKFLOW_ID (+ OAuth creds).
- */
 async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
   const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
   const appId = process.env.DIDIT_APP_ID;
@@ -455,9 +405,6 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
   return { url, sessionId };
 }
 
-/**
- * Poll a verification by sessionId (v1 OAuth).
- */
 async function getStatusV1(sessionId: string): Promise<"pending" | "approved" | "rejected"> {
   const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
   const token = await getDiditAccessToken();
@@ -485,14 +432,9 @@ async function getStatusV1(sessionId: string): Promise<"pending" | "approved" | 
 }
 
 // ───────────────────────────────────────────────────────────────
-// Public API (kept name/signature) — chooses v2 when possible
+// Public API — chooses v2 when possible
 // ───────────────────────────────────────────────────────────────
 
-/**
- * Create a Didit Low-Code verification link.
- * If DIDIT_API_KEY is present and DIDIT_USE_V1 !== "1", use v2 (/v2/session/, x-api-key).
- * Otherwise fall back to v1 (/v1/verification-links, Bearer/OAuth).
- */
 export async function createLowCodeLink(input: CreateLinkInput): Promise<CreateLinkOutput> {
   const preferV2 = !!process.env.DIDIT_API_KEY && String(process.env.DIDIT_USE_V1 || "") !== "1";
   if (preferV2) {
@@ -506,10 +448,6 @@ export async function createLowCodeLink(input: CreateLinkInput): Promise<CreateL
   return await createLinkV1(input);
 }
 
-/**
- * Poll a verification by sessionId.
- * Try v2 first if API key exists; on failure fallback to v1.
- */
 export async function getVerificationStatus(
   sessionId: string
 ): Promise<"pending" | "approved" | "rejected"> {

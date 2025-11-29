@@ -545,6 +545,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
     update: {},
   });
+
   const mapping = await upsertMerchantClientMapping({
     merchantId,
     externalId: req.checkout.externalId,
@@ -557,6 +558,37 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   }
   if (!user.verifiedAt) {
     return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
+  }
+
+  // ───────────────────────────────────────────────
+  // NEW: soft-block deposit if name != KYC fullName
+  // ───────────────────────────────────────────────
+  const payerNameRaw =
+    (base.method === "OSKO"
+      ? (base.payer as any).holderName
+      : (base.payer as any).holderName) || "";
+
+  const normalizeName = (value: string | null | undefined) =>
+    String(value || "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const kycName = normalizeName((user as any).fullName);
+  const payerName = normalizeName(payerNameRaw);
+
+  if (kycName && payerName && kycName !== payerName) {
+    // Soft-block: tell the widget there is a mismatch so it can show a clear error.
+    return res.status(400).json({
+      ok: false,
+      error: "NAME_MISMATCH",
+      message:
+        "The account holder name must match the verified name on your profile.",
+      details: {
+        kycFullName: (user as any).fullName,
+        payerName: payerNameRaw,
+      },
+    });
   }
 
   const chosenBank = await loadMerchantBank(merchantId, base.bankAccountId);

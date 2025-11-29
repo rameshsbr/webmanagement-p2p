@@ -191,6 +191,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
             diditSubject: true,
             verifiedAt: true,
             createdAt: true,
+            fullName: true,        
             paymentReqs: {
               where: { merchantId: { in: merchantIds } },
               select: { merchantId: true, createdAt: true, detailsJson: true },
@@ -264,45 +265,51 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
 
   const items: UserDirectoryItem[] = clients.map((client, index) => {
     const user = client.user;
+    const profile = diditProfiles[index];
     const payments = user?.paymentReqs ?? [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
 
-    // 1) Manual name from payment (payer / account holder field)
+    //
+    // 1) Get REAL name from DB (updated by Didit webhook)
+    //
+    const dbFullName = user?.fullName ? user.fullName.trim() : null;
+
+    //
+    // 2) Extract any manual / payer-entered name from latest deposit
+    //
     const manualName = computeFullName(details);
 
-    // 2) Name from Didit profile (if any)
-    const profile = diditProfiles[index];
-    const diditName = profile?.fullName ? profile.fullName.trim() : null;
-
-    // 3) Decide which name to display + whether to flag mismatch
-    let fullName: string | null = manualName || diditName || null;
+    //
+    // 3) Compute mismatch (but NEVER override DB name)
+    //
     let nameMismatchWarning = false;
 
-    if (diditName) {
-      if (!manualName) {
-        // Only Didit name available → use it
-        fullName = diditName;
-      } else {
-        const similarity = computeNameSimilarity(manualName, diditName);
-        if (similarity < 0.8) {
-          // < 80% similar → override with Didit + show warning
-          fullName = diditName;
-          nameMismatchWarning = true;
-        } else {
-          // Names close enough → keep the payer-typed name
-          fullName = manualName;
-        }
+    if (manualName && dbFullName) {
+      const similarity = computeNameSimilarity(manualName, dbFullName);
+      if (similarity < 0.8) {
+        nameMismatchWarning = true;
       }
     }
+
+    //
+    // 4) Full name shown in UI = ALWAYS dbFullName
+    //
+    const fullName = dbFullName;
 
     const latestKycRow = user?.kyc && user.kyc.length ? user.kyc[0] : null;
     const latestKycStatus = latestKycRow?.status || null;
     const latestSessionId = latestKycRow?.externalSessionId || null;
-    const verificationStatus = computeStatus(user?.verifiedAt ?? null, latestKycStatus);
+    const verificationStatus = computeStatus(
+      user?.verifiedAt ?? null,
+      latestKycStatus
+    );
 
     const merchants: Array<{ id: string; name: string }> = [
-      { id: client.merchantId, name: merchantMap.get(client.merchantId) || client.merchantId },
+      {
+        id: client.merchantId,
+        name: merchantMap.get(client.merchantId) || client.merchantId,
+      },
     ];
 
     const key = user?.id ? `${user.id}:${client.merchantId}` : null;

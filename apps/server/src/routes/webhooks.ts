@@ -1,6 +1,7 @@
 // apps/server/src/routes/webhooks.ts
 import { Router } from "express";
 import { z } from "zod";
+import crypto from "crypto";
 import { handleDiditWebhook } from "../services/didit.js";
 
 // lazy prisma import (only if we need to look up vendor_data)
@@ -32,11 +33,51 @@ const PATHS = ["/webhooks/didit", "/didit"];
 /**
  * POST handler (server → server webhook), supports:
  *  - Legacy body: { sessionId, diditSubject, status: "approved"|"rejected" }
- *  - Didit v2:    { session_id, vendor_data, status: "Approved"|"Declined"|... }
+ *  - Didit v2 flat:    { session_id, vendor_data, status: "Approved"|"Declined"|... }
+ *  - Didit v2 nested:  { data: { session: {...}, decision: {...} }, event: ... }
+ *  - Signature verification (x-signature/didit-signature + WEBHOOK_SECRET_KEY)
+ *  - Full name extraction from id_verification
  */
 for (const path of PATHS) {
   diditWebhookRouter.post(path, async (req, res) => {
     try {
+      // --------------------------------------------------------------------
+      // 1. VERIFY SIGNATURE
+      // --------------------------------------------------------------------
+      const secret = process.env.WEBHOOK_SECRET_KEY;
+      if (!secret) {
+        console.error("[didit] Missing WEBHOOK_SECRET_KEY");
+        return res.status(500).json({ ok: false, error: "server_config_error" });
+      }
+
+      const rawBody = req.rawBody;
+      // accept both header names just in case
+      const signature =
+        (req.headers["x-signature"] as string | undefined) ||
+        (req.headers["didit-signature"] as string | undefined);
+
+      if (!rawBody || !signature) {
+        console.error("[didit] missing_signature", { hasRawBody: !!rawBody, hasSig: !!signature });
+        return res.status(400).json({ ok: false, error: "missing_signature" });
+      }
+
+      const expected = crypto
+        .createHmac("sha256", secret)
+        .update(rawBody)
+        .digest("hex");
+
+      if (!crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(expected))) {
+        console.error("[didit] Invalid webhook signature");
+        return res.status(400).json({ ok: false, error: "invalid_signature" });
+      }
+
+      // Parse JSON safely after signature verified
+      const body = JSON.parse(rawBody.toString());
+      console.log("[didit webhook] body:", JSON.stringify(body, null, 2));
+
+      // --------------------------------------------------------------------
+      // 2. DEFINE SCHEMAS (legacy + flexible v2)
+      // --------------------------------------------------------------------
       const legacy = z.object({
         sessionId: z.string(),
         diditSubject: z.string(),
@@ -44,42 +85,118 @@ for (const path of PATHS) {
       });
 
       const v2 = z.object({
-        session_id: z.string(),
-        status: z.string(),            // e.g. "Approved", "Declined", "In Progress"
+        // flat v2
+        session_id: z.string().optional(),
+        status: z.string().optional(),
         vendor_data: z.string().optional().default(""),
+        decision: z.any().optional(),
+
+        // nested v2
+        data: z
+          .object({
+            session: z
+              .object({
+                id: z.string().optional(),
+                session_id: z.string().optional(),
+                status: z.string().optional(),
+                vendor_data: z.string().optional().default(""),
+              })
+              .optional(),
+            decision: z.any().optional(),
+          })
+          .optional(),
+
+        event: z.string().optional(),
       });
 
       let sessionId = "";
       let diditSubject = "";
       let merchantId: string | null = null;
       let statusNorm: "approved" | "rejected" | "pending" = "pending";
+      let fullName: string | null = null;
 
-      const body = req.body ?? {};
+      // --------------------------------------------------------------------
+      // 3. PARSE BODY
+      // --------------------------------------------------------------------
       const l = legacy.safeParse(body);
       if (l.success) {
+        // legacy shape
         sessionId = l.data.sessionId;
         diditSubject = l.data.diditSubject;
         statusNorm = l.data.status;
       } else {
+        // v2 – flat or nested
         const vb = v2.parse(body);
-        sessionId = vb.session_id;
-        const vendor = parseVendorData(vb.vendor_data);
+
+        // Choose the session object
+        const session: any =
+          vb.data?.session ??
+          vb; // fall back to flat keys on root
+
+        sessionId =
+          session.session_id ||
+          session.id ||
+          vb.session_id ||
+          "";
+
+        const vendorRaw =
+          session.vendor_data ??
+          vb.vendor_data ??
+          "";
+
+        const vendor = parseVendorData(vendorRaw);
         diditSubject = vendor.diditSubject || "";
         merchantId = vendor.merchantId || null;
-        const s = vb.status.toLowerCase();
+
+        const statusRaw =
+          session.status ??
+          vb.status ??
+          "";
+        const s = String(statusRaw).toLowerCase();
         statusNorm = s.includes("approve")
           ? "approved"
           : s.includes("reject") || s.includes("declin")
           ? "rejected"
           : "pending";
+
+        // Decision object can be at root or under data
+        const decision: any =
+          vb.decision ??
+          vb.data?.decision ??
+          {};
+
+        const idv =
+          decision.id_verification ??
+          decision.idVerification ??
+          decision.identity_check ??
+          {};
+
+        fullName =
+          idv.full_name ||
+          idv.fullName ||
+          [idv.first_name || idv.firstName, idv.last_name || idv.lastName]
+            .filter(Boolean)
+            .join(" ") ||
+          null;
       }
 
+      console.log("[didit webhook] parsed:", {
+        sessionId,
+        diditSubject,
+        merchantId,
+        statusNorm,
+        fullName,
+      });
+
+      // Pending = ignore
       if (statusNorm === "pending") {
         return res.json({ ok: true, pending: true });
       }
 
+      // --------------------------------------------------------------------
+      // 4. RECOVER SUBJECT IF MISSING
+      // --------------------------------------------------------------------
       if (!diditSubject) {
-        // Try to recover diditSubject from our KYC table if vendor_data was not sent
         const p = await prisma();
         const row = await p.kycVerification.findFirst({
           where: { externalSessionId: sessionId },
@@ -89,26 +206,48 @@ for (const path of PATHS) {
       }
 
       if (!diditSubject) {
+        console.error("[didit webhook] missing_diditSubject for session", sessionId);
         return res.status(400).json({ ok: false, error: "missing_diditSubject" });
       }
 
+      // --------------------------------------------------------------------
+      // 5. HANDLE USER + KYC STATUS
+      // --------------------------------------------------------------------
       const user = await handleDiditWebhook(
         sessionId,
         diditSubject,
-        statusNorm as "approved" | "rejected",
+        statusNorm,
         merchantId
       );
-      return res.json({ ok: true, userId: user.id, verifiedAt: user.verifiedAt });
+
+      // --------------------------------------------------------------------
+      // 6. SAVE FULL NAME IF PROVIDED
+      // --------------------------------------------------------------------
+      if (fullName) {
+        const p = await prisma();
+        await p.user.update({
+          where: { id: user.id },
+          data: { fullName },
+        });
+        console.log("[didit webhook] saved fullName for user", user.id, fullName);
+      } else {
+        console.warn("[didit webhook] no fullName in payload for session", sessionId);
+      }
+
+      return res.json({
+        ok: true,
+        userId: user.id,
+        verifiedAt: user.verifiedAt,
+        fullName,
+      });
     } catch (err: any) {
-      console.error("Didit webhook POST error:", err?.message || err);
+      console.error("Didit webhook POST error:", err?.message || err, err?.stack);
       return res.status(400).json({ ok: false, error: "bad_payload" });
     }
   });
 
   /**
-   * GET handler (browser redirect misuse). Some configs send the browser to:
-   *   /webhooks/didit?verificationSessionId=...&status=Approved&vendor_data=...
-   * We’ll accept this and update, then redirect the user to /public/kyc/done.
+   * GET handler (browser redirect misuse) – unchanged
    */
   diditWebhookRouter.get(path, async (req, res) => {
     try {
@@ -135,20 +274,17 @@ for (const path of PATHS) {
 
       if (!sessionId) return res.status(400).send("Missing session id.");
       if (statusNorm === "pending") {
-        // Don’t mutate DB on indeterminate statuses via GET.
-        // Build bounce URL with optional merchant return
         const ret = process.env.CHECKOUT_RETURN_URL || "";
         const qs = new URLSearchParams({
           status: statusNorm,
           session: sessionId,
           vendor: diditSubject || "",
-          ...(ret ? { return: ret } as Record<string, string> : {}),
+          ...(ret ? { return: ret } : {}),
         });
         return res.redirect(302, `/public/kyc/done?${qs.toString()}`);
       }
 
       if (!diditSubject) {
-        // Recover subject via DB if we can
         const p = await prisma();
         const row = await p.kycVerification.findFirst({
           where: { externalSessionId: sessionId },
@@ -158,15 +294,14 @@ for (const path of PATHS) {
       }
       if (!diditSubject) return res.status(400).send("Missing vendor_data/diditSubject.");
 
-      await handleDiditWebhook(sessionId, diditSubject, statusNorm as "approved" | "rejected", merchantId);
+      await handleDiditWebhook(sessionId, diditSubject, statusNorm, merchantId);
 
-      // Build bounce URL with optional merchant return
-      const ret = process.env.CHECKOUT_RETURN_URL || ""; // e.g. https://merchant.example/checkout
+      const ret = process.env.CHECKOUT_RETURN_URL || "";
       const qs = new URLSearchParams({
-        status: statusNorm,          // "approved" | "rejected"
+        status: statusNorm,
         session: sessionId,
         vendor: diditSubject || "",
-        ...(ret ? { return: ret } as Record<string, string> : {}),
+        ...(ret ? { return: ret } : {}),
       });
       return res.redirect(302, `/public/kyc/done?${qs.toString()}`);
     } catch (err: any) {
@@ -176,7 +311,7 @@ for (const path of PATHS) {
   });
 }
 
-// Export under both names so existing imports keep working
+// Export
 export { diditWebhookRouter };
 export const webhookRouter = diditWebhookRouter;
 export default diditWebhookRouter;

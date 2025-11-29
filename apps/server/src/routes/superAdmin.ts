@@ -143,6 +143,51 @@ function statusesCSV(s?: string) {
   return arr.length ? arr : undefined;
 }
 
+function normalizeNameTokens(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function computeNameSimilarity(a: string | null, b: string | null): number {
+  if (!a || !b) return 0;
+  const tokensA = new Set(normalizeNameTokens(a));
+  const tokensB = new Set(normalizeNameTokens(b));
+  if (!tokensA.size || !tokensB.size) return 0;
+
+  let intersection = 0;
+  tokensA.forEach((t) => {
+    if (tokensB.has(t)) intersection += 1;
+  });
+
+  return (2 * intersection) / (tokensA.size + tokensB.size);
+}
+
+function extractHolderName(details: any): string | null {
+  if (!details || typeof details !== "object") return null;
+  const payer = (details as any).payer || {};
+  const destination = (details as any).destination || {};
+  const extras = (details as any).extras || {};
+  const candidates = [
+    payer.holderName,
+    destination.holderName,
+    extras["Account holder name"],
+    extras["Full name"],
+  ];
+  const hit = candidates.find((n) => typeof n === "string" && n.trim().length > 1);
+  return hit ? hit.trim() : null;
+}
+
+function buildUserName(user?: { fullName?: string | null; firstName?: string | null; lastName?: string | null }): string | null {
+  if (!user) return null;
+  if (user.fullName && user.fullName.trim()) return user.fullName.trim();
+  const combined = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
+  return combined || null;
+}
+
 const superUserQuery = z.object({
   q: z.string().optional(),
   merchantId: z.union([z.string(), z.array(z.string())]).optional(),
@@ -494,7 +539,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         receipts: {
           select: { id: true, original: true, path: true, createdAt: true },
         },
-        user: { select: { id: true, publicId: true, email: true, phone: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true, fullName: true, firstName: true, lastName: true } },
         merchant: { select: { id: true, name: true } },
         processedByAdmin: {
           select: { id: true, email: true, displayName: true },
@@ -549,6 +594,10 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
 
   const items = await Promise.all(
     rawItems.map(async (x: any) => {
+      const holderName = extractHolderName(x.detailsJson);
+      const userName = buildUserName(x.user as any);
+      const nameMismatchWarning = holderName && userName ? computeNameSimilarity(holderName, userName) < 0.8 : false;
+
       const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
       const extras =
         x?.detailsJson && typeof x.detailsJson === "object" && !Array.isArray(x.detailsJson)
@@ -603,6 +652,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
         _extrasList: orderedExtras,
         _extrasLookup: extrasLookup,
+        nameMismatchWarning,
       };
     })
   );

@@ -87,6 +87,51 @@ const ADMIN_WITHDRAWAL_EXPORT_COLUMNS: PaymentExportColumn[] = [
   { key: 'actions', label: 'ACTIONS' },
 ];
 
+function normalizeNameTokens(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+function computeNameSimilarity(a: string | null, b: string | null): number {
+  if (!a || !b) return 0;
+  const tokensA = new Set(normalizeNameTokens(a));
+  const tokensB = new Set(normalizeNameTokens(b));
+  if (!tokensA.size || !tokensB.size) return 0;
+
+  let intersection = 0;
+  tokensA.forEach((t) => {
+    if (tokensB.has(t)) intersection += 1;
+  });
+
+  return (2 * intersection) / (tokensA.size + tokensB.size);
+}
+
+function extractHolderName(details: any): string | null {
+  if (!details || typeof details !== 'object') return null;
+  const payer = (details as any).payer || {};
+  const destination = (details as any).destination || {};
+  const extras = (details as any).extras || {};
+  const candidates = [
+    payer.holderName,
+    destination.holderName,
+    extras['Account holder name'],
+    extras['Full name'],
+  ];
+  const hit = candidates.find((n) => typeof n === 'string' && n.trim().length > 1);
+  return hit ? hit.trim() : null;
+}
+
+function buildUserName(user?: { fullName?: string | null; firstName?: string | null; lastName?: string | null }): string | null {
+  if (!user) return null;
+  if (user.fullName && user.fullName.trim()) return user.fullName.trim();
+  const combined = [user.firstName, user.lastName].filter(Boolean).join(' ').trim();
+  return combined || null;
+}
+
 router.get('/queue-sw.js', (_req, res) => {
   res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   res.setHeader('Service-Worker-Allowed', '/admin/');
@@ -306,7 +351,7 @@ async function fetchPaymentsFromQuery(
       distinct: ['id'],
       include: {
         merchant: { select: { id: true, name: true } },
-        user: { select: { id: true, publicId: true, email: true, phone: true, diditSubject: true } },
+        user: { select: { id: true, publicId: true, email: true, phone: true, diditSubject: true, fullName: true, firstName: true, lastName: true } },
         bankAccount: {
           select: {
             id: true,
@@ -335,7 +380,14 @@ async function fetchPaymentsFromQuery(
     items.push(item);
   }
 
-  return { total, items, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
+  const itemsWithFlags = items.map((item) => {
+    const holderName = extractHolderName((item as any).detailsJson);
+    const userName = buildUserName((item as any).user);
+    const nameMismatchWarning = holderName && userName ? computeNameSimilarity(holderName, userName) < 0.8 : false;
+    return { ...item, nameMismatchWarning } as typeof item & { nameMismatchWarning: boolean };
+  });
+
+  return { total, items: itemsWithFlags, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)), query: q };
 }
 
 async function fetchPayments(

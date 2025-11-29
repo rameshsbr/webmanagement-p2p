@@ -114,6 +114,18 @@ for (const path of PATHS) {
       let merchantId: string | null = null;
       let statusNorm: "approved" | "rejected" | "pending" = "pending";
       let fullName: string | null = null;
+      let firstName: string | null = null;
+      let lastName: string | null = null;
+      let documentType: string | null = null;
+      let documentNumber: string | null = null;
+      let issuingState: string | null = null;
+      let issuingCountry: string | null = null;
+      let dateOfBirth: string | null = null;
+      let documentExpiry: string | null = null;
+      let gender: string | null = null;
+      let address: string | null = null;
+      let emailFromDidit: string | null = null;
+      let phoneFromDidit: string | null = null;
 
       // --------------------------------------------------------------------
       // 3. PARSE BODY
@@ -171,13 +183,27 @@ for (const path of PATHS) {
           decision.identity_check ??
           {};
 
+        firstName = idv.first_name || idv.firstName || null;
+        lastName = idv.last_name || idv.lastName || null;
         fullName =
           idv.full_name ||
           idv.fullName ||
-          [idv.first_name || idv.firstName, idv.last_name || idv.lastName]
+          [firstName, lastName]
             .filter(Boolean)
             .join(" ") ||
           null;
+
+        documentType = idv.document_type || null;
+        documentNumber = idv.document_number || null;
+        issuingState = idv.issuing_state_name || idv.issuing_state || null;
+        issuingCountry = idv.issuing_state || idv.issuing_state_name || null;
+        dateOfBirth = idv.date_of_birth || null;
+        documentExpiry = idv.expiration_date || null;
+        gender = idv.gender || null;
+        address = idv.formatted_address || idv.address || null;
+
+        emailFromDidit = decision?.contact_details?.email || idv.email || null;
+        phoneFromDidit = decision?.contact_details?.phone || idv.phone || null;
       }
 
       console.log("[didit webhook] parsed:", {
@@ -186,6 +212,18 @@ for (const path of PATHS) {
         merchantId,
         statusNorm,
         fullName,
+        firstName,
+        lastName,
+        documentType,
+        documentNumber,
+        issuingState,
+        issuingCountry,
+        dateOfBirth,
+        documentExpiry,
+        gender,
+        address,
+        emailFromDidit,
+        phoneFromDidit,
       });
 
       // Pending = ignore
@@ -217,20 +255,30 @@ for (const path of PATHS) {
         sessionId,
         diditSubject,
         statusNorm,
-        merchantId
+        merchantId,
+        undefined,
+        emailFromDidit,
+        {
+          fullName,
+          firstName,
+          lastName,
+          documentType,
+          documentNumber,
+          documentIssuingState: issuingState,
+          documentIssuingCountry: issuingCountry,
+          dateOfBirth,
+          documentExpiry,
+          gender,
+          address,
+          email: emailFromDidit,
+          phone: phoneFromDidit,
+        }
       );
 
       // --------------------------------------------------------------------
       // 6. SAVE FULL NAME IF PROVIDED
       // --------------------------------------------------------------------
-      if (fullName) {
-        const p = await prisma();
-        await p.user.update({
-          where: { id: user.id },
-          data: { fullName },
-        });
-        console.log("[didit webhook] saved fullName for user", user.id, fullName);
-      } else {
+      if (!fullName) {
         console.warn("[didit webhook] no fullName in payload for session", sessionId);
       }
 

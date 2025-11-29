@@ -40,8 +40,8 @@
 
 <%- include('../partials/column-settings', {
   key: 'superadmin.columns.users',
-  defaults: { externalId:true, userId:true, fullName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true, latestSessionId:false },
-  labelMap: { externalId: 'External ID', clientStatus: 'Client status', registered: 'Date registered', lastActivity: 'Last activity', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', merchants: 'Merchants', didit: 'Didit profile', latestSessionId: 'Latest session ID' },
+  defaults: { externalId:true, userId:true, firstName:true, lastName:true, email:true, phone:true, status:true, clientStatus:true, registered:true, lastActivity:true, totalDeposits:true, totalWithdrawals:true, merchants:true, didit:true, latestSessionId:false },
+  labelMap: { externalId: 'External ID', clientStatus: 'Client status', registered: 'Date registered', lastActivity: 'Last activity', totalDeposits: 'Total deposits', totalWithdrawals: 'Total withdrawals', merchants: 'Merchants', didit: 'Didit profile', latestSessionId: 'Latest session ID', firstName: 'First name', lastName: 'Last name' },
   columnHeading: 'CLIENT COLUMN SETTINGS'
 }) %>
 
@@ -65,7 +65,8 @@
       <tr>
         <th data-col="externalId">EXTERNAL ID</th>
         <th data-col="userId">USER ID</th>
-        <th data-col="fullName">FULL NAME</th>
+        <th data-col="firstName">FIRST NAME</th>
+        <th data-col="lastName">LAST NAME</th>
         <th data-col="email">EMAIL</th>
         <th data-col="phone">PHONE</th>
         <th data-col="status">VERIFICATION STATUS</th>
@@ -81,24 +82,14 @@
     </thead>
     <tbody>
       <% if (!table.items.length) { %>
-        <tr><td colspan="14" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
+        <tr><td colspan="15" style="text-align:center;color:var(--ink-dim)">No clients found</td></tr>
       <% } %>
       <% table.items.forEach(user => { %>
         <tr>
           <td data-col="externalId"><span class="mono"><%= user.externalId || '—' %></span></td>
           <td data-col="userId"><span class="mono"><%= user.publicId %></span></td>
-          <td data-col="fullName" class="info-cell">
-            <div class="info-line" style="align-items:center; gap:6px;">
-              <span>
-                <%= user.fullName || '—' %>
-              </span>
-              <% if (user.nameMismatchWarning) { %>
-                <span class="badge warn" title="Name entered by payer does not match Didit-verified name">
-                  Name mismatch
-                </span>
-                <% } %>
-            </div>
-          </td>
+          <td data-col="firstName"><%= user.firstName || '—' %></td>
+          <td data-col="lastName"><%= user.lastName || '—' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
           <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
@@ -141,23 +132,64 @@
             <% } %>
           </td>
           <td data-col="didit" class="info-cell">
-            <% if (user.diditProfile) { %>
-              <div class="info-block">
-                <% if (user.diditProfile.fullName) { %>
-                  <div class="info-line"><span class="info-label">Name</span><span class="info-value"><%= user.diditProfile.fullName %></span></div>
-                <% } %>
+              <% if (user.diditProfile) { %>
+                <div class="info-block">
+                  <% if (user.diditProfile.fullName) { %>
+                    <div class="info-line"><span class="info-label">Name</span><span class="info-value"><%= user.diditProfile.fullName %></span></div>
+                  <% } %>
                 <% if (user.diditProfile.email) { %>
                   <div class="info-line"><span class="info-label">Email</span><span class="info-value"><%= user.diditProfile.email %></span></div>
                 <% } %>
                 <% if (user.diditProfile.phone) { %>
                   <div class="info-line"><span class="info-label">Phone</span><span class="info-value"><%= user.diditProfile.phone %></span></div>
                 <% } %>
-                <% if (user.diditProfile.status) { %>
-                  <div class="info-line"><span class="info-label">Status</span><span class="info-value"><%= user.diditProfile.status %></span></div>
-                <% } %>
-              </div>
-            <% } else { %>
-              -
+                  <% if (user.diditProfile.status) { %>
+                    <div class="info-line"><span class="info-label">Status</span><span class="info-value"><%= user.diditProfile.status %></span></div>
+                  <% } %>
+
+                  <% if (user.documentType || user.documentNumber) { %>
+                    <div class="info-line">
+                      <span class="info-label">Document</span>
+                      <span class="info-value">
+                        <%= user.documentType || '—' %> <%= user.documentNumber || '' %>
+                      </span>
+                    </div>
+                  <% } %>
+                  <% if (user.documentIssuingCountry || user.documentIssuingState) { %>
+                    <div class="info-line">
+                      <span class="info-label">Issuing</span>
+                      <span class="info-value">
+                        <%= [user.documentIssuingCountry, user.documentIssuingState].filter(Boolean).join(', ') || '—' %>
+                      </span>
+                    </div>
+                  <% } %>
+                  <% if (user.dateOfBirth) { %>
+                    <div class="info-line">
+                      <span class="info-label">DOB</span>
+                      <span class="info-value"><%= user.dateOfBirth.toISOString().slice(0, 10) %></span>
+                    </div>
+                  <% } %>
+                  <% if (user.documentExpiry) { %>
+                    <div class="info-line">
+                      <span class="info-label">Expiry</span>
+                      <span class="info-value"><%= user.documentExpiry.toISOString().slice(0, 10) %></span>
+                    </div>
+                  <% } %>
+                  <% if (user.gender) { %>
+                    <div class="info-line">
+                      <span class="info-label">Gender</span>
+                      <span class="info-value"><%= user.gender %></span>
+                    </div>
+                  <% } %>
+                  <% if (user.address) { %>
+                    <div class="info-line">
+                      <span class="info-label">Address</span>
+                      <span class="info-value"><%= user.address %></span>
+                    </div>
+                  <% } %>
+                </div>
+              <% } else { %>
+                -
             <% } %>
           </td>
           <td data-col="latestSessionId">

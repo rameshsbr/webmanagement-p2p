@@ -56,6 +56,16 @@ export async function startDiditSession(diditSubjectHint?: string) {
 
 export type DiditProfile = {
   fullName?: string | null;
+  firstName?: string | null;
+  lastName?: string | null;
+  documentType?: string | null;
+  documentNumber?: string | null;
+  documentIssuingState?: string | null;
+  documentIssuingCountry?: string | null;
+  dateOfBirth?: string | Date | null;
+  documentExpiry?: string | Date | null;
+  gender?: string | null;
+  address?: string | null;
   email?: string | null;
   phone?: string | null;
   status?: string | null;
@@ -82,6 +92,24 @@ export async function handleDiditWebhook(
   const now = new Date();
 
   const incomingFullName = profile?.fullName?.trim?.() || null;
+  const incomingFirstName = profile?.firstName?.trim?.() || null;
+  const incomingLastName = profile?.lastName?.trim?.() || null;
+  const incomingDocumentType = profile?.documentType ?? null;
+  const incomingDocumentNumber = profile?.documentNumber ?? null;
+  const incomingDocumentIssuingState = profile?.documentIssuingState ?? null;
+  const incomingDocumentIssuingCountry = profile?.documentIssuingCountry ?? null;
+  const incomingGender = profile?.gender ?? null;
+  const incomingAddress = profile?.address ?? null;
+
+  const parseDate = (value: string | Date | null | undefined): Date | null => {
+    if (!value) return null;
+    const d = value instanceof Date ? value : new Date(value);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+
+  const incomingDateOfBirth = parseDate(profile?.dateOfBirth);
+  const incomingDocumentExpiry = parseDate(profile?.documentExpiry);
+
   const incomingEmail = (profile?.email || email)?.trim?.() || null;
   const incomingPhone = profile?.phone?.trim?.() || null;
 
@@ -93,6 +121,16 @@ export async function handleDiditWebhook(
         diditSubject,
         verifiedAt: status === "approved" ? now : null,
         fullName: incomingFullName || null,
+        firstName: incomingFirstName || null,
+        lastName: incomingLastName || null,
+        documentType: incomingDocumentType || null,
+        documentNumber: incomingDocumentNumber || null,
+        documentIssuingState: incomingDocumentIssuingState || null,
+        documentIssuingCountry: incomingDocumentIssuingCountry || null,
+        dateOfBirth: incomingDateOfBirth || null,
+        documentExpiry: incomingDocumentExpiry || null,
+        gender: incomingGender || null,
+        address: incomingAddress || null,
         email: incomingEmail || null,
         phone: incomingPhone || null,
       },
@@ -104,17 +142,23 @@ export async function handleDiditWebhook(
       data.verifiedAt = now;
     }
 
-    // Only overwrite if we don't have a value yet, to avoid clobbering
-    // any manually-set / existing data.
-    if (incomingFullName && !user.fullName) {
-      data.fullName = incomingFullName;
-    }
-    if (incomingEmail && !user.email) {
-      data.email = incomingEmail;
-    }
-    if (incomingPhone && !user.phone) {
-      data.phone = incomingPhone;
-    }
+    data.fullName = incomingFullName ?? undefined;
+    data.firstName = incomingFirstName ?? undefined;
+    data.lastName = incomingLastName ?? undefined;
+    data.documentType = incomingDocumentType ?? undefined;
+    data.documentNumber = incomingDocumentNumber ?? undefined;
+    data.documentIssuingState = incomingDocumentIssuingState ?? undefined;
+    data.documentIssuingCountry = incomingDocumentIssuingCountry ?? undefined;
+    data.dateOfBirth = incomingDateOfBirth ?? undefined;
+    data.documentExpiry = incomingDocumentExpiry ?? undefined;
+    data.gender = incomingGender ?? undefined;
+    data.address = incomingAddress ?? undefined;
+    data.email = incomingEmail ?? undefined;
+    data.phone = incomingPhone ?? undefined;
+
+    Object.keys(data).forEach((key) => {
+      if (typeof data[key] === "undefined") delete data[key];
+    });
 
     if (Object.keys(data).length) {
       user = await p.user.update({

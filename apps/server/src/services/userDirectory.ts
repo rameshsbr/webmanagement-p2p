@@ -18,7 +18,24 @@ export type UserDirectoryItem = {
   email: string | null;
   phone: string | null;
   diditSubject: string;
+
+  // NEW: split name
+  firstName: string | null;
+  lastName: string | null;
+
+  // Still keep fullName for exports / backwards compatibility
   fullName: string | null;
+
+  // NEW: KYC profile fields from Didit
+  documentType: string | null;
+  documentNumber: string | null;
+  documentIssuingState: string | null;
+  documentIssuingCountry: string | null;
+  dateOfBirth: Date | null;
+  documentExpiry: Date | null;
+  gender: string | null;
+  address: string | null;
+
   registeredAt: Date;
   verifiedAt: Date | null;
   clientStatus: ClientStatus;
@@ -191,7 +208,20 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
             diditSubject: true,
             verifiedAt: true,
             createdAt: true,
-            fullName: true,        
+
+            // NEW fields from Prisma User:
+            fullName: true,
+            firstName: true,
+            lastName: true,
+            documentType: true,
+            documentNumber: true,
+            documentIssuingState: true,
+            documentIssuingCountry: true,
+            dateOfBirth: true,
+            documentExpiry: true,
+            gender: true,
+            address: true,
+
             paymentReqs: {
               where: { merchantId: { in: merchantIds } },
               select: { merchantId: true, createdAt: true, detailsJson: true },
@@ -266,6 +296,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
   const items: UserDirectoryItem[] = clients.map((client, index) => {
     const user = client.user;
     const profile = diditProfiles[index];
+
     const payments = user?.paymentReqs ?? [];
     const latestPayment = payments[0] || null;
     const details = latestPayment?.detailsJson || {};
@@ -274,6 +305,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     // 1) Get REAL name from DB (updated by Didit webhook)
     //
     const dbFullName = user?.fullName ? user.fullName.trim() : null;
+    const dbFirstName = user?.firstName ? user.firstName.trim() : null;
+    const dbLastName = user?.lastName ? user.lastName.trim() : null;
 
     //
     // 2) Extract any manual / payer-entered name from latest deposit
@@ -293,9 +326,13 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     }
 
     //
-    // 4) Full name shown in UI = ALWAYS dbFullName
+    // 4) Full name shown in exports = DB first+last OR DB fullName
     //
-    const fullName = dbFullName;
+    const fullName =
+      dbFullName ||
+      [dbFirstName, dbLastName].filter(Boolean).join(" ") ||
+      manualName ||
+      null;
 
     const latestKycRow = user?.kyc && user.kyc.length ? user.kyc[0] : null;
     const latestKycStatus = latestKycRow?.status || null;
@@ -326,7 +363,22 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       email: client.email ?? user?.email ?? null,
       phone: user?.phone ?? null,
       diditSubject: user?.diditSubject ?? client.externalId ?? client.id,
+
+      // NEW: pass through split names + fullName
+      firstName: dbFirstName,
+      lastName: dbLastName,
       fullName,
+
+      // NEW: pass through KYC fields from Prisma User
+      documentType: user?.documentType ?? null,
+      documentNumber: user?.documentNumber ?? null,
+      documentIssuingState: user?.documentIssuingState ?? null,
+      documentIssuingCountry: user?.documentIssuingCountry ?? null,
+      dateOfBirth: user?.dateOfBirth ?? null,
+      documentExpiry: user?.documentExpiry ?? null,
+      gender: user?.gender ?? null,
+      address: user?.address ?? null,
+
       registeredAt: user?.createdAt ?? client.updatedAt ?? new Date(0),
       verifiedAt: user?.verifiedAt ?? null,
       clientStatus,
@@ -340,7 +392,6 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
       nameMismatchWarning,
-
       latestSessionId,
     };
   });
@@ -406,7 +457,12 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
   }
 
   items.forEach((user) => {
-    lines.push(`${user.publicId} • ${user.fullName || "—"}`);
+    const nameForExport =
+      user.fullName ||
+      [user.firstName, user.lastName].filter(Boolean).join(" ") ||
+      "—";
+
+    lines.push(`${user.publicId} • ${nameForExport}`);
     lines.push(`External ID: ${user.externalId || "—"}`);
     lines.push(`Email: ${user.email || "—"} | Phone: ${user.phone || "—"}`);
     lines.push(`Client status: ${formatClientStatusLabel(user.clientStatus)}`);
@@ -414,6 +470,29 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
     if (user.latestSessionId) {
       lines.push(`Latest session ID: ${user.latestSessionId}`);
     }
+
+    // NEW: export KYC fields
+    if (user.documentType || user.documentNumber) {
+      lines.push(`Document: ${user.documentType || "Unknown"} ${user.documentNumber || ""}`.trim());
+    }
+    if (user.documentIssuingCountry || user.documentIssuingState) {
+      lines.push(
+        `Issuing: ${[user.documentIssuingCountry, user.documentIssuingState].filter(Boolean).join(", ")}`
+      );
+    }
+    if (user.dateOfBirth) {
+      lines.push(`Date of birth: ${user.dateOfBirth.toISOString().slice(0, 10)}`);
+    }
+    if (user.documentExpiry) {
+      lines.push(`Document expiry: ${user.documentExpiry.toISOString().slice(0, 10)}`);
+    }
+    if (user.gender) {
+      lines.push(`Gender: ${user.gender}`);
+    }
+    if (user.address) {
+      lines.push(`Address: ${user.address}`);
+    }
+
     lines.push(`Total approved deposits: ${user.totalApprovedDeposits}`);
     lines.push(`Total approved withdrawals: ${user.totalApprovedWithdrawals}`);
     lines.push(`Registered: ${user.registeredAt.toISOString()}`);
@@ -463,27 +542,27 @@ export function renderUserDirectoryPdf(items: UserDirectoryItem[]): Buffer {
 
   objects.sort((a, b) => a.index - b.index);
 
-  const parts: string[] = ['%PDF-1.4\n'];
+  const parts: string[] = ["%PDF-1.4\n"];
   const offsets: number[] = [];
   offsets[0] = 0;
-  let offset = Buffer.byteLength(parts[0], 'utf8');
+  let offset = Buffer.byteLength(parts[0], "utf8");
 
   objects.forEach((obj) => {
     offsets[obj.index] = offset;
     const chunk = `${obj.index} 0 obj\n${obj.body}\nendobj\n`;
     parts.push(chunk);
-    offset += Buffer.byteLength(chunk, 'utf8');
+    offset += Buffer.byteLength(chunk, "utf8");
   });
 
   const xrefStart = offset;
   const maxIndex = fontIndex;
   parts.push(`xref\n0 ${maxIndex + 1}\n`);
-  parts.push('0000000000 65535 f \n');
+  parts.push("0000000000 65535 f \n");
   for (let i = 1; i <= maxIndex; i += 1) {
     const pos = offsets[i] ?? offset;
-    parts.push(`${pos.toString().padStart(10, '0')} 00000 n \n`);
+    parts.push(`${pos.toString().padStart(10, "0")} 00000 n \n`);
   }
   parts.push(`trailer\n<< /Size ${maxIndex + 1} /Root ${catalogIndex} 0 R >>\nstartxref\n${xrefStart}\n%%EOF`);
 
-  return Buffer.from(parts.join(''));
+  return Buffer.from(parts.join(""));
 }

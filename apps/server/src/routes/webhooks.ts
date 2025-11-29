@@ -36,7 +36,7 @@ const PATHS = ["/webhooks/didit", "/didit"];
  *  - Didit v2 flat:    { session_id, vendor_data, status: "Approved"|"Declined"|... }
  *  - Didit v2 nested:  { data: { session: {...}, decision: {...} }, event: ... }
  *  - Signature verification (x-signature/didit-signature + WEBHOOK_SECRET_KEY)
- *  - Full name extraction from id_verification
+ *  - Full profile extraction from id_verification
  */
 for (const path of PATHS) {
   diditWebhookRouter.post(path, async (req, res) => {
@@ -141,9 +141,7 @@ for (const path of PATHS) {
         const vb = v2.parse(body);
 
         // Choose the session object
-        const session: any =
-          vb.data?.session ??
-          vb; // fall back to flat keys on root
+        const session: any = vb.data?.session ?? vb; // fall back to flat keys on root
 
         sessionId =
           session.session_id ||
@@ -151,19 +149,12 @@ for (const path of PATHS) {
           vb.session_id ||
           "";
 
-        const vendorRaw =
-          session.vendor_data ??
-          vb.vendor_data ??
-          "";
-
+        const vendorRaw = session.vendor_data ?? vb.vendor_data ?? "";
         const vendor = parseVendorData(vendorRaw);
         diditSubject = vendor.diditSubject || "";
         merchantId = vendor.merchantId || null;
 
-        const statusRaw =
-          session.status ??
-          vb.status ??
-          "";
+        const statusRaw = session.status ?? vb.status ?? "";
         const s = String(statusRaw).toLowerCase();
         statusNorm = s.includes("approve")
           ? "approved"
@@ -172,36 +163,40 @@ for (const path of PATHS) {
           : "pending";
 
         // Decision object can be at root or under data
-        const decision: any =
-          vb.decision ??
-          vb.data?.decision ??
-          {};
-
+        const decision: any = vb.decision ?? vb.data?.decision ?? {};
         const idv =
           decision.id_verification ??
           decision.idVerification ??
           decision.identity_check ??
           {};
 
+        // Names
         firstName = idv.first_name || idv.firstName || null;
         lastName = idv.last_name || idv.lastName || null;
         fullName =
           idv.full_name ||
           idv.fullName ||
-          [firstName, lastName]
-            .filter(Boolean)
-            .join(" ") ||
+          [firstName, lastName].filter(Boolean).join(" ") ||
           null;
 
+        // Document fields
         documentType = idv.document_type || null;
         documentNumber = idv.document_number || null;
+
         issuingState = idv.issuing_state_name || idv.issuing_state || null;
-        issuingCountry = idv.issuing_state || idv.issuing_state_name || null;
+        // ✅ FIX: issuingCountry should come from country fields, not state
+        issuingCountry =
+          idv.issuing_country ||
+          idv.issuing_country_code ||
+          idv.country ||
+          null;
+
         dateOfBirth = idv.date_of_birth || null;
         documentExpiry = idv.expiration_date || null;
         gender = idv.gender || null;
         address = idv.formatted_address || idv.address || null;
 
+        // Contact details
         emailFromDidit = decision?.contact_details?.email || idv.email || null;
         phoneFromDidit = decision?.contact_details?.phone || idv.phone || null;
       }
@@ -226,13 +221,13 @@ for (const path of PATHS) {
         phoneFromDidit,
       });
 
-      // Pending = ignore
+      // Pending = ignore (do not touch DB)
       if (statusNorm === "pending") {
         return res.json({ ok: true, pending: true });
       }
 
       // --------------------------------------------------------------------
-      // 4. RECOVER SUBJECT IF MISSING
+      // 4. RECOVER SUBJECT IF MISSING (fallback via KycVerification)
       // --------------------------------------------------------------------
       if (!diditSubject) {
         const p = await prisma();
@@ -249,14 +244,14 @@ for (const path of PATHS) {
       }
 
       // --------------------------------------------------------------------
-      // 5. HANDLE USER + KYC STATUS
+      // 5. HANDLE USER + KYC STATUS (this writes into Prisma User)
       // --------------------------------------------------------------------
       const user = await handleDiditWebhook(
         sessionId,
         diditSubject,
         statusNorm,
         merchantId,
-        undefined,
+        undefined, // externalId not used in vendor_data currently
         emailFromDidit,
         {
           fullName,
@@ -272,11 +267,12 @@ for (const path of PATHS) {
           address,
           email: emailFromDidit,
           phone: phoneFromDidit,
+          status: statusNorm,
         }
       );
 
       // --------------------------------------------------------------------
-      // 6. SAVE FULL NAME IF PROVIDED
+      // 6. Response
       // --------------------------------------------------------------------
       if (!fullName) {
         console.warn("[didit webhook] no fullName in payload for session", sessionId);

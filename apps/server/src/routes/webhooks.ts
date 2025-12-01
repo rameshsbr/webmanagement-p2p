@@ -184,7 +184,7 @@ for (const path of PATHS) {
         documentNumber = idv.document_number || null;
 
         issuingState = idv.issuing_state_name || idv.issuing_state || null;
-        // ✅ FIX: issuingCountry should come from country fields, not state
+        // issuingCountry should come from country fields, not state
         issuingCountry =
           idv.issuing_country ||
           idv.issuing_country_code ||
@@ -194,7 +194,26 @@ for (const path of PATHS) {
         dateOfBirth = idv.date_of_birth || null;
         documentExpiry = idv.expiration_date || null;
         gender = idv.gender || null;
-        address = idv.formatted_address || idv.address || null;
+
+        // 🔧 Address selection:
+        // Prefer any fields that sound like "address on ID / document",
+        // and only fall back to generic / location addresses.
+        const documentAddress =
+          idv.document_address ||
+          idv.address_on_document ||
+          idv.address_on_id ||
+          idv.id_address ||
+          idv.residential_address ||
+          idv.address ||
+          null;
+
+        const locationAddress =
+          idv.formatted_address ||
+          idv.location_address ||
+          idv.gps_address ||
+          null;
+
+        address = documentAddress || locationAddress;
 
         // Contact details
         emailFromDidit = decision?.contact_details?.email || idv.email || null;

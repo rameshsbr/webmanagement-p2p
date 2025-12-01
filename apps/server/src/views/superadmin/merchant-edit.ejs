@@ -30,6 +30,20 @@
   </div>
 
   <div class="f-item">
+    <label for="diditWorkflowId">Didit workflow ID (optional)</label>
+    <input
+      id="diditWorkflowId"
+      name="diditWorkflowId"
+      type="text"
+      value="<%= merchant?.diditWorkflowId || '' %>"
+      autocomplete="off"
+    />
+    <p class="muted">
+      Used for KYC via Didit. If empty, system falls back to global DIDIT_WORKFLOW_ID (for backwards compatibility).
+    </p>
+  </div>
+
+  <div class="f-item">
     <label>Default currency</label>
     <input name="defaultCurrency" value="<%= merchant?.defaultCurrency||'USD' %>" placeholder="USD"/>
   </div>

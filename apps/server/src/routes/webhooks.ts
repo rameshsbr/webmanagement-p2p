@@ -204,16 +204,16 @@ for (const path of PATHS) {
           idv.address_on_id ||
           idv.id_address ||
           idv.residential_address ||
-          idv.address ||
           null;
 
         const locationAddress =
           idv.formatted_address ||
+          idv.address ||
           idv.location_address ||
           idv.gps_address ||
           null;
 
-        address = documentAddress || locationAddress;
+        address = locationAddress || null;
 
         // Contact details
         emailFromDidit = decision?.contact_details?.email || idv.email || null;

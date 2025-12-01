@@ -2,6 +2,7 @@ import { PaymentStatus, PaymentType } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { fetchDiditProfile } from "./didit.js";
 import { normalizeClientStatus, formatClientStatusLabel, type ClientStatus } from "./merchantClient.js";
+import { evaluateNameMatch } from "./paymentStatus.js";
 
 export type UserDirectoryFilters = {
   merchantIds?: string[];
@@ -52,6 +53,8 @@ export type UserDirectoryItem = {
 
   /** true when manual name and Didit name differ significantly */
   nameMismatchWarning?: boolean;
+  nameHardMismatch?: boolean;
+  nameMatchScore?: number;
 };
 
 export type UserDirectoryResult = {
@@ -102,34 +105,6 @@ function computeFullName(candidate: any): string | null {
   ].map((v: any) => (typeof v === "string" ? v.trim() : ""));
   const name = names.find((n) => n.length > 1);
   return name || null;
-}
-
-/**
- * Very simple token-based similarity for names.
- * Returns 0–1, where 1 = all words match (order doesn’t matter).
- */
-function normalizeNameTokens(name: string): string[] {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-function computeNameSimilarity(a: string | null, b: string | null): number {
-  if (!a || !b) return 0;
-  const tokensA = new Set(normalizeNameTokens(a));
-  const tokensB = new Set(normalizeNameTokens(b));
-  if (!tokensA.size || !tokensB.size) return 0;
-
-  let intersection = 0;
-  tokensA.forEach((t) => {
-    if (tokensB.has(t)) intersection += 1;
-  });
-
-  // Sørensen–Dice on tokens
-  return (2 * intersection) / (tokensA.size + tokensB.size);
 }
 
 function computeStatus(verifiedAt: Date | null, latestKyc: string | null): string {
@@ -316,14 +291,10 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     //
     // 3) Compute mismatch (but NEVER override DB name)
     //
-    let nameMismatchWarning = false;
-
-    if (manualName && dbFullName) {
-      const similarity = computeNameSimilarity(manualName, dbFullName);
-      if (similarity < 0.8) {
-        nameMismatchWarning = true;
-      }
-    }
+    const match = evaluateNameMatch(manualName, dbFirstName, dbLastName, dbFullName);
+    const nameMismatchWarning = match.needsReview;
+    const nameHardMismatch = !match.allow;
+    const nameMatchScore = match.score;
 
     //
     // 4) Full name shown in exports = DB first+last OR DB fullName
@@ -392,6 +363,8 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       totalApprovedWithdrawals: counts.withdrawals,
       diditProfile: profile,
       nameMismatchWarning,
+      nameHardMismatch,
+      nameMatchScore,
       latestSessionId,
     };
   });

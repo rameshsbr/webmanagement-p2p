@@ -16,7 +16,7 @@ import { seal } from "../services/secretBox.js";
 import { z } from "zod";
 import { formatBankPublicId } from "../services/reference.js";
 import { getUserDirectory, getAllUsers, renderUserDirectoryPdf } from "../services/userDirectory.js";
-import { changePaymentStatus, PaymentStatusError } from "../services/paymentStatus.js";
+import { changePaymentStatus, evaluateNameMatch, PaymentStatusError } from "../services/paymentStatus.js";
 import { stringify } from "csv-stringify";
 import ExcelJS from "exceljs";
 import {
@@ -143,49 +143,17 @@ function statusesCSV(s?: string) {
   return arr.length ? arr : undefined;
 }
 
-function normalizeNameTokens(name: string): string[] {
-  return name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean);
-}
-
-function computeNameSimilarity(a: string | null, b: string | null): number {
-  if (!a || !b) return 0;
-  const tokensA = new Set(normalizeNameTokens(a));
-  const tokensB = new Set(normalizeNameTokens(b));
-  if (!tokensA.size || !tokensB.size) return 0;
-
-  let intersection = 0;
-  tokensA.forEach((t) => {
-    if (tokensB.has(t)) intersection += 1;
-  });
-
-  return (2 * intersection) / (tokensA.size + tokensB.size);
-}
-
-function extractHolderName(details: any): string | null {
+function extractHolderName(details: any, type: "DEPOSIT" | "WITHDRAWAL"): string | null {
   if (!details || typeof details !== "object") return null;
   const payer = (details as any).payer || {};
   const destination = (details as any).destination || {};
-  const extras = (details as any).extras || {};
-  const candidates = [
-    payer.holderName,
-    destination.holderName,
-    extras["Account holder name"],
-    extras["Full name"],
-  ];
-  const hit = candidates.find((n) => typeof n === "string" && n.trim().length > 1);
-  return hit ? hit.trim() : null;
-}
 
-function buildUserName(user?: { fullName?: string | null; firstName?: string | null; lastName?: string | null }): string | null {
-  if (!user) return null;
-  if (user.fullName && user.fullName.trim()) return user.fullName.trim();
-  const combined = [user.firstName, user.lastName].filter(Boolean).join(" ").trim();
-  return combined || null;
+  const holderName =
+    type === "DEPOSIT"
+      ? payer.holderName || destination.holderName || null
+      : destination.holderName || payer.holderName || null;
+
+  return typeof holderName === "string" && holderName.trim().length ? holderName.trim() : null;
 }
 
 const superUserQuery = z.object({
@@ -594,9 +562,13 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
 
   const items = await Promise.all(
     rawItems.map(async (x: any) => {
-      const holderName = extractHolderName(x.detailsJson);
-      const userName = buildUserName(x.user as any);
-      const nameMismatchWarning = holderName && userName ? computeNameSimilarity(holderName, userName) < 0.8 : false;
+      const holderName = extractHolderName(x.detailsJson, x.type as "DEPOSIT" | "WITHDRAWAL");
+      const match = evaluateNameMatch(
+        holderName,
+        (x.user as any)?.firstName,
+        (x.user as any)?.lastName,
+        (x.user as any)?.fullName,
+      );
 
       const first = x.receipts && x.receipts.length > 0 ? x.receipts[0] : null;
       const extras =
@@ -652,7 +624,9 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         _receiptCount: Array.isArray(x.receipts) ? x.receipts.length : 0,
         _extrasList: orderedExtras,
         _extrasLookup: extrasLookup,
-        nameMismatchWarning,
+        nameMatchScore: match.score,
+        nameMismatchWarning: match.needsReview,
+        nameHardMismatch: !match.allow,
       };
     })
   );

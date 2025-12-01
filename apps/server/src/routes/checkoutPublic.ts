@@ -19,6 +19,7 @@ import {
 } from "../services/merchantClient.js";
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
+import { evaluateNameMatch } from "../services/paymentStatus.js";
 
 // ───────────────────────────────────────────────
 // Minimal API-key verification (copied pattern)
@@ -563,30 +564,26 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   // ───────────────────────────────────────────────
   // NEW: soft-block deposit if name != KYC fullName
   // ───────────────────────────────────────────────
-  const payerNameRaw =
-    (base.method === "OSKO"
-      ? (base.payer as any).holderName
-      : (base.payer as any).holderName) || "";
+  const payerNameRaw = ((base.payer as any).holderName || "").trim();
 
-  const normalizeName = (value: string | null | undefined) =>
-    String(value || "")
-      .toLowerCase()
-      .replace(/\s+/g, " ")
-      .trim();
+  const nameMatch = evaluateNameMatch(
+    payerNameRaw,
+    (user as any).firstName,
+    (user as any).lastName,
+    (user as any).fullName,
+  );
 
-  const kycName = normalizeName((user as any).fullName);
-  const payerName = normalizeName(payerNameRaw);
-
-  if (kycName && payerName && kycName !== payerName) {
-    // Soft-block: tell the widget there is a mismatch so it can show a clear error.
+  if (!nameMatch.allow) {
     return res.status(400).json({
       ok: false,
       error: "NAME_MISMATCH",
-      message:
-        "The account holder name must match the verified name on your profile.",
+      message: "Account holder name must match the verified KYC name.",
       details: {
         kycFullName: (user as any).fullName,
+        kycFirstName: (user as any).firstName,
+        kycLastName: (user as any).lastName,
         payerName: payerNameRaw,
+        nameMatchScore: nameMatch.score,
       },
     });
   }
@@ -895,8 +892,16 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
 // 5) Public: reusable deposit draft
 checkoutPublicRouter.get("/public/deposit/draft", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
-  const claims = { merchantId, diditSubject, currency, availableBalanceCents };
   const user = await prisma.user.findUnique({ where: { diditSubject } });
+  const claims = {
+    merchantId,
+    diditSubject,
+    currency,
+    availableBalanceCents,
+    kycFullName: user?.fullName ?? null,
+    kycFirstName: user?.firstName ?? null,
+    kycLastName: user?.lastName ?? null,
+  };
   if (!user) return res.json({ ok: true, draft: null, claims });
 
   const pr = await prisma.paymentRequest.findFirst({

@@ -111,7 +111,9 @@
             <div class="info-block">
               <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
               <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= dest.bankName || r.bankAccount?.bankName || '-' %></span></div>
-              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= dest.holderName || '-' %> <% if (r.nameMismatchWarning) { %><span title="Name mismatch">⚠️</span><% } %></span></div>
+              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= dest.holderName || '-' %> <% if (r.nameMismatchWarning) { %>
+                <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
+              <% } %></span></div>
               <% if (method === 'OSKO') { %>
                 <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= dest.accountNo || '-' %></span></div>
                 <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= dest.bsb || '-' %></span></div>

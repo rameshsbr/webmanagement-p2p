@@ -1,6 +1,66 @@
 import { prisma } from "../lib/prisma.js";
 import type { PaymentType } from "@prisma/client";
 
+export function normalizeNameTokens(name: string): string[] {
+  return name
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+}
+
+export function computeNameSimilarity(a?: string | null, b?: string | null): number {
+  if (!a || !b) return 0;
+
+  const tokensA = new Set(normalizeNameTokens(a));
+  const tokensB = new Set(normalizeNameTokens(b));
+
+  if (!tokensA.size || !tokensB.size) return 0;
+
+  let intersection = 0;
+  tokensA.forEach((t) => {
+    if (tokensB.has(t)) intersection++;
+  });
+
+  return (2 * intersection) / (tokensA.size + tokensB.size);
+}
+
+export type NameMatchEval = {
+  score: number;
+  allow: boolean;
+  needsReview: boolean;
+};
+
+export function evaluateNameMatch(
+  payerName?: string | null,
+  firstName?: string | null,
+  lastName?: string | null,
+  fullName?: string | null
+): NameMatchEval {
+  const raw = (payerName || "").trim();
+  if (!raw) return { score: 0, allow: true, needsReview: false };
+
+  const combined = [firstName, lastName].filter(Boolean).join(" ") || null;
+
+  const scores = [
+    computeNameSimilarity(raw, fullName || null),
+    computeNameSimilarity(raw, combined),
+    computeNameSimilarity(raw, firstName || null),
+    computeNameSimilarity(raw, lastName || null),
+  ].filter((s) => s > 0);
+
+  const best = scores.length ? Math.max(...scores) : 0;
+
+  const ALLOW_THRESHOLD = 0.6;
+  const EXACT_THRESHOLD = 0.999;
+
+  const allow = best >= ALLOW_THRESHOLD;
+  const needsReview = best >= ALLOW_THRESHOLD && best < EXACT_THRESHOLD;
+
+  return { score: best, allow, needsReview };
+}
+
 export type TargetStatus = "APPROVED" | "REJECTED";
 
 export class PaymentStatusError extends Error {

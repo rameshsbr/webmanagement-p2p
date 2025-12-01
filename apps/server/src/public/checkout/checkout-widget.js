@@ -514,6 +514,45 @@
     }
     return undefined;
   }
+  function normalizeNameTokens(name) {
+    return String(name || "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, " ")
+      .trim()
+      .split(/\s+/)
+      .filter(Boolean);
+  }
+  function computeNameSimilarity(a, b) {
+    if (!a || !b) return 0;
+    const tokensA = new Set(normalizeNameTokens(a));
+    const tokensB = new Set(normalizeNameTokens(b));
+    if (!tokensA.size || !tokensB.size) return 0;
+    let intersection = 0;
+    tokensA.forEach((t) => {
+      if (tokensB.has(t)) intersection += 1;
+    });
+    return (2 * intersection) / (tokensA.size + tokensB.size);
+  }
+  function evaluateNameMatch(payerName, firstName, lastName, fullName) {
+    const raw = String(payerName || "").trim();
+    if (!raw) return { score: 0, allow: true, needsReview: false };
+
+    const combined = [firstName, lastName].filter(Boolean).join(" ") || null;
+    const scores = [
+      computeNameSimilarity(raw, fullName || null),
+      computeNameSimilarity(raw, combined),
+      computeNameSimilarity(raw, firstName || null),
+      computeNameSimilarity(raw, lastName || null),
+    ].filter((s) => s > 0);
+
+    const best = scores.length ? Math.max(...scores) : 0;
+    const ALLOW_THRESHOLD = 0.60;
+    const EXACT_THRESHOLD = 0.999;
+
+    const allow = best >= ALLOW_THRESHOLD;
+    const needsReview = best >= ALLOW_THRESHOLD && best < EXACT_THRESHOLD;
+    return { score: best, allow, needsReview };
+  }
   function normalizeAuMobile(input) {
     const digits = String(input || "").replace(/[^\d]/g, "");
     if (/^04\d{8}$/.test(digits)) return "+61" + digits.slice(1);
@@ -701,6 +740,25 @@
 
       const verr = validateDepositInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
+
+      payer.holderName = String(payer.holderName || "").trim();
+      const hasKycName = Boolean(
+        (_claims && _claims.kycFullName) ||
+        (_claims && _claims.kycFirstName) ||
+        (_claims && _claims.kycLastName)
+      );
+      if (hasKycName) {
+        const nameMatch = evaluateNameMatch(
+          payer.holderName,
+          (_claims && _claims.kycFirstName) || null,
+          (_claims && _claims.kycLastName) || null,
+          (_claims && _claims.kycFullName) || null,
+        );
+        if (!nameMatch.allow) {
+          status.textContent = "Account holder name must match the verified KYC name.";
+          return;
+        }
+      }
 
       saveDraft("deposit", claims, { amountCents, method: method.value, extras });
 
@@ -938,6 +996,25 @@
 
       const verr = validateWithdrawalInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
+
+      destination.holderName = String(destination.holderName || "").trim();
+      const hasKycName = Boolean(
+        (_claims && _claims.kycFullName) ||
+        (_claims && _claims.kycFirstName) ||
+        (_claims && _claims.kycLastName)
+      );
+      if (hasKycName) {
+        const nameMatch = evaluateNameMatch(
+          destination.holderName,
+          (_claims && _claims.kycFirstName) || null,
+          (_claims && _claims.kycLastName) || null,
+          (_claims && _claims.kycFullName) || null,
+        );
+        if (!nameMatch.allow) {
+          status.textContent = "Account holder name must match the verified KYC name.";
+          return;
+        }
+      }
 
       saveDraft("withdrawal", claims, { amountCents, method: method.value, extras });
 

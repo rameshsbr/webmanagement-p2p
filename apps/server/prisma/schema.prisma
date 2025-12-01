@@ -42,6 +42,9 @@ model Merchant {
   blocklist      PayerBlocklist[]
   clientMappings MerchantClient[]
 
+  // NEW: per-merchant Didit KYC workflow ID
+  diditWorkflowId String?
+
   // NEW: per-merchant checkout/SDK form configuration
   // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
   formConfigs   MerchantFormConfig[]

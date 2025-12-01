@@ -1053,8 +1053,9 @@ superAdminRouter.get("/merchants/new", (_req, res) => {
 });
 
 superAdminRouter.post("/merchants/new", async (req, res) => {
-  const { name, webhookUrl, status, email, defaultCurrency, active, userDirectoryEnabled } =
-    req.body || {};
+  const { name, webhookUrl, status, email, defaultCurrency, active, userDirectoryEnabled } = req.body || {};
+  const diditWorkflowIdRaw = (req.body?.diditWorkflowId || "").trim();
+  const diditWorkflowId = diditWorkflowIdRaw.length ? diditWorkflowIdRaw : null;
 
   const m = await prisma.merchant.create({
     data: {
@@ -1065,6 +1066,7 @@ superAdminRouter.post("/merchants/new", async (req, res) => {
       defaultCurrency: (defaultCurrency || "USD").trim().toUpperCase(),
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
+      diditWorkflowId,
     },
   });
 
@@ -1181,6 +1183,8 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
 superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
   const { name, status, email, defaultCurrency, active, userDirectoryEnabled, apiKeysSelfServiceEnabled } = req.body || {};
   const website = (req.body?.webhookUrl || req.body?.website || "").trim();
+  const diditWorkflowIdRaw = (req.body?.diditWorkflowId || "").trim();
+  const diditWorkflowId = diditWorkflowIdRaw.length ? diditWorkflowIdRaw : null;
 
   const before = await prisma.merchant.findUnique({
     where: { id: req.params.id },
@@ -1197,6 +1201,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
       apiKeysSelfServiceEnabled: apiKeysSelfServiceEnabled === "on",
+      diditWorkflowId,
     },
   });
 
@@ -1210,6 +1215,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       active: active === "on",
       userDirectoryEnabled: userDirectoryEnabled === "on",
       apiKeysSelfServiceEnabled: apiKeysSelfServiceEnabled === "on",
+      diditWorkflowId,
     },
     previous: {
       name: before?.name,
@@ -1217,6 +1223,7 @@ superAdminRouter.post("/merchants/:id/edit", async (req, res) => {
       active: (before as any)?.active,
       userDirectoryEnabled: (before as any)?.userDirectoryEnabled,
       apiKeysSelfServiceEnabled: (before as any)?.apiKeysSelfServiceEnabled,
+      diditWorkflowId: (before as any)?.diditWorkflowId,
     },
   });
 

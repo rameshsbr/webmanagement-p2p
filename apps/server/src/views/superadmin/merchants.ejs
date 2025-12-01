@@ -15,6 +15,7 @@
         <th>Currency</th>
         <th>Active</th>
         <th>User directory</th>
+        <th data-col="kyc">KYC workflow</th>
         <th>API limit</th>
         <th></th>
       </tr>
@@ -34,6 +35,9 @@
               <button type="submit" class="btn small"><%= m.userDirectoryEnabled ? 'Disable' : 'Enable' %></button>
             </form>
           </td>
+          <td data-col="kyc">
+            <%= m.diditWorkflowId ? 'Custom' : (process.env.DIDIT_WORKFLOW_ID ? 'Default' : '-') %>
+          </td>
           <td>
             <% if (m.limits && m.limits.maxReqPerMin != null) { %>
               <%= m.limits.maxReqPerMin %>/min
@@ -48,7 +52,7 @@
         </tr>
       <% }) %>
       <% if (!merchants || merchants.length === 0) { %>
-        <tr><td colspan="8" class="mini">No merchants yet.</td></tr>
+        <tr><td colspan="9" class="mini">No merchants yet.</td></tr>
       <% } %>
     </tbody>
   </table>

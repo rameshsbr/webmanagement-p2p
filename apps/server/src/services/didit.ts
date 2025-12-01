@@ -42,6 +42,16 @@ async function prisma() {
   return prismaSingleton;
 }
 
+async function getMerchantWorkflowId(merchantId?: string | null): Promise<string | null> {
+  if (!merchantId) return null;
+  const p = await prisma();
+  const merchant = await p.merchant.findUnique({
+    where: { id: merchantId },
+    select: { diditWorkflowId: true },
+  });
+  return merchant?.diditWorkflowId || null;
+}
+
 /**
  * Legacy local stub (kept for dev). Returns a fake URL that renders your local
  * fake KYC page. Not used when Low-Code is configured.
@@ -273,6 +283,9 @@ type CreateLinkInput = {
   merchantId?: string | null;
   externalId?: string | null;
   email?: string | null;
+
+  // Optional override, mostly for tests or special cases
+  workflowIdOverride?: string | null;
 };
 type CreateLinkOutput = { url: string; sessionId: string };
 
@@ -304,10 +317,25 @@ async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sess
     /\/+$/,
     ""
   );
-  const workflowId = process.env.DIDIT_WORKFLOW_ID;
 
   if (!apiKey) throw new Error("DIDIT_API_KEY missing");
-  if (!workflowId) throw new Error("DIDIT_WORKFLOW_ID missing");
+
+  // 1) Try explicit override
+  let workflowId = input.workflowIdOverride || null;
+
+  // 2) If not provided, try merchant-specific setting
+  if (!workflowId && input.merchantId) {
+    workflowId = await getMerchantWorkflowId(input.merchantId);
+  }
+
+  // 3) Fallback to env (for old merchants)
+  if (!workflowId) {
+    workflowId = process.env.DIDIT_WORKFLOW_ID || null;
+  }
+
+  if (!workflowId) {
+    throw new Error("Didit workflow ID missing (no merchant.diditWorkflowId and no DIDIT_WORKFLOW_ID env)");
+  }
 
   const body: any = {
     workflow_id: workflowId,
@@ -384,10 +412,20 @@ async function getStatusV2(sessionId: string): Promise<"pending" | "approved" | 
 async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
   const base = (process.env.DIDIT_API_BASE || "https://api.didit.me").replace(/\/+$/, "");
   const appId = process.env.DIDIT_APP_ID;
-  const workflowId = process.env.DIDIT_WORKFLOW_ID;
+  let workflowId = input.workflowIdOverride || null;
+
+  if (!workflowId && input.merchantId) {
+    workflowId = await getMerchantWorkflowId(input.merchantId);
+  }
+
+  if (!workflowId) {
+    workflowId = process.env.DIDIT_WORKFLOW_ID || null;
+  }
 
   if (!appId) throw new Error("DIDIT_APP_ID missing");
-  if (!workflowId) throw new Error("DIDIT_WORKFLOW_ID missing");
+  if (!workflowId) {
+    throw new Error("Didit workflow ID missing (no merchant.diditWorkflowId and no DIDIT_WORKFLOW_ID env)");
+  }
 
   const token = await getDiditAccessToken();
   if (!token) {

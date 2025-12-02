@@ -178,6 +178,11 @@
   .data-row{ display:grid; grid-template-columns: 1fr auto; gap:8px; margin-bottom:6px; }
   .opt-actions{ display:flex; gap:6px; }
   .drag{ opacity:.6 }
+  .data-actions{ display:flex; gap:8px; flex-wrap:wrap; margin-top:6px; }
+  .bulk-wrap{ margin-top:10px; padding:10px; border:1px dashed var(--border); border-radius:8px; display:none; flex-direction:column; gap:8px; background:color-mix(in oklab, var(--surface) 92%, transparent); }
+  .bulk-wrap textarea{ width:100%; min-height:120px; }
+  .bulk-help{ font-size: var(--fs-12); opacity:.78; }
+  .bulk-error{ font-size: var(--fs-12); color: var(--tone-danger); }
 
   .toggle {
     position: relative; display: inline-flex; align-items: center;
@@ -353,15 +358,22 @@
     return e;
   }
   function wrap(label, node){ return el('div',{class:'grid'},[ el('div',{class:'muted'},label), node ]); }
-  function optionRow(listEl, value){
+  function optionRow(listEl, value, afterNode){
+    // Render a single select option row. If afterNode is provided, insert the
+    // new row immediately after it; otherwise append to the end. This keeps
+    // per-row "+" buttons inserting in-place instead of always at the bottom.
     const r = el('div',{class:'data-row'},[
       el('input',{type:'text', class:'i-opt', value:value||'', placeholder:'Option value'}),
       el('div',{class:'opt-actions'},[
-        el('button',{type:'button', class:'icon-mini', onclick:()=>{ listEl.appendChild(optionRow(listEl,'')); }},'＋'),
+        el('button',{type:'button', class:'icon-mini', onclick:()=>{ optionRow(listEl, '', r); }},'＋'),
         el('button',{type:'button', class:'icon-mini', onclick:()=>{ const all=listEl.querySelectorAll('.data-row'); if(all.length>1) r.remove(); else r.querySelector('input').value=''; }},'－')
       ])
     ]);
-    listEl.appendChild(r);
+    if (afterNode && afterNode.parentElement === listEl){
+      afterNode.insertAdjacentElement('afterend', r);
+    } else {
+      listEl.appendChild(r);
+    }
     return r;
   }
 
@@ -415,11 +427,43 @@
       el('div',{class:'req-wrap'},[req.root, actions])
     ]);
 
+    const dataList = el('div',{class:'i-data-list'});
+    const bulkInput = el('textarea',{placeholder:'One per line or comma separated'});
+    const bulkError = el('div',{class:'bulk-error'});
+    const bulkWrap = el('div',{class:'bulk-wrap'},[
+      el('div',{},'Paste options (one per line or comma-separated)'),
+      bulkInput,
+      el('div',{class:'bulk-help'},'You can paste from Excel/Sheets columns or CSV. Empty values are ignored.'),
+      bulkError,
+      el('div',{class:'data-actions'},[
+        el('button',{type:'button', class:'btn small tone-primary', onclick:()=>{
+          const raw = String(bulkInput.value || '');
+          // Support newline and comma separated lists; ignore empty values.
+          const values = raw.split(/\n/).flatMap(line => line.split(',')).map(v => v.trim()).filter(Boolean);
+          if (!values.length){
+            bulkError.textContent = 'No options found in pasted text.';
+            return;
+          }
+          const lastRow = dataList.querySelector('.data-row:last-child');
+          values.forEach((val, idx)=>{
+            optionRow(dataList, val, idx === 0 ? lastRow : dataList.querySelector('.data-row:last-child'));
+          });
+          bulkInput.value = '';
+          bulkError.textContent = '';
+          bulkWrap.style.display = 'none';
+        }},'Add options'),
+        el('button',{type:'button', class:'btn small', onclick:()=>{ bulkWrap.style.display='none'; bulkError.textContent=''; }},'Cancel')
+      ])
+    ]);
     const dataWrap = el('div',{class:'grid full i-data-wrap'},[
       el('div',{class:'muted'},'Data'),
       el('div',{},[
-        el('div',{class:'i-data-list'}),
-        el('button',{type:'button', class:'icon-mini', onclick:(e)=>{e.preventDefault(); optionRow(card.querySelector('.i-data-list'),''); }},'＋ Add option')
+        dataList,
+        el('div',{class:'data-actions'},[
+          el('button',{type:'button', class:'icon-mini', onclick:(e)=>{e.preventDefault(); optionRow(dataList,''); }},'＋ Add option'),
+          el('button',{type:'button', class:'icon-mini', onclick:()=>{ const hidden = !bulkWrap.style.display || bulkWrap.style.display === 'none'; bulkWrap.style.display = hidden ? 'flex' : 'none'; if (hidden) bulkInput.focus(); }},'Bulk add')
+        ]),
+        bulkWrap
       ])
     ]);
 

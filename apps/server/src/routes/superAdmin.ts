@@ -31,7 +31,7 @@ import {
   listMerchantBalances,
 } from "../services/merchantAccounts.js";
 import { formatClientStatusLabel, normalizeClientStatus } from "../services/merchantClient.js";
-import { Prisma, type MerchantAccountEntryType } from "@prisma/client";
+import { PaymentType, Prisma, type MerchantAccountEntryType } from "@prisma/client";
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
@@ -41,6 +41,30 @@ export const superAdminRouter = Router();
 function normalizeCurrency(currency: string | null | undefined) {
   if (!currency) return null;
   return currency.toUpperCase();
+}
+
+function buildMethodFilter(code: string) {
+  const normalized = code.trim().toUpperCase();
+  return {
+    OR: [
+      { detailsJson: { path: ["method"], equals: normalized } },
+      { bankAccount: { method: normalized } },
+    ],
+  } as Prisma.PaymentRequestWhereInput;
+}
+
+async function countPaymentsByMethod(
+  code: string,
+  type: PaymentType,
+  merchantId?: string,
+) {
+  const where: Prisma.PaymentRequestWhereInput = {
+    type,
+    ...(merchantId ? { merchantId } : {}),
+    ...buildMethodFilter(code),
+  };
+
+  return prisma.paymentRequest.count({ where });
 }
 
 // Require SUPER role
@@ -118,6 +142,37 @@ superAdminRouter.post('/prefs/timezone', async (req: any, res) => {
     console.error('[superadmin prefs] failed to update timezone', err);
     return res.status(500).json({ ok: false, error: 'Failed to save timezone' });
   }
+});
+
+// Methods management (list + analytics)
+superAdminRouter.get("/methods", async (_req, res) => {
+  const methods = await prisma.method.findMany({ orderBy: { name: "asc" } });
+
+  const stats: Record<string, { merchants: number; deposits: number; withdrawals: number }> = {};
+
+  await Promise.all(
+    methods.map(async (method) => {
+      const code = method.code.trim().toUpperCase();
+
+      const [merchantCount, depositCount, withdrawalCount] = await Promise.all([
+        prisma.merchantMethod.count({ where: { methodId: method.id } }),
+        countPaymentsByMethod(code, PaymentType.DEPOSIT),
+        countPaymentsByMethod(code, PaymentType.WITHDRAWAL),
+      ]);
+
+      stats[method.id] = {
+        merchants: merchantCount,
+        deposits: depositCount,
+        withdrawals: withdrawalCount,
+      };
+    }),
+  );
+
+  res.render("superadmin/methods", {
+    title: "Methods",
+    methods,
+    stats,
+  });
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";

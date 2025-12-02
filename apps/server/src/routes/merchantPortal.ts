@@ -1,5 +1,6 @@
 // apps/server/src/routes/merchantPortal.ts
 import { Router, Request } from "express";
+import { PaymentType, Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { z } from "zod";
 import { stringify } from "csv-stringify";
@@ -77,6 +78,30 @@ function normalizeTestSubject(input: any, merchantId: string): string {
   const tail = merchantId.replace(/[^A-Za-z0-9]/g, "").slice(-6) || merchantId.slice(-6) || "demo";
   const generated = `merchant-${tail}-test`;
   return generated.slice(0, 64);
+}
+
+function buildMerchantMethodFilter(code: string): Prisma.PaymentRequestWhereInput {
+  const normalized = code.trim().toUpperCase();
+  return {
+    OR: [
+      { detailsJson: { path: ["method"], equals: normalized } },
+      { bankAccount: { method: normalized } },
+    ],
+  } as Prisma.PaymentRequestWhereInput;
+}
+
+async function countMerchantPaymentsByMethod(
+  merchantId: string,
+  code: string,
+  type: PaymentType,
+) {
+  return prisma.paymentRequest.count({
+    where: {
+      merchantId,
+      type,
+      ...buildMerchantMethodFilter(code),
+    },
+  });
 }
 
 type RenderKeysOptions = {
@@ -841,6 +866,35 @@ router.get("/payments/test", async (req: any, res) => {
   res.render("merchant/payments-test", {
     title: "Test Payments",
     testCheckout: { subject, token },
+  });
+});
+
+router.get("/methods", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.redirect("/merchant");
+
+  const methods = await prisma.method.findMany({
+    where: { merchantLinks: { some: { merchantId } } },
+    orderBy: { name: "asc" },
+  });
+
+  const stats: Record<string, { deposits: number; withdrawals: number }> = {};
+
+  await Promise.all(
+    methods.map(async (method) => {
+      const code = method.code.trim().toUpperCase();
+      const [deposits, withdrawals] = await Promise.all([
+        countMerchantPaymentsByMethod(merchantId, code, PaymentType.DEPOSIT),
+        countMerchantPaymentsByMethod(merchantId, code, PaymentType.WITHDRAWAL),
+      ]);
+      stats[method.id] = { deposits, withdrawals };
+    }),
+  );
+
+  res.render("merchant/methods", {
+    title: "Methods",
+    methods,
+    stats,
   });
 });
 

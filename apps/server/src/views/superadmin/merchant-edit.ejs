@@ -116,6 +116,20 @@
     </ul>
   </div>
 
+  <div class="card">
+    <div class="title">Methods</div>
+    <% if (merchant?.methods && merchant.methods.length) { %>
+      <ul>
+        <% merchant.methods.forEach((mm) => { %>
+          <li><%= mm.method?.name || mm.method?.code || 'Unknown' %> (<%= mm.method?.code || '—' %>)</li>
+        <% }) %>
+      </ul>
+    <% } else { %>
+      <p class="muted">No method available yet.</p>
+    <% } %>
+    <p class="muted" style="margin-top:8px">Methods can be assigned from the Manage → Methods page.</p>
+  </div>
+
   <% if (newCreds) { %>
   <div class="card tone-success">
     <div class="title">User created</div>

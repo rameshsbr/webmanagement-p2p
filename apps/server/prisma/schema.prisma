@@ -49,6 +49,9 @@ model Merchant {
   // (stored in MerchantFormConfig; one merchant can have many, incl. per-bank)
   formConfigs   MerchantFormConfig[]
   merchantUsers MerchantUser[]
+
+  // NEW: configured payment methods
+  methods MerchantMethod[]
 }
 
 model MerchantApiKey {
@@ -140,6 +143,30 @@ model BankAccount {
   formConfigs MerchantFormConfig[]
 
   @@index([merchantId, currency, method, active])
+}
+
+model Method {
+  id        String   @id @default(cuid())
+  code      String   @unique
+  name      String
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  merchantLinks MerchantMethod[]
+}
+
+model MerchantMethod {
+  id         String   @id @default(cuid())
+  merchant   Merchant @relation(fields: [merchantId], references: [id])
+  merchantId String
+
+  method   Method @relation(fields: [methodId], references: [id])
+  methodId String
+
+  createdAt DateTime @default(now())
+
+  @@unique([merchantId, methodId])
 }
 
 model ReceiptFile {

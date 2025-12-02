@@ -1,0 +1,30 @@
+<% layout('merchant/layout') -%>
+
+<% if (!methods.length) { %>
+  <p>No methods assigned to your account yet.</p>
+<% } else { %>
+  <div class="table-wrap">
+    <table class="table">
+      <thead>
+        <tr>
+          <th>Method</th>
+          <th>Code</th>
+          <th>Active</th>
+          <th>Deposits</th>
+          <th>Withdrawals</th>
+        </tr>
+      </thead>
+      <tbody>
+        <% methods.forEach((method) => { const stat = stats[method.id] || { deposits: 0, withdrawals: 0 }; %>
+          <tr>
+            <td><%= method.name %></td>
+            <td><span class="mono"><%= method.code %></span></td>
+            <td><%= method.active ? 'Yes' : 'No' %></td>
+            <td><%= stat.deposits %></td>
+            <td><%= stat.withdrawals %></td>
+          </tr>
+        <% }) %>
+      </tbody>
+    </table>
+  </div>
+<% } %>

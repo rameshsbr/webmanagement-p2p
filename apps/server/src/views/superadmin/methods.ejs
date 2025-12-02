@@ -1,0 +1,41 @@
+<% layout('superadmin/layout') -%>
+
+<div class="panel">
+  <div class="panel-header">
+    <div>
+      <h2>Methods</h2>
+      <p class="muted">Manage payment methods and review usage across merchants.</p>
+    </div>
+  </div>
+
+  <% if (!methods.length) { %>
+    <p>No methods available yet.</p>
+  <% } else { %>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Code</th>
+            <th>Active</th>
+            <th>Merchants</th>
+            <th>Deposits</th>
+            <th>Withdrawals</th>
+          </tr>
+        </thead>
+        <tbody>
+          <% methods.forEach((method) => { const stat = stats[method.id] || { merchants: 0, deposits: 0, withdrawals: 0 }; %>
+            <tr>
+              <td><%= method.name %></td>
+              <td><span class="mono"><%= method.code %></span></td>
+              <td><%= method.active ? 'Yes' : 'No' %></td>
+              <td><%= stat.merchants %></td>
+              <td><%= stat.deposits %></td>
+              <td><%= stat.withdrawals %></td>
+            </tr>
+          <% }) %>
+        </tbody>
+      </table>
+    </div>
+  <% } %>
+</div>

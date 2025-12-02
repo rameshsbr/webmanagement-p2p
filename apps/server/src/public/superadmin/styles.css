@@ -197,6 +197,77 @@
   gap: 10px;
 }
 
+/* Methods management */
+.methods-card {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.methods-add {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 16px;
+  align-items: end;
+}
+
+.methods-add .form-field {
+  margin: 0;
+}
+
+.methods-add__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.methods-add input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.methods-table th,
+.methods-table td {
+  vertical-align: middle;
+}
+
+.methods-table input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.methods-table .enabled-cell {
+  text-align: center;
+}
+
+.methods-table .number-cell {
+  text-align: right;
+}
+
+.methods-table .actions-cell {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.methods-assign .use-cell {
+  text-align: center;
+}
+
+.methods-assign input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.methods-assign .form-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 14px;
+}
+
 .account-file-actions .btn {
   flex-shrink: 0;
 }

@@ -322,6 +322,41 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 })();
 
 (function () {
+  const methodsPage = document.querySelector('.methods-page');
+  const assignPage = document.querySelector('.methods-assign');
+  if (!methodsPage && !assignPage) return;
+
+  const TOAST_KEY = 'sa.methods.toast';
+
+  const setToast = (message) => {
+    if (!message) return;
+    try { sessionStorage.setItem(TOAST_KEY, message); } catch {}
+  };
+
+  const showPendingToast = () => {
+    let message = null;
+    try { message = sessionStorage.getItem(TOAST_KEY); } catch {}
+    if (!message) return;
+    if (typeof window.toast === 'function') window.toast(message);
+    try { sessionStorage.removeItem(TOAST_KEY); } catch {}
+  };
+
+  showPendingToast();
+
+  if (methodsPage) {
+    document.querySelectorAll('[data-methods-form]').forEach((form) => {
+      form.addEventListener('submit', () => setToast('Saved'));
+    });
+  }
+
+  if (assignPage) {
+    document.querySelectorAll('[data-methods-form="assign"]').forEach((form) => {
+      form.addEventListener('submit', () => setToast('Assignments saved'));
+    });
+  }
+})();
+
+(function () {
   const triggers = document.querySelectorAll('[data-account-modal-open]');
   if (!triggers.length) return;
 

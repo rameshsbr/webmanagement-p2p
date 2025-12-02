@@ -1,41 +1,43 @@
 <% layout('superadmin/layout') -%>
 
-<div class="panel">
-  <div class="panel-header">
-    <div>
-      <h2>Assign merchants – <%= method.name %> (<span class="mono"><%= method.code %></span>)</h2>
-      <p class="muted">Select which merchants can use this method.</p>
+<div class="page methods-assign">
+  <div class="card">
+    <div class="panel-header">
+      <div>
+        <h1>Assign merchants – <%= method.name %> (<span class="mono"><%= method.code %></span>)</h1>
+        <p class="muted">Select which merchants can use this method.</p>
+      </div>
+      <a class="btn small" href="/superadmin/methods">Back to Methods</a>
     </div>
-    <a class="btn" href="/superadmin/methods">Back to Methods</a>
-  </div>
 
-  <form method="post" action="/superadmin/methods/<%= method.id %>/merchants">
-    <div class="table-wrap">
-      <table class="table">
-        <thead>
-          <tr>
-            <th style="width:60px;">Use</th>
-            <th>Merchant</th>
-          </tr>
-        </thead>
-        <tbody>
-          <% if (!merchants.length) { %>
-            <tr><td colspan="2">No merchants found.</td></tr>
-          <% } %>
-          <% merchants.forEach((m) => { const linked = method.merchantLinks?.find((mm) => mm.merchantId === m.id); %>
+    <form method="post" action="/superadmin/methods/<%= method.id %>/merchants" data-methods-form="assign">
+      <div class="table-wrap">
+        <table class="table">
+          <thead>
             <tr>
-              <td style="text-align:center;">
-                <input type="checkbox" name="merchantIds" value="<%= m.id %>" <%= linked ? 'checked' : '' %> />
-              </td>
-              <td><%= m.name %></td>
+              <th style="width: 80px;">Use</th>
+              <th>Merchant</th>
             </tr>
-          <% }) %>
-        </tbody>
-      </table>
-    </div>
-    <div class="row" style="margin-top:12px; gap:8px;">
-      <button class="btn">Save assignments</button>
-      <a class="btn" href="/superadmin/methods">Cancel</a>
-    </div>
-  </form>
+          </thead>
+          <tbody>
+            <% if (!merchants.length) { %>
+              <tr><td colspan="2" style="text-align:center; color:var(--ink-dim);">No merchants found.</td></tr>
+            <% } %>
+            <% merchants.forEach((m) => { const linked = method.merchantLinks?.find((mm) => mm.merchantId === m.id); %>
+              <tr>
+                <td class="use-cell">
+                  <input type="checkbox" name="merchantIds" value="<%= m.id %>" <%= linked ? 'checked' : '' %> />
+                </td>
+                <td><%= m.name %></td>
+              </tr>
+            <% }) %>
+          </tbody>
+        </table>
+      </div>
+      <div class="form-actions">
+        <button class="btn primary" type="submit">Save assignments</button>
+        <a class="btn" href="/superadmin/methods">Cancel</a>
+      </div>
+    </form>
+  </div>
 </div>

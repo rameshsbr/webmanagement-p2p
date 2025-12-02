@@ -12,6 +12,7 @@ import { tgNotify } from '../services/telegram.js';
 import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
 import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus } from '../services/merchantClient.js';
+import { ensureMerchantMethod, listMerchantMethods } from '../services/methods.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -153,6 +154,10 @@ merchantApiRouter.post(
         const clientStatus = normalizeClientStatus(mapping?.status);
         if (clientStatus !== 'ACTIVE') throw new Error('CLIENT_INACTIVE');
 
+        const allowedMethods = await listMerchantMethods(merchantId);
+        const allowedCodes = allowedMethods.map((m) => m.code.trim().toUpperCase());
+        if (!allowedCodes.length) throw new Error('NO_METHOD');
+
         // Blocklist check (merchant + user)
         const blocked = await prisma.payerBlocklist.findFirst({
           where: { merchantId, userId: user.id, active: true },
@@ -161,9 +166,21 @@ merchantApiRouter.post(
         if (blocked) throw new Error('User is blocked');
 
         const bank = await prisma.bankAccount.findFirst({
-          where: { active: true, merchantId: null, currency: body.currency },
+          where: {
+            active: true,
+            currency: body.currency,
+            OR: [{ merchantId }, { merchantId: null }],
+            method: { in: allowedCodes },
+          },
+          orderBy: [
+            { merchantId: 'desc' },
+            { createdAt: 'desc' },
+          ],
         });
         if (!bank) throw new Error('No active bank account for currency');
+
+        const methodRecord = await ensureMerchantMethod(merchantId, bank.method || '');
+        if (!methodRecord) throw new Error('METHOD_NOT_ALLOWED');
 
         const referenceCode = generateTransactionId();
         const uniqueReference = generateUniqueReference();
@@ -178,6 +195,8 @@ merchantApiRouter.post(
             merchantId,
             userId: user.id,
             bankAccountId: bank.id,
+            methodId: methodRecord.id,
+            detailsJson: { method: bank.method },
           },
         });
         await tgNotify(
@@ -199,6 +218,8 @@ merchantApiRouter.post(
       res.ok(result);
     } catch (err: any) {
       const message = err?.message || '';
+      if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned' });
+      if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
@@ -283,6 +304,10 @@ merchantApiRouter.post(
     const clientStatus = normalizeClientStatus(mapping?.status);
     if (clientStatus !== 'ACTIVE') return res.forbidden('Client is blocked or deactivated');
 
+    const allowedMethods = await listMerchantMethods(merchantId);
+    const selectedMethod = allowedMethods[0] || null;
+    if (!selectedMethod) return res.forbidden('No methods assigned');
+
     // Blocklist check (merchant + user)
     const blocked = await prisma.payerBlocklist.findFirst({
       where: { merchantId, userId: user.id, active: true },
@@ -311,7 +336,8 @@ merchantApiRouter.post(
         uniqueReference,
         merchantId,
         userId: user.id,
-        detailsJson: { destinationId: dest.id },
+        methodId: selectedMethod.id,
+        detailsJson: { method: selectedMethod.code, destinationId: dest.id },
       },
     });
     await tgNotify(

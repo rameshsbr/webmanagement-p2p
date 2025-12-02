@@ -1,11 +1,31 @@
 <% layout('superadmin/layout') -%>
 
 <div class="panel">
-  <div class="panel-header">
+  <div class="panel-header" style="align-items:flex-start; gap:16px; flex-wrap:wrap;">
     <div>
       <h2>Methods</h2>
-      <p class="muted">Manage payment methods and review usage across merchants.</p>
+      <p class="muted">Manage payment methods, assignments, and usage.</p>
     </div>
+    <form method="post" action="/superadmin/methods" class="card" style="margin:0; padding:12px 16px;">
+      <div class="row" style="gap:8px; align-items:flex-end; flex-wrap:wrap;">
+        <label class="stack">
+          <span>Code</span>
+          <input required name="code" placeholder="OSKO" style="width:120px; text-transform:uppercase;" />
+        </label>
+        <label class="stack">
+          <span>Name</span>
+          <input required name="name" placeholder="Osko" style="width:180px;" />
+        </label>
+        <label class="stack" style="align-items:center; gap:6px;">
+          <span style="font-size:12px; text-transform:uppercase; letter-spacing:0.02em; color:var(--ink-dim);">Enabled</span>
+          <label class="ios-toggle-switch">
+            <input type="checkbox" name="enabled" checked />
+            <span class="slider"></span>
+          </label>
+        </label>
+        <button class="btn" style="height:38px;">Add Method</button>
+      </div>
+    </form>
   </div>
 
   <% if (!methods.length) { %>
@@ -15,23 +35,36 @@
       <table class="table">
         <thead>
           <tr>
-            <th>Name</th>
+            <th>Method</th>
             <th>Code</th>
-            <th>Active</th>
+            <th>Enabled</th>
             <th>Merchants</th>
             <th>Deposits</th>
             <th>Withdrawals</th>
+            <th></th>
           </tr>
         </thead>
         <tbody>
           <% methods.forEach((method) => { const stat = stats[method.id] || { merchants: 0, deposits: 0, withdrawals: 0 }; %>
             <tr>
-              <td><%= method.name %></td>
+              <td>
+                <form method="post" action="/superadmin/methods/<%= method.id %>" class="row" style="gap:6px; align-items:center;">
+                  <input name="name" value="<%= method.name %>" style="min-width:160px;" />
+                  <label class="ios-toggle-switch" title="Enable/disable">
+                    <input type="checkbox" name="enabled" <%= method.enabled ? 'checked' : '' %> />
+                    <span class="slider"></span>
+                  </label>
+                  <button class="btn small" type="submit">Save</button>
+                </form>
+              </td>
               <td><span class="mono"><%= method.code %></span></td>
-              <td><%= method.active ? 'Yes' : 'No' %></td>
+              <td><%= method.enabled ? 'Yes' : 'No' %></td>
               <td><%= stat.merchants %></td>
               <td><%= stat.deposits %></td>
               <td><%= stat.withdrawals %></td>
+              <td>
+                <a class="btn small" href="/superadmin/methods/<%= method.id %>/merchants">Assign merchants</a>
+              </td>
             </tr>
           <% }) %>
         </tbody>

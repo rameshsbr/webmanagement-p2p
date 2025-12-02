@@ -170,8 +170,14 @@
       <div class="stack col-2">
         <label>Method</label>
         <select name="method" class="w-sm">
-          <option value="OSKO" <%= !bank || bank.method==='OSKO' ? 'selected' : '' %>>OSKO</option>
-          <option value="PAYID" <%= bank && bank.method==='PAYID' ? 'selected' : '' %>>PayID</option>
+          <% const methodOptions = (methods || []).filter(m => m.enabled); %>
+          <% if (!methodOptions.length) { %>
+            <option value="">No enabled methods</option>
+          <% } else { %>
+            <% methodOptions.forEach((m) => { %>
+              <option value="<%= m.code %>" <%= bank && bank.method===m.code ? 'selected' : (!bank && m.code==='OSKO' ? 'selected' : '') %>><%= m.name %> (<%= m.code %>)</option>
+            <% }) %>
+          <% } %>
         </select>
       </div>
 

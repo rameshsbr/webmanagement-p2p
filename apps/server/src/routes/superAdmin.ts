@@ -35,6 +35,7 @@ import { PaymentType, Prisma, type MerchantAccountEntryType } from "@prisma/clie
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
+import { ensureMerchantMethod, findMethodByCode, listAllMethods } from "../services/methods.js";
 
 export const superAdminRouter = Router();
 
@@ -43,25 +44,28 @@ function normalizeCurrency(currency: string | null | undefined) {
   return currency.toUpperCase();
 }
 
-function buildMethodFilter(code: string) {
+function buildMethodFilter(code: string, methodId?: string) {
   const normalized = code.trim().toUpperCase();
-  return {
-    OR: [
-      { detailsJson: { path: ["method"], equals: normalized } },
-      { bankAccount: { method: normalized } },
-    ],
-  } as Prisma.PaymentRequestWhereInput;
+  const or: Prisma.PaymentRequestWhereInput[] = [
+    { detailsJson: { path: ["method"], equals: normalized } },
+    { bankAccount: { method: normalized } },
+  ];
+  if (methodId) {
+    or.unshift({ methodId });
+  }
+  return { OR: or } as Prisma.PaymentRequestWhereInput;
 }
 
 async function countPaymentsByMethod(
   code: string,
   type: PaymentType,
   merchantId?: string,
+  methodId?: string,
 ) {
   const where: Prisma.PaymentRequestWhereInput = {
     type,
     ...(merchantId ? { merchantId } : {}),
-    ...buildMethodFilter(code),
+    ...buildMethodFilter(code, methodId),
   };
 
   return prisma.paymentRequest.count({ where });
@@ -144,9 +148,12 @@ superAdminRouter.post('/prefs/timezone', async (req: any, res) => {
   }
 });
 
-// Methods management (list + analytics)
+// Methods management (list + analytics + CRUD)
 superAdminRouter.get("/methods", async (_req, res) => {
-  const methods = await prisma.method.findMany({ orderBy: { name: "asc" } });
+  const methods = await prisma.method.findMany({
+    orderBy: { createdAt: "desc" },
+    include: { merchantLinks: true },
+  });
 
   const stats: Record<string, { merchants: number; deposits: number; withdrawals: number }> = {};
 
@@ -155,9 +162,9 @@ superAdminRouter.get("/methods", async (_req, res) => {
       const code = method.code.trim().toUpperCase();
 
       const [merchantCount, depositCount, withdrawalCount] = await Promise.all([
-        prisma.merchantMethod.count({ where: { methodId: method.id } }),
-        countPaymentsByMethod(code, PaymentType.DEPOSIT),
-        countPaymentsByMethod(code, PaymentType.WITHDRAWAL),
+        prisma.merchantMethod.count({ where: { methodId: method.id, enabled: true } }),
+        countPaymentsByMethod(code, PaymentType.DEPOSIT, undefined, method.id),
+        countPaymentsByMethod(code, PaymentType.WITHDRAWAL, undefined, method.id),
       ]);
 
       stats[method.id] = {
@@ -170,9 +177,89 @@ superAdminRouter.get("/methods", async (_req, res) => {
 
   res.render("superadmin/methods", {
     title: "Methods",
+    section: "methods",
     methods,
     stats,
   });
+});
+
+superAdminRouter.post("/methods", async (req, res, next) => {
+  try {
+    const { code, name, enabled } = req.body || {};
+    await prisma.method.create({
+      data: {
+        code: String(code || "").trim().toUpperCase(),
+        name: String(name || "").trim(),
+        enabled: enabled === "on" || enabled === true,
+      },
+    });
+    res.redirect("/superadmin/methods");
+  } catch (err) {
+    next(err);
+  }
+});
+
+superAdminRouter.post("/methods/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { name, enabled } = req.body || {};
+
+    await prisma.method.update({
+      where: { id },
+      data: {
+        name: String(name || "").trim(),
+        enabled: enabled === "on" || enabled === true,
+      },
+    });
+
+    res.redirect("/superadmin/methods");
+  } catch (err) {
+    next(err);
+  }
+});
+
+superAdminRouter.get("/methods/:id/merchants", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const method = await prisma.method.findUnique({
+      where: { id },
+      include: { merchantLinks: true },
+    });
+    if (!method) return res.status(404).send("Not found");
+
+    const merchants = await prisma.merchant.findMany({ orderBy: { name: "asc" } });
+
+    res.render("superadmin/method-merchants", {
+      title: `Assign merchants – ${method.name}`,
+      section: "methods",
+      method,
+      merchants,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+superAdminRouter.post("/methods/:id/merchants", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const selected = req.body?.merchantIds || [];
+    const merchantIds = Array.isArray(selected) ? selected : [selected];
+
+    await prisma.merchantMethod.deleteMany({ where: { methodId: id } });
+
+    const validIds = merchantIds.filter((m) => !!m);
+    if (validIds.length) {
+      await prisma.merchantMethod.createMany({
+        data: validIds.map((merchantId: string) => ({ merchantId, methodId: id, enabled: true })),
+        skipDuplicates: true,
+      });
+    }
+
+    res.redirect("/superadmin/methods");
+  } catch (err) {
+    next(err);
+  }
 });
 
 const JWT_SECRET = process.env.JWT_SECRET || "dev-secret";
@@ -1714,12 +1801,13 @@ superAdminRouter.get("/banks/public-id/preview", async (_req: any, res: any) => 
 });
 
 superAdminRouter.get("/banks/new", async (_req: any, res: any) => {
-  const [merchants, promotedCols] = await Promise.all([
+  const [merchants, promotedCols, methods] = await Promise.all([
     prisma.merchant.findMany({
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),
     getPromotedColumns(),
+    listAllMethods(),
   ]);
   res.render("superadmin/bank-edit", {
     title: "New Bank",
@@ -1727,6 +1815,7 @@ superAdminRouter.get("/banks/new", async (_req: any, res: any) => {
     merchants,
     errors: null,
     promotedCols,
+    methods,
   });
 });
 
@@ -1737,16 +1826,20 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
   try {
     data = bankSchema.parse(req.body);
   } catch (e: any) {
-    const merchants = await prisma.merchant.findMany({
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
+    const [merchants, methods] = await Promise.all([
+      prisma.merchant.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      listAllMethods(),
+    ]);
     return res.status(400).render("superadmin/bank-edit", {
       title: "New Bank",
       bank: req.body,
       merchants,
       errors: e?.errors || [{ message: "Invalid input" }],
       promotedCols,
+      methods,
     });
   }
 
@@ -1764,6 +1857,27 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
   const { merchantId, ...rest } = data as typeof data & {
     merchantId?: string | null;
   };
+
+  const methodRecord = merchantId
+    ? await ensureMerchantMethod(merchantId, data.method)
+    : await findMethodByCode(data.method);
+  if (!methodRecord || !methodRecord.enabled) {
+    const [merchants, methods] = await Promise.all([
+      prisma.merchant.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      listAllMethods(),
+    ]);
+    return res.status(400).render("superadmin/bank-edit", {
+      title: "New Bank",
+      bank: req.body,
+      merchants,
+      errors: [{ message: "Method is not enabled or not assigned to this merchant." }],
+      promotedCols,
+      methods,
+    });
+  }
 
   const payload: any = { ...rest, ...promotedData, fields };
   if (merchantId) {
@@ -1788,10 +1902,13 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
     }
   } catch (err: any) {
     console.error("[superadmin] failed to create bank", err);
-    const merchants = await prisma.merchant.findMany({
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
+    const [merchants, methods] = await Promise.all([
+      prisma.merchant.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      listAllMethods(),
+    ]);
     return res.status(500).render("superadmin/bank-edit", {
       title: "New Bank",
       bank: { ...req.body, fields },
@@ -1803,20 +1920,25 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
         },
       ],
       promotedCols,
+      methods,
     });
   }
 
   if (!created) {
-    const merchants = await prisma.merchant.findMany({
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
+    const [merchants, methods] = await Promise.all([
+      prisma.merchant.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      listAllMethods(),
+    ]);
     return res.status(500).render("superadmin/bank-edit", {
       title: "New Bank",
       bank: { ...req.body, fields },
       merchants,
       errors: [{ message: "Unable to create bank account." }],
       promotedCols,
+      methods,
     });
   }
   try {
@@ -1833,13 +1955,14 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
 
 // Edit
 superAdminRouter.get("/banks/:id/edit", async (req: any, res: any) => {
-  const [bank, merchants, promotedCols] = await Promise.all([
+  const [bank, merchants, promotedCols, methods] = await Promise.all([
     prisma.bankAccount.findUnique({ where: { id: req.params.id } }),
     prisma.merchant.findMany({
       orderBy: { name: "asc" },
       select: { id: true, name: true },
     }),
     getPromotedColumns(),
+    listAllMethods(),
   ]);
   if (!bank) return res.status(404).send("Not found");
   res.render("superadmin/bank-edit", {
@@ -1848,6 +1971,7 @@ superAdminRouter.get("/banks/:id/edit", async (req: any, res: any) => {
     merchants,
     errors: null,
     promotedCols,
+    methods,
   });
 });
 
@@ -1876,16 +2000,20 @@ superAdminRouter.post("/banks/:id", async (req: any, res: any) => {
   try {
     data = bankSchema.parse(merged);
   } catch (e: any) {
-    const merchants = await prisma.merchant.findMany({
-      orderBy: { name: "asc" },
-      select: { id: true, name: true },
-    });
+    const [merchants, methods] = await Promise.all([
+      prisma.merchant.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      listAllMethods(),
+    ]);
     return res.status(400).render("superadmin/bank-edit", {
       title: `Edit Bank ${existing.publicId}`,
       bank: { ...existing, ...merged },
       merchants,
       errors: e?.errors || [{ message: "Invalid input" }],
       promotedCols,
+      methods,
     });
   }
 
@@ -1899,6 +2027,27 @@ superAdminRouter.post("/banks/:id", async (req: any, res: any) => {
     if (Object.prototype.hasOwnProperty.call(req.body, col.name)) {
       promotedData[col.name] = coerceByInputType(col.input, req.body[col.name]);
     }
+  }
+
+  const methodRecord = data.merchantId
+    ? await ensureMerchantMethod(data.merchantId, data.method)
+    : await findMethodByCode(data.method);
+  if (!methodRecord || !methodRecord.enabled) {
+    const [merchants, methods] = await Promise.all([
+      prisma.merchant.findMany({
+        orderBy: { name: "asc" },
+        select: { id: true, name: true },
+      }),
+      listAllMethods(),
+    ]);
+    return res.status(400).render("superadmin/bank-edit", {
+      title: `Edit Bank ${existing.publicId}`,
+      bank: { ...existing, ...merged },
+      merchants,
+      errors: [{ message: "Method is not enabled or not assigned to this merchant." }],
+      promotedCols,
+      methods,
+    });
   }
 
   const updated = await prisma.bankAccount.update({

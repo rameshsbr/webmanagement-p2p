@@ -121,7 +121,7 @@
     <% if (merchant?.methods && merchant.methods.length) { %>
       <ul>
         <% merchant.methods.forEach((mm) => { %>
-          <li><%= mm.method?.name || mm.method?.code || 'Unknown' %> (<%= mm.method?.code || '—' %>)</li>
+          <li><%= mm.method?.name || mm.method?.code || 'Unknown' %> (<%= mm.method?.code || '—' %>) — <%= mm.enabled ? 'Enabled' : 'Disabled' %></li>
         <% }) %>
       </ul>
     <% } else { %>

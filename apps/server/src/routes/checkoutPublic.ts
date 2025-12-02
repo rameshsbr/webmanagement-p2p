@@ -20,6 +20,7 @@ import {
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 import { evaluateNameMatch } from "../services/paymentStatus.js";
+import { ensureMerchantMethod, listMerchantMethods } from "../services/methods.js";
 
 // ───────────────────────────────────────────────
 // Minimal API-key verification (copied pattern)
@@ -86,7 +87,11 @@ function rejectForClientStatus(res: any, status: ClientStatus) {
   return res.status(403).json({ ok: false, error: code, message });
 }
 
-const METHOD = z.enum(["OSKO", "PAYID"]);
+const METHOD = z
+  .string()
+  .min(2)
+  .max(32)
+  .transform((v) => v.trim().toUpperCase());
 const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function normalizeAuMobile(input: string) {
   const digits = String(input || "").replace(/[^\d]/g, "");
@@ -389,6 +394,13 @@ async function loadMerchantBank(merchantId: string, bankAccountId: string) {
   });
 }
 
+async function getAllowedMethodsForMerchant(merchantId: string) {
+  const methods = await listMerchantMethods(merchantId);
+  const map = new Map(methods.map((m) => [m.code.trim().toUpperCase(), m]));
+  const codes = new Set(Array.from(map.keys()));
+  return { methods, codes, map } as const;
+}
+
 // ───────────────────────────────────────────────
 // 1) Server-to-server: create a checkout session (API key)
 // ───────────────────────────────────────────────
@@ -466,6 +478,8 @@ checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLim
   if (clientStatus !== "ACTIVE") {
     return rejectInactiveClient(res, clientStatus, "deposit");
   }
+  const { codes: allowedMethods } = await getAllowedMethodsForMerchant(merchantId);
+  if (!allowedMethods.size) return res.json({ ok: true, banks: [] });
   const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
   const requestedMethod = String(req.query.method || "").trim().toUpperCase();
 
@@ -477,8 +491,12 @@ checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLim
     merchantId,
     active: true,
     ...(currencyFilter ? { OR: currencyFilter } : {}),
+    method: { in: Array.from(allowedMethods) },
   };
-  if (requestedMethod) where.method = requestedMethod;
+  if (requestedMethod) {
+    if (!allowedMethods.has(requestedMethod)) return res.json({ ok: true, banks: [] });
+    where.method = requestedMethod;
+  }
 
   const rows = await prisma.bankAccount.findMany({
     where,
@@ -519,6 +537,8 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency, externalId, email } = req.checkout;
 
+  const { map: allowedMethodMap, codes: allowedMethodCodes } = await getAllowedMethodsForMerchant(merchantId);
+
   const intentSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
@@ -535,6 +555,11 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     });
   }
   const base = parsedIntent.data;
+
+  if (!allowedMethodCodes.has(base.method)) {
+    return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
+  }
+  const selectedMethod = allowedMethodMap.get(base.method);
 
   if (base.amountCents < MIN_CENTS || base.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
@@ -620,6 +645,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     amountCents: base.amountCents,
     bankAccountId: chosenBank.id,
     method: base.method,
+    methodId: selectedMethod?.id || null,
     payer: base.payer,
     extras: sanitizedExtras,
     referenceCode,
@@ -690,6 +716,11 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
     return rejectInactiveClient(res, clientStatus, "deposit");
   }
 
+  const allowedMethod = await ensureMerchantMethod(merchantId, payload.method);
+  if (!allowedMethod || (payload.methodId && allowedMethod.id !== payload.methodId)) {
+    return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
+  }
+
   const bank = await loadMerchantBank(merchantId, payload.bankAccountId);
   if (!bank) return res.status(400).json({ ok: false, error: "BANK_INACTIVE" });
   if (String(bank.method || "").toUpperCase() !== payload.method) {
@@ -727,6 +758,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
           merchantId,
           userId: payload.userId,
           bankAccountId: bank.id,
+          methodId: payload.methodId || null,
           detailsJson: { method: payload.method, payer: payload.payer, extras: sanitizedExtras },
         },
       });
@@ -775,6 +807,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, diditSubject, currency, availableBalanceCents, externalId, email } = req.checkout;
+  const { map: allowedMethodMap, codes: allowedMethodCodes } = await getAllowedMethodsForMerchant(merchantId);
 
   const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
@@ -792,6 +825,11 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     });
   }
   const body = parsedWithdrawal.data;
+
+  if (!allowedMethodCodes.has(body.method)) {
+    return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
+  }
+  const selectedMethod = allowedMethodMap.get(body.method);
 
   if (body.amountCents < MIN_CENTS || body.amountCents > MAX_CENTS) {
     return res.status(400).json({ ok: false, error: "Amount out of range" });
@@ -880,6 +918,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       merchantId,
       userId: user.id,
       bankAccountId: bank.id,
+      methodId: selectedMethod?.id || null,
       detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: sanitizedExtras },
     },
   });

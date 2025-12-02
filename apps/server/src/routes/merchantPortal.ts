@@ -27,6 +27,7 @@ import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 import { ipFromReq, uaFromReq } from "../services/audit.js";
 import { formatClientStatusLabel, getClientStatusBySubject } from "../services/merchantClient.js";
+import { listMerchantMethods } from "../services/methods.js";
 
 const router = Router();
 
@@ -80,26 +81,29 @@ function normalizeTestSubject(input: any, merchantId: string): string {
   return generated.slice(0, 64);
 }
 
-function buildMerchantMethodFilter(code: string): Prisma.PaymentRequestWhereInput {
+function buildMerchantMethodFilter(code: string, methodId?: string): Prisma.PaymentRequestWhereInput {
   const normalized = code.trim().toUpperCase();
-  return {
-    OR: [
-      { detailsJson: { path: ["method"], equals: normalized } },
-      { bankAccount: { method: normalized } },
-    ],
-  } as Prisma.PaymentRequestWhereInput;
+  const or: Prisma.PaymentRequestWhereInput[] = [
+    { detailsJson: { path: ["method"], equals: normalized } },
+    { bankAccount: { method: normalized } },
+  ];
+  if (methodId) {
+    or.unshift({ methodId });
+  }
+  return { OR: or } as Prisma.PaymentRequestWhereInput;
 }
 
 async function countMerchantPaymentsByMethod(
   merchantId: string,
   code: string,
   type: PaymentType,
+  methodId?: string,
 ) {
   return prisma.paymentRequest.count({
     where: {
       merchantId,
       type,
-      ...buildMerchantMethodFilter(code),
+      ...buildMerchantMethodFilter(code, methodId),
     },
   });
 }
@@ -677,13 +681,18 @@ async function resolveMerchantCurrency(req: any, merchantId: string): Promise<st
   return record?.defaultCurrency || "AUD";
 }
 
-async function findTestBankAccount(merchantId: string, currency: string) {
+async function findTestBankAccount(merchantId: string, currency: string, allowedMethods?: Set<string>) {
+  const where: Prisma.BankAccountWhereInput = {
+    currency,
+    active: true,
+    OR: [{ merchantId }, { merchantId: null }],
+  };
+  if (allowedMethods && allowedMethods.size) {
+    where.method = { in: Array.from(allowedMethods) } as any;
+  }
+
   return prisma.bankAccount.findFirst({
-    where: {
-      currency,
-      active: true,
-      OR: [{ merchantId }, { merchantId: null }],
-    },
+    where,
     orderBy: [
       { merchantId: "desc" },
       { createdAt: "desc" },
@@ -699,15 +708,20 @@ async function createTestDeposit(opts: {
   amountCents: number;
   currency: string;
 }) {
-  const bankAccount = await findTestBankAccount(opts.merchantId, opts.currency);
+  const allowed = await listMerchantMethods(opts.merchantId);
+  const allowedSet = new Set(allowed.map((m) => m.code.trim().toUpperCase()));
+  const bankAccount = await findTestBankAccount(opts.merchantId, opts.currency, allowedSet);
   const referenceCode = refs.generateTransactionId()
   const uniqueReference = refs.generateUniqueReference();
+
+  const methodCode = bankAccount?.method || Array.from(allowedSet)[0] || "OSKO";
+  const methodRecord = allowed.find((m) => m.code.trim().toUpperCase() === methodCode.trim().toUpperCase());
 
   const details: Record<string, any> = {
     test: true,
     origin: "merchant-portal-test",
     subject: opts.subject,
-    method: bankAccount?.method || "OSKO",
+    method: methodCode,
     payer: { ...TEST_PAYMENT_PAYER },
     extras: { testSubject: opts.subject },
   };
@@ -723,6 +737,7 @@ async function createTestDeposit(opts: {
       merchantId: opts.merchantId,
       userId: opts.userId,
       bankAccountId: bankAccount?.id ?? null,
+      methodId: methodRecord?.id || null,
       detailsJson: details,
       notes: TEST_PAYMENT_NOTES.deposit,
     },
@@ -738,6 +753,9 @@ async function createTestWithdrawal(opts: {
 }) {
   const referenceCode = refs.generateTransactionId();
   const uniqueReference = refs.generateUniqueReference();
+  const allowed = await listMerchantMethods(opts.merchantId);
+  const allowedMethod = allowed[0] || null;
+  const methodCode = allowedMethod?.code || "OSKO";
 
   return prisma.$transaction(async (tx) => {
     const destination = await tx.withdrawalDestination.create({
@@ -756,7 +774,7 @@ async function createTestWithdrawal(opts: {
       test: true,
       origin: "merchant-portal-test",
       subject: opts.subject,
-      method: "OSKO",
+      method: methodCode,
       destination: {
         bankName: destination.bankName,
         holderName: destination.holderName,
@@ -777,6 +795,7 @@ async function createTestWithdrawal(opts: {
         uniqueReference,
         merchantId: opts.merchantId,
         userId: opts.userId,
+        methodId: allowedMethod?.id || null,
         detailsJson: details,
         notes: TEST_PAYMENT_NOTES.withdrawal,
       },
@@ -874,7 +893,7 @@ router.get("/methods", async (req: any, res) => {
   if (!merchantId) return res.redirect("/merchant");
 
   const methods = await prisma.method.findMany({
-    where: { merchantLinks: { some: { merchantId } } },
+    where: { enabled: true, merchantLinks: { some: { merchantId, enabled: true } } },
     orderBy: { name: "asc" },
   });
 
@@ -884,8 +903,8 @@ router.get("/methods", async (req: any, res) => {
     methods.map(async (method) => {
       const code = method.code.trim().toUpperCase();
       const [deposits, withdrawals] = await Promise.all([
-        countMerchantPaymentsByMethod(merchantId, code, PaymentType.DEPOSIT),
-        countMerchantPaymentsByMethod(merchantId, code, PaymentType.WITHDRAWAL),
+        countMerchantPaymentsByMethod(merchantId, code, PaymentType.DEPOSIT, method.id),
+        countMerchantPaymentsByMethod(merchantId, code, PaymentType.WITHDRAWAL, method.id),
       ]);
       stats[method.id] = { deposits, withdrawals };
     }),
@@ -893,6 +912,7 @@ router.get("/methods", async (req: any, res) => {
 
   res.render("merchant/methods", {
     title: "Methods",
+    section: "methods",
     methods,
     stats,
   });

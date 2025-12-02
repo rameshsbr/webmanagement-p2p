@@ -149,11 +149,12 @@ model Method {
   id        String   @id @default(cuid())
   code      String   @unique
   name      String
-  active    Boolean  @default(true)
+  enabled   Boolean  @default(true) @map("active")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  merchantLinks MerchantMethod[]
+  merchantLinks  MerchantMethod[]
+  paymentRequests PaymentRequest[]
 }
 
 model MerchantMethod {
@@ -163,6 +164,8 @@ model MerchantMethod {
 
   method   Method @relation(fields: [methodId], references: [id])
   methodId String
+
+  enabled   Boolean  @default(true)
 
   createdAt DateTime @default(now())
 
@@ -234,6 +237,9 @@ model PaymentRequest {
   currency        String
   referenceCode   String        @unique
   uniqueReference String        @unique
+
+  methodId String?
+  method   Method? @relation(fields: [methodId], references: [id], onDelete: SetNull)
 
   processedByAdminId String?
   processedByAdmin   AdminUser? @relation("PaymentProcessedBy", fields: [processedByAdminId], references: [id], onDelete: SetNull)

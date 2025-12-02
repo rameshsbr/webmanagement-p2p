@@ -1084,7 +1084,7 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
 
   const merchant = await prisma.merchant.findUnique({
     where: { id },
-    include: { limits: true },
+    include: { limits: true, methods: { include: { method: true } } },
   });
   if (!merchant) return res.status(404).send("Not found");
 

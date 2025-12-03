@@ -189,6 +189,13 @@ export async function handleDiditWebhook(
     update: { status, userId: user.id },
   });
 
+  if (typeof incomingAddress === "string" && incomingAddress.trim()) {
+    console.log("[DIDIT] Updating user address from document data", {
+      userId: user.id,
+      documentAddressSummary: incomingAddress,
+    });
+  }
+
   if (merchantId) {
     await upsertMerchantClientMapping({
       merchantId,

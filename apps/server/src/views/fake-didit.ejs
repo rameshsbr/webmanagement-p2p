@@ -1,12 +1,106 @@
-<!DOCTYPE html><html><body>
-<h3>Demo Didit Verification</h3>
-<p>Session: <%= session %></p>
-<p>Subject: <%= subj %></p>
-<form method="post" action="/webhooks/didit" target="_self">
-  <input type="hidden" name="sessionId" value="<%= session %>"/>
-  <input type="hidden" name="diditSubject" value="<%= subj || 'demo-user-123' %>"/>
-  <button name="status" value="approved">Approve</button>
-  <button name="status" value="rejected">Reject</button>
-</form>
-<script>window.onunload = () => window.close && window.close();</script>
-</body></html>
+<!DOCTYPE html>
+<html>
+  <body>
+    <h3>Demo Didit Verification</h3>
+    <p>Session: <%= session %></p>
+    <p>Subject: <%= subj %></p>
+
+    <p>
+      This mock now sends a document postal address instead of any upload/geo
+      location. Provide a few sample address components to mirror the document
+      data you expect from Didit.
+    </p>
+
+    <form id="didit-form">
+      <div>
+        <label>Session ID <input name="sessionId" value="<%= session %>" required /></label>
+      </div>
+      <div>
+        <label>Didit Subject <input name="diditSubject" value="<%= subj || 'demo-user-123' %>" required /></label>
+      </div>
+      <div>
+        <label>Status
+          <select name="status">
+            <option value="approved">approved</option>
+            <option value="rejected">rejected</option>
+          </select>
+        </label>
+      </div>
+      <fieldset>
+        <legend>Document Address</legend>
+        <label>Line 1 <input name="line1" value="123 Demo Street" /></label>
+        <label>Line 2 <input name="line2" value="Suite 4" /></label>
+        <label>Postcode <input name="postcode" value="90210" /></label>
+        <label>City <input name="city" value="Beverly Hills" /></label>
+        <label>Region/State <input name="region" value="CA" /></label>
+        <label>Country <input name="country" value="US" /></label>
+      </fieldset>
+      <fieldset>
+        <legend>Document Holder</legend>
+        <label>First name <input name="firstName" value="Demo" /></label>
+        <label>Last name <input name="lastName" value="User" /></label>
+      </fieldset>
+      <div>
+        <label>Webhook secret (to sign payload, optional)
+          <input name="secret" placeholder="WEBHOOK_SECRET_KEY" />
+        </label>
+      </div>
+      <button type="submit">Send webhook</button>
+    </form>
+
+    <pre id="result"></pre>
+
+    <script>
+      async function hmacSha256(secret, payload) {
+        const enc = new TextEncoder();
+        const key = await crypto.subtle.importKey(
+          "raw",
+          enc.encode(secret),
+          { name: "HMAC", hash: "SHA-256" },
+          false,
+          ["sign"],
+        );
+        const sig = await crypto.subtle.sign("HMAC", key, enc.encode(payload));
+        return Array.from(new Uint8Array(sig))
+          .map((b) => b.toString(16).padStart(2, "0"))
+          .join("");
+      }
+
+      document.getElementById("didit-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const form = e.target;
+        const body = {
+          session_id: form.sessionId.value,
+          vendor_data: `${form.diditSubject.value}`,
+          status: form.status.value,
+          decision: {
+            id_verification: {
+              first_name: form.firstName.value,
+              last_name: form.lastName.value,
+              document_address: {
+                line1: form.line1.value,
+                line2: form.line2.value,
+                postcode: form.postcode.value,
+                city: form.city.value,
+                region: form.region.value,
+                country: form.country.value,
+              },
+            },
+          },
+        };
+
+        const payload = JSON.stringify(body);
+        const headers = { "content-type": "application/json" };
+        if (form.secret.value) {
+          headers["didit-signature"] = await hmacSha256(form.secret.value, payload);
+        }
+
+        const res = await fetch("/webhooks/didit", { method: "POST", headers, body: payload });
+        const text = await res.text();
+        document.getElementById("result").textContent = `${res.status}: ${text}`;
+      });
+
+      window.onunload = () => window.close && window.close();
+    </script>
+  </body>
+</html>

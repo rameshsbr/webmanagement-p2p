@@ -235,16 +235,25 @@ for (const path of PATHS) {
         // 🔧 Address selection:
         // Prefer any fields that sound like "address on ID / document",
         // and only fall back to generic / location addresses.
-        const documentAddress =
+        const rawDocumentAddress =
+          idv.address || // <- this is the field you're seeing in the webhook: "No 6 Jalan 16,..."
           idv.document_address ||
           idv.address_on_document ||
           idv.address_on_id ||
           idv.id_address ||
           idv.residential_address ||
+          idv.parsed_address || // may be an object; formatter knows how to deal with objects
+          null;
+        const rawLocationAddress =
+          idv.formatted_address || // geo-coded / map style
+          idv.location_address ||
+          idv.gps_address ||
           null;
         // Previously, address came from session/device/geo location (upload location),
         // which is incorrect – we now use the document's postal address.
-        address = formatDocumentAddress(documentAddress);
+        address =
+          formatDocumentAddress(rawDocumentAddress) ??
+          formatDocumentAddress(rawLocationAddress);
 
         // Contact details
         emailFromDidit = decision?.contact_details?.email || idv.email || null;

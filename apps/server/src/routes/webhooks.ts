@@ -127,6 +127,43 @@ for (const path of PATHS) {
       let emailFromDidit: string | null = null;
       let phoneFromDidit: string | null = null;
 
+      const formatDocumentAddress = (input: unknown): string | null => {
+        if (!input) return null;
+        if (typeof input === "string") {
+          const trimmed = input.trim();
+          return trimmed.length ? trimmed : null;
+        }
+
+        if (typeof input === "object") {
+          const addr = input as Record<string, any>;
+          const line1 =
+            addr.line1 ||
+            addr.address_line1 ||
+            addr.address1 ||
+            addr.street ||
+            addr.street1;
+          const line2 = addr.line2 || addr.address_line2 || addr.address2 || addr.street2;
+          const postcode = addr.postcode || addr.postal_code || addr.zip || addr.zipcode;
+          const city = addr.city || addr.town || addr.locality;
+          const region = addr.region || addr.state || addr.state_name || addr.province;
+          const country = addr.country || addr.country_code || addr.country_name;
+
+          const components = [
+            line1,
+            line2,
+            [postcode, city].filter(Boolean).join(" "),
+            region,
+            country,
+          ]
+            .map((v) => (typeof v === "string" ? v.trim() : v))
+            .filter(Boolean);
+
+          if (components.length) return components.join(", ");
+        }
+
+        return null;
+      };
+
       // --------------------------------------------------------------------
       // 3. PARSE BODY
       // --------------------------------------------------------------------
@@ -205,15 +242,9 @@ for (const path of PATHS) {
           idv.id_address ||
           idv.residential_address ||
           null;
-
-        const locationAddress =
-          idv.formatted_address ||
-          idv.address ||
-          idv.location_address ||
-          idv.gps_address ||
-          null;
-
-        address = locationAddress || null;
+        // Previously, address came from session/device/geo location (upload location),
+        // which is incorrect – we now use the document's postal address.
+        address = formatDocumentAddress(documentAddress);
 
         // Contact details
         emailFromDidit = decision?.contact_details?.email || idv.email || null;

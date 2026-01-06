@@ -21,16 +21,13 @@ const upload = multer({ dest: uploadDir, limits: { fileSize: 10 * 1024 * 1024 } 
 
 export const merchantApiRouter = Router();
 
-function dbg(req: any, ...args: any[]) {
-  const on = req?.query?.debug === '1' || process.env.PROVIDER_LOG === '1';
-  if (on) console.log('[merchantApi]', ...args);
-}
-
+/** ---- helper: reject-for-client-status ---- */
 function rejectForClientStatus(res: any, status: ClientStatus) {
   const message = status === 'BLOCKED' ? 'User is blocked' : 'User is deactivated';
   return res.forbidden ? res.forbidden(message) : res.status(403).json({ ok: false, error: message });
 }
 
+/** ---- helper: API-key verification ---- */
 type VerifiedKey = {
   merchantId: string;
   keyId: string;
@@ -110,6 +107,37 @@ function requireApiScopes(required: string[]) {
   };
 }
 
+/** ---- helper: safe-JSON sanitizer for Prisma Json fields ----
+ *  - strips undefined / NaN / Infinity
+ *  - converts Date to ISO string
+ *  - ensures the value is JSON-serializable
+ */
+function toJsonSafe<T = any>(value: T): any {
+  const seen = new WeakSet();
+  const replacer = (_key: string, v: any) => {
+    if (v === undefined) return undefined; // JSON.stringify will drop it
+    if (Number.isNaN(v) || v === Infinity || v === -Infinity) return null;
+    if (v instanceof Date) return v.toISOString();
+    if (typeof v === 'bigint') return String(v);
+    if (typeof v === 'object' && v !== null) {
+      if (seen.has(v)) return '[Circular]';
+      seen.add(v);
+    }
+    return v;
+  };
+  try {
+    // stringify then parse to fully drop undefined entries
+    return JSON.parse(JSON.stringify(value, replacer));
+  } catch {
+    // worst case: store stringified form
+    try {
+      return JSON.stringify(value, replacer);
+    } catch {
+      return null;
+    }
+  }
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    EXISTING ENDPOINTS (behavior unchanged w/ HMAC); with API keys we enforce:
    - MerchantLimits
@@ -135,6 +163,7 @@ merchantApiRouter.post(
     const merchantId = (req as any).merchantId as string;
     const scope = `deposit:${merchantId}:${body.user.diditSubject}`;
     const idemKey = req.header('Idempotency-Key') ?? undefined;
+    const isDebug = String(req.query?.debug || '') === '1';
 
     try {
       const result = await withIdempotency(scope, idemKey, async () => {
@@ -206,16 +235,6 @@ merchantApiRouter.post(
           if (!adapter) throw new Error('Provider adapter missing');
 
           const fullName = user.fullName || user.firstName || "ACCOUNT HOLDER";
-          dbg(req, '→ calling adapter.createDepositIntent', {
-            merchantId,
-            desiredCode,
-            tid: referenceCode,
-            amountCents: body.amountCents,
-            currency: body.currency,
-            bankCode: body.bankCode || 'BCA',
-            uid: user.publicId,
-          });
-
           const deposit = await adapter.createDepositIntent({
             tid: referenceCode,
             uid: user.publicId,
@@ -227,69 +246,43 @@ merchantApiRouter.post(
             kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
           });
 
-          dbg(req, '← adapter.createDepositIntent OK', {
-            providerPaymentId: deposit?.providerPaymentId,
-            expiresAt: deposit?.expiresAt,
-            va: deposit?.va,
-          });
-
-          // Validate minimum required adapter response
-          if (!deposit || !deposit.providerPaymentId) {
-            dbg(req, '!! adapter missing providerPaymentId, deposit=', deposit);
-            throw new Error('ADAPTER_INVALID_RESPONSE');
+          // Basic shape validation (guard against missing fields)
+          if (!deposit || !deposit.providerPaymentId || !deposit.va || !deposit.va.accountNo) {
+            const dbg = isDebug ? { depositSnapshot: toJsonSafe(deposit) } : undefined;
+            return { _error: 'ADAPTER_BAD_RESPONSE', prId: pr.id, ...dbg } as any;
           }
 
-          // Normalize to strings to satisfy Prisma validation
-          const vaBank = deposit.va?.bankCode ?? null;
-          const vaNoRaw = deposit.va?.accountNo ?? null;
-          const vaNameRaw = deposit.va?.accountName ?? null;
-          const vaNo = vaNoRaw == null ? null : String(vaNoRaw);
-          const vaName = vaNameRaw == null ? null : String(vaNameRaw);
+          // sanitize JSON payloads before Prisma
+          const instructionsJson = toJsonSafe(deposit.instructions);
+          const rawCreateJson = toJsonSafe(deposit);
 
-          // Try to create ProviderPayment; if unique conflict on paymentRequestId, update instead
+          // persist ProviderPayment row (guard all JSON)
           try {
-            const created = await prisma.providerPayment.create({
+            await prisma.providerPayment.create({
               data: {
                 paymentRequestId: pr.id,
                 provider: 'FAZZ',
                 providerPaymentId: String(deposit.providerPaymentId),
                 methodType: 'virtual_bank_account',
-                bankCode: vaBank ? String(vaBank) : null,
-                accountNumber: vaNo,
-                accountName: vaName,
+                bankCode: deposit.va.bankCode ?? null,
+                accountNumber: deposit.va.accountNo ?? null,
+                accountName: deposit.va.accountName ?? null,
                 expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
                 status: 'pending',
-                instructionsJson: deposit.instructions ?? {},
-                rawCreateJson: deposit,
+                instructionsJson,
+                rawCreateJson,
               },
             });
-            dbg(req, '✓ ProviderPayment created', { id: created.id, paymentRequestId: pr.id });
           } catch (e: any) {
-            // Handle unique conflicts (idempotency re-hit) and surface true reason
-            const code = e?.code || e?.name;
-            dbg(req, '✗ ProviderPayment create failed', { code, message: e?.message, meta: e?.meta });
-
-            if (code === 'P2002') {
-              // Unique constraint (paymentRequestId). Update in place.
-              dbg(req, '… attempting update due to unique conflict');
-              await prisma.providerPayment.update({
-                where: { paymentRequestId: pr.id },
-                data: {
-                  providerPaymentId: String(deposit.providerPaymentId),
-                  bankCode: vaBank ? String(vaBank) : null,
-                  accountNumber: vaNo,
-                  accountName: vaName,
-                  expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
-                  status: 'pending',
-                  instructionsJson: deposit.instructions ?? {},
-                  rawCreateJson: deposit,
-                },
+            // surface useful diagnostics in debug mode
+            if (isDebug) {
+              console.error('[DEPOSIT] provider persist failed:', {
+                code: e?.code,
+                message: e?.message,
+                meta: e?.meta,
               });
-            } else {
-              // Re-throw so the caller returns reason=PROVIDER_PERSIST_FAILED
-              (e as any).__persist = true;
-              throw e;
             }
+            throw Object.assign(new Error('PROVIDER_PERSIST_FAILED'), { cause: e });
           }
 
           await tgNotify(
@@ -299,8 +292,12 @@ merchantApiRouter.post(
           return {
             id: pr.id,
             referenceCode,
-            instructions: deposit.instructions,
-            va: deposit.va,
+            instructions: instructionsJson,
+            va: {
+              bankCode: deposit.va.bankCode,
+              accountNo: deposit.va.accountNo,
+              accountName: deposit.va.accountName,
+            },
             expiresAt: deposit.expiresAt || null,
           };
         }
@@ -322,22 +319,41 @@ merchantApiRouter.post(
         };
       });
 
+      // adapter returned a guard error
+      if ((result as any)?._error === 'ADAPTER_BAD_RESPONSE') {
+        return res.status(502).json({
+          ok: false,
+          error: 'Unable to create deposit intent',
+          reason: 'ADAPTER_BAD_RESPONSE',
+          ...(String(req.query?.debug || '') === '1' ? result : {}),
+        });
+      }
+
       res.ok({ ok: true, data: result });
     } catch (err: any) {
       const message = err?.message || '';
-      dbg(req, 'deposit/intents error', { message, code: err?.code, meta: err?.meta, stack: err?.stack });
-
       if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned' });
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
 
-      // If our create failed due to Prisma persist, surface a stable reason
-      if (err?.__persist === true) {
-        return res.status(400).json({ ok: false, error: 'Unable to create deposit intent', reason: 'PROVIDER_PERSIST_FAILED' });
-      }
-      if (message === 'ADAPTER_INVALID_RESPONSE') {
-        return res.status(400).json({ ok: false, error: 'Unable to create deposit intent', reason: 'ADAPTER_INVALID_RESPONSE' });
+      // Special surface for PROVIDER_PERSIST_FAILED (with optional debug)
+      if (message === 'PROVIDER_PERSIST_FAILED') {
+        const cause = err?.cause;
+        return res.status(400).json({
+          ok: false,
+          error: 'Unable to create deposit intent',
+          reason: 'PROVIDER_PERSIST_FAILED',
+          ...(String(req.query?.debug || '') === '1'
+            ? {
+                prisma: {
+                  code: cause?.code,
+                  message: cause?.message,
+                  meta: cause?.meta,
+                },
+              }
+            : {}),
+        });
       }
 
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
@@ -358,6 +374,7 @@ merchantApiRouter.post(
 
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
+    const isDebug = String(req.query?.debug || '') === '1';
 
     const where = body.id
       ? { id: body.id, merchantId, type: 'DEPOSIT' as const }
@@ -366,9 +383,7 @@ merchantApiRouter.post(
     const pr = await prisma.paymentRequest.findFirst({ where });
     if (!pr) return res.status(404).json({ ok: false, error: 'Not found' });
 
-    const pp = await prisma.providerPayment.findUnique({
-      where: { paymentRequestId: pr.id },
-    });
+    const pp = await prisma.providerPayment.findUnique({ where: { paymentRequestId: pr.id } });
 
     if (!pp) {
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
@@ -399,7 +414,7 @@ merchantApiRouter.post(
 
     await prisma.providerPayment.update({
       where: { paymentRequestId: pr.id },
-      data: { status: providerStatus, rawLatestJson: raw ?? {} },
+      data: { status: providerStatus, rawLatestJson: toJsonSafe(raw ?? {}) },
     });
 
     if (newStatus && newStatus !== pr.status) {
@@ -414,7 +429,7 @@ merchantApiRouter.post(
       id: pr.id,
       referenceCode: pr.referenceCode,
       status: newStatus || pr.status,
-      provider: { status: providerStatus, raw },
+      provider: { status: providerStatus, ...(isDebug ? { raw: toJsonSafe(raw ?? {}) } : {}) },
     });
   }
 );
@@ -582,6 +597,6 @@ merchantApiRouter.get(
 
     const adapter = adapters[providerRes.adapterName];
     const { status, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
-    return res.json({ ok: true, status: pr.status, provider: { status, raw } });
+    return res.json({ ok: true, status: pr.status, provider: { status, raw: toJsonSafe(raw) } });
   }
 );

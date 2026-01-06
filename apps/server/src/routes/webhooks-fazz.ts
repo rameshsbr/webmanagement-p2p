@@ -1,18 +1,22 @@
 import { Router } from "express";
+import { createHmac, timingSafeEqual } from "node:crypto";
 export const fazzWebhookRouter = Router();
 
 function verifySignature(req: any): boolean {
-  // You already have raw body capture middleware.
-  // Fazz: HMAC-SHA256 with WEBHOOK_SIGNING_SECRET over raw body (adjust header key if needed).
   const secret = process.env.FAZZ_WEBHOOK_SIGNING_SECRET || "";
   const sigHeader = req.get("x-signature") || req.get("x-fazz-signature") || "";
   if (!secret || !sigHeader) return false;
 
   const raw: Buffer = (req as any).rawBody || Buffer.from("");
-  const computed = require("crypto").createHmac("sha256", secret).update(raw).digest("hex");
-  // constant-time compare
-  return computed.length === sigHeader.length && crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(sigHeader));
+  const computedHex = createHmac("sha256", secret).update(raw).digest("hex");
+
+  // Compare as Buffers with constant-time check
+  const a = Buffer.from(computedHex, "hex");
+  const b = Buffer.from(sigHeader, "hex");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
 }
+
 
 fazzWebhookRouter.post("/webhooks/fazz", async (req, res) => {
   // 1) Verify signature
@@ -49,7 +53,7 @@ fazzWebhookRouter.post("/webhooks/fazz", async (req, res) => {
         if (pr) {
           let newStatus = pr.status;
           if (providerStatus === "paid") newStatus = "APPROVED";
-          if (providerStatus === "completed") newStatus = "SETTLED";
+          if (providerStatus === "completed") newStatus = "APPROVED";
           if (["expired","cancelled","failed"].includes(providerStatus || "")) newStatus = "REJECTED";
 
           await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: newStatus } });

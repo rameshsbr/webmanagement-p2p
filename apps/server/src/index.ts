@@ -3,6 +3,7 @@ import "dotenv/config";
 import "./lib/augmentExpress.js";
 
 import express from "express";
+import { fazzWebhookRouter } from "./routes/webhooks-fazz.js";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
@@ -35,8 +36,6 @@ import { auditHttpWrites } from "./services/audit.js";
 import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
 
-import { fazzWebhookRouter } from "./routes/webhooks-fazz.js";
-app.use(fazzWebhookRouter);
 
 
 const app = express();
@@ -74,6 +73,7 @@ app.use(express.json({ limit: "2mb", verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 app.use(cookieParser());
 app.use(responseHelpers);
+app.use(fazzWebhookRouter);
 
 // Views & static
 const __dirname = path.dirname(fileURLToPath(import.meta.url));

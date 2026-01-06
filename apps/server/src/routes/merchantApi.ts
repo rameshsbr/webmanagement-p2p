@@ -123,7 +123,7 @@ function requireApiScopes(required: string[]) {
    - Payer blocklist enforced on create flows
 ──────────────────────────────────────────────────────────────────────────── */
 
-// Create a deposit intent and show bank details
+// Create a deposit intent and show bank details OR Fazz VA instructions
 merchantApiRouter.post(
   '/deposit/intents',
   eitherMerchantAuth,
@@ -134,6 +134,9 @@ merchantApiRouter.post(
       user: z.object({ diditSubject: z.string() }),
       amountCents: z.number().int().positive(),
       currency: z.string().min(3).max(4),
+      // NEW (optional): pick a specific method & bank for VA
+      methodCode: z.string().optional(),
+      bankCode: z.string().optional(),
     });
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
@@ -165,6 +168,100 @@ merchantApiRouter.post(
         });
         if (blocked) throw new Error('User is blocked');
 
+        // ---------- NEW: branch for Fazz VA (Static/Dynamic) ----------
+        const requestedMethod = (body.methodCode || '').trim().toUpperCase();
+        const isFazzVA =
+          requestedMethod === 'VIRTUAL_BANK_ACCOUNT_STATIC' ||
+          requestedMethod === 'VIRTUAL_BANK_ACCOUNT_DYNAMIC';
+
+        if (isFazzVA) {
+          // verify method is enabled by Super Admin
+          if (!allowedCodes.includes(requestedMethod)) throw new Error('METHOD_NOT_ALLOWED');
+
+          // create local PaymentRequest first
+          const referenceCode = generateTransactionId(); // keep as your TID
+          const uniqueReference = generateUniqueReference();
+
+          // find the Method record (ensureMerchantMethod returns Method or null)
+          const methodRecord = await ensureMerchantMethod(merchantId, requestedMethod);
+          if (!methodRecord) throw new Error('METHOD_NOT_ALLOWED');
+
+          const pr = await prisma.paymentRequest.create({
+            data: {
+              type: 'DEPOSIT',
+              status: 'PENDING',
+              amountCents: body.amountCents,
+              currency: body.currency,
+              referenceCode,
+              uniqueReference,
+              merchantId,
+              userId: user.id,
+              methodId: methodRecord.id,
+              detailsJson: { method: requestedMethod, bankCode: body.bankCode || null },
+            },
+          });
+
+          // call provider adapter
+          const { resolveProviderByMethodCode } = await import('../services/methods.js');
+          const { providers } = await import('../services/providers/index.js');
+          const mappingProv = resolveProviderByMethodCode(requestedMethod);
+          if (!mappingProv) throw new Error('METHOD_NOT_ALLOWED');
+
+          const adapter = providers[mappingProv.provider as 'FAZZ'];
+          const diditName = user.fullName || '';
+          if (!body.bankCode) throw new Error('BANK_CODE_REQUIRED');
+
+          // NOTE: If Fazz expects amounts in IDR (not cents), divide here.
+          // const amountForFazz = Math.floor(body.amountCents / 100);
+
+          const intent = await adapter.createDepositIntent({
+            tid: referenceCode,
+            uid: String(user.id),
+            merchantId,
+            methodCode: requestedMethod,
+            amountCents: body.amountCents, // see note above
+            currency: body.currency,
+            bankCode: body.bankCode,
+            kyc: { fullName: diditName, diditSubject: user.diditSubject! },
+          });
+
+          await prisma.providerPayment.create({
+            data: {
+              paymentRequestId: pr.id,
+              provider: 'FAZZ',
+              providerPaymentId: intent.providerPaymentId,
+              methodType: 'virtual_bank_account',
+              bankCode: body.bankCode,
+              accountNumber: intent.va.accountNo,
+              accountName: intent.va.accountName,
+              expiresAt: intent.expiresAt ? new Date(intent.expiresAt) : null,
+              status: 'pending',
+              instructionsJson: intent.instructions || {},
+              rawCreateJson: intent as any,
+            },
+          });
+
+          await tgNotify(
+            `🟢 New DEPOSIT (Fazz VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}\nMethod: ${requestedMethod}`
+          );
+
+          return {
+            id: pr.id,
+            referenceCode,
+            instructions: {
+              va: intent.va,
+              expiresAt: intent.expiresAt || null,
+              text: [
+                'Transfer must come from your own account.',
+                `Name must match your KYC: ${diditName}`,
+                'Payments from another sender may be rejected/blocked.',
+              ],
+            },
+          };
+        }
+        // ---------- END Fazz VA branch ----------
+
+        // ---------- Existing P2P flow (unchanged) ----------
         const bank = await prisma.bankAccount.findFirst({
           where: {
             active: true,
@@ -213,17 +310,69 @@ merchantApiRouter.post(
             instructions: bank.instructions,
           },
         };
+        // ---------- END existing P2P flow ----------
       });
 
       res.ok(result);
     } catch (err: any) {
       const message = err?.message || '';
+      if (message === 'BANK_CODE_REQUIRED') return res.status(400).json({ ok: false, error: 'Missing bankCode' });
       if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned' });
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
     }
+  }
+);
+
+// Confirm deposit (poll provider and map status)
+merchantApiRouter.post(
+  '/deposit/confirm',
+  eitherMerchantAuth,
+  applyMerchantLimits,
+  requireApiScopes(['read:deposit']),
+  async (req, res) => {
+    const schema = z.object({ tid: z.string().min(1) });
+    const { tid } = schema.parse(req.body);
+
+    // find PR by referenceCode (we used referenceCode as TID above)
+    const pr = await prisma.paymentRequest.findFirst({
+      where: { referenceCode: tid, type: 'DEPOSIT' },
+      include: { method: true },
+    });
+    if (!pr) return res.notFound ? res.notFound() : res.status(404).json({ ok: false, error: 'Unknown TID' });
+
+    // see if it's a Fazz provider flow
+    const pp = await prisma.providerPayment.findUnique({ where: { paymentRequestId: pr.id } });
+    if (!pp) {
+      // P2P path → nothing to poll here, return current status
+      return res.ok({ ok: true, tid, status: pr.status });
+    }
+
+    const { providers } = await import('../services/providers/index.js');
+    const adapter = providers[(pp.provider as 'FAZZ')];
+    const status = await adapter.getDepositStatus(pp.providerPaymentId);
+
+    let newStatus = pr.status;
+    if (status.status === 'paid') newStatus = 'APPROVED';
+    if (status.status === 'completed') newStatus = 'APPROVED';
+    if (['expired', 'cancelled', 'failed'].includes(status.status)) newStatus = 'REJECTED';
+
+    await prisma.paymentRequest.update({
+      where: { id: pr.id },
+      data: {
+        status: newStatus,
+        detailsJson: { ...(pr.detailsJson as any), providerStatus: status.status },
+        updatedAt: new Date(),
+      },
+    });
+    await prisma.providerPayment.update({
+      where: { paymentRequestId: pr.id },
+      data: { status: status.status, rawLatestJson: status.raw as any },
+    });
+
+    return res.ok({ ok: true, tid, status: newStatus });
   }
 );
 
@@ -273,6 +422,42 @@ merchantApiRouter.post(
 
     await tgNotify(`📄 Deposit SUBMITTED\nRef: <b>${pr.referenceCode}</b>`);
     res.ok({ uploaded: true, fileId: created.id });
+  }
+);
+
+// List banks for withdrawal (stub; can be wired to provider list)
+merchantApiRouter.get(
+  '/withdraw/config',
+  eitherMerchantAuth,
+  applyMerchantLimits,
+  requireApiScopes(['read:withdrawal']),
+  async (_req, res) => {
+    // TODO: call adapter to fetch live list; for now return empty array (UI-safe)
+    return res.ok({ banks: [], kycRequired: true });
+  }
+);
+
+merchantApiRouter.post(
+  '/withdraw/validate',
+  eitherMerchantAuth,
+  applyMerchantLimits,
+  requireApiScopes(['write:withdrawal']),
+  async (req, res) => {
+    const schema = z.object({
+      bankCode: z.string(),
+      accountNo: z.string(),
+      holderName: z.string().optional(),
+    });
+    const body = schema.parse(req.body);
+    const { providers } = await import('../services/providers/index.js');
+    const adapter = providers.FAZZ;
+    const out = await adapter.validateBankAccount({ bankCode: body.bankCode, accountNo: body.accountNo });
+
+    // reuse your existing name-match evaluator
+    const { evaluateNameMatch } = await import('../services/paymentStatus.js');
+    const score = out.holder ? evaluateNameMatch(body.holderName || '', out.holder) : 0;
+
+    return res.ok({ ok: out.ok, holder: out.holder, matchScore: score });
   }
 );
 
@@ -340,10 +525,50 @@ merchantApiRouter.post(
         detailsJson: { method: selectedMethod.code, destinationId: dest.id },
       },
     });
-    await tgNotify(
-      `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
-    );
-    res.ok({ id: pr.id, referenceCode, uniqueReference });
+
+    // ---------- NEW: call Fazz to create the disbursement ----------
+    try {
+      const { providers } = await import('../services/providers/index.js');
+      const adapter = providers.FAZZ;
+
+      // NOTE: If Fazz expects amounts in IDR (not cents), divide here.
+      // const amountForFazz = Math.floor(body.amountCents / 100);
+
+      const out = await adapter.createDisbursement({
+        tid: referenceCode,
+        merchantId,
+        uid: String(user.id),
+        amountCents: body.amountCents, // see note above
+        currency: body.currency,
+        bankCode: body.destination.bankName,  // assuming this holds the bank short code
+        accountNo: body.destination.accountNo,
+        holderName: body.destination.holderName,
+      });
+
+      await prisma.providerDisbursement.create({
+        data: {
+          paymentRequestId: pr.id,
+          provider: 'FAZZ',
+          providerPayoutId: out.providerPayoutId,
+          bankCode: body.destination.bankName,
+          accountNumber: body.destination.accountNo,
+          accountHolder: body.destination.holderName,
+          status: 'pending',
+          amountCents: body.amountCents,
+          currency: body.currency,
+          rawCreateJson: out as any,
+        },
+      });
+
+      await tgNotify(
+        `🟡 WITHDRAWAL created (Fazz)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
+      );
+      return res.ok({ id: pr.id, referenceCode, uniqueReference, providerPayoutId: out.providerPayoutId });
+    } catch (e) {
+      // Keep PR and destination for traceability even if provider call fails
+      return res.status(400).json({ ok: false, error: 'Unable to create disbursement' });
+    }
+    // ---------- END NEW ----------
   }
 );
 

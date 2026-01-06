@@ -75,29 +75,29 @@ model MerchantApiKey {
 }
 
 model User {
-  id            String                  @id @default(cuid())
-  publicId      String                  @unique
-  email         String?                 @unique
-  phone         String?
-  fullName      String?
-  diditSubject  String?                 @unique
+  id           String  @id @default(cuid())
+  publicId     String  @unique
+  email        String? @unique
+  phone        String?
+  fullName     String?
+  diditSubject String? @unique
 
-  firstName             String?
-  lastName              String?
-  documentType          String?
-  documentNumber        String?
-  documentIssuingState  String?
+  firstName              String?
+  lastName               String?
+  documentType           String?
+  documentNumber         String?
+  documentIssuingState   String?
   documentIssuingCountry String?
-  dateOfBirth           DateTime?
-  documentExpiry        DateTime?
-  gender                String?
-  address               String?
-  verifiedAt    DateTime?
-  kyc           KycVerification[]
-  paymentReqs   PaymentRequest[]
-  withdrawDests WithdrawalDestination[]
-  createdAt     DateTime                @default(now())
-  updatedAt     DateTime                @updatedAt
+  dateOfBirth            DateTime?
+  documentExpiry         DateTime?
+  gender                 String?
+  address                String?
+  verifiedAt             DateTime?
+  kyc                    KycVerification[]
+  paymentReqs            PaymentRequest[]
+  withdrawDests          WithdrawalDestination[]
+  createdAt              DateTime                @default(now())
+  updatedAt              DateTime                @updatedAt
 
   // NEW: back-reference for PayerBlocklist.user
   blocklistEntries PayerBlocklist[]
@@ -153,7 +153,7 @@ model Method {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
-  merchantLinks  MerchantMethod[]
+  merchantLinks   MerchantMethod[]
   paymentRequests PaymentRequest[]
 }
 
@@ -165,7 +165,7 @@ model MerchantMethod {
   method   Method @relation(fields: [methodId], references: [id])
   methodId String
 
-  enabled   Boolean  @default(true)
+  enabled Boolean @default(true)
 
   createdAt DateTime @default(now())
 
@@ -249,7 +249,7 @@ model PaymentRequest {
   merchant   Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
 
   userId String?
-  user   User?  @relation(fields: [userId], references: [id], onDelete: SetNull)
+  user   User?   @relation(fields: [userId], references: [id], onDelete: SetNull)
 
   bankAccountId String?
   bankAccount   BankAccount? @relation("BankToPayment", fields: [bankAccountId], references: [id], onDelete: SetNull)
@@ -261,11 +261,13 @@ model PaymentRequest {
   // NEW multi-receipt (Phase 2)
   receipts ReceiptFile[] @relation("PaymentReceipts")
 
-  detailsJson    Json?
-  rejectedReason String?
-  notes          String? // ← added so superadmin notes route works
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+  detailsJson          Json?
+  rejectedReason       String?
+  notes                String? // ← added so superadmin notes route works
+  createdAt            DateTime               @default(now())
+  updatedAt            DateTime               @updatedAt
+  ProviderPayment      ProviderPayment?
+  ProviderDisbursement ProviderDisbursement[]
 
   @@index([processedByAdminId])
 }
@@ -425,14 +427,14 @@ model MerchantLoginLog {
 }
 
 model MerchantClient {
-  id         String   @id @default(cuid())
+  id         String       @id @default(cuid())
   merchantId String
   userId     String?
   externalId String?
   email      String?
   status     ClientStatus @default(ACTIVE)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
 
   merchant Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
   user     User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
@@ -475,25 +477,25 @@ model PayerBlocklist {
 }
 
 model AdminPasswordReset {
-  id        String    @id @default(cuid())
+  id        String     @id @default(cuid())
   adminId   String?
   admin     AdminUser? @relation(fields: [adminId], references: [id], onDelete: SetNull)
-  token     String    @unique
+  token     String     @unique
   expiresAt DateTime
   usedAt    DateTime?
-  createdAt DateTime  @default(now())
+  createdAt DateTime   @default(now())
 
   @@index([adminId])
 }
 
 model MerchantPasswordReset {
-  id             String       @id @default(cuid())
+  id             String        @id @default(cuid())
   merchantUserId String?
   merchantUser   MerchantUser? @relation(fields: [merchantUserId], references: [id], onDelete: SetNull)
-  token          String       @unique
+  token          String        @unique
   expiresAt      DateTime
   usedAt         DateTime?
-  createdAt      DateTime     @default(now())
+  createdAt      DateTime      @default(now())
 
   @@index([merchantUserId])
 }
@@ -553,4 +555,100 @@ model MerchantFormConfig {
   updatedAt DateTime @updatedAt
 
   @@unique([merchantId, bankAccountId])
+}
+
+enum FeeKind {
+  FIXED
+  PERCENT
+}
+
+model ProviderPayment {
+  id               String         @id @default(cuid())
+  paymentRequestId String         @unique
+  paymentRequest   PaymentRequest @relation(fields: [paymentRequestId], references: [id])
+
+  provider          String // "FAZZ"
+  providerPaymentId String // Fazz payment id
+  methodType        String // "virtual_bank_account"
+  bankCode          String?
+  accountNumber     String?
+  accountName       String? // Didit full name, truncated per bank
+  expiresAt         DateTime?
+  status            String // pending/paid/completed/expired/...
+  instructionsJson  Json?
+  rawCreateJson     Json?
+  rawLatestJson     Json?
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  @@index([provider, providerPaymentId])
+}
+
+model ProviderDisbursement {
+  id               String          @id @default(cuid())
+  paymentRequestId String?
+  paymentRequest   PaymentRequest? @relation(fields: [paymentRequestId], references: [id])
+
+  provider         String // "FAZZ"
+  providerPayoutId String   @unique
+  bankCode         String
+  accountNumber    String
+  accountHolder    String
+  status           String
+  validationStatus String?
+  amountCents      Int
+  currency         String
+  rawCreateJson    Json?
+  rawLatestJson    Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  @@index([provider, providerPayoutId])
+}
+
+model ProviderWebhookLog {
+  id          String    @id @default(cuid())
+  provider    String // "FAZZ"
+  topic       String
+  signature   String?
+  headersJson Json?
+  payloadJson Json?
+  processed   Boolean   @default(false)
+  error       String?
+  createdAt   DateTime  @default(now())
+  processedAt DateTime?
+
+  @@index([provider, topic, createdAt])
+}
+
+// Optional: static VA binding per user/merchant/bank
+model PaymentMethodBinding {
+  id          String   @id @default(cuid())
+  provider    String // "FAZZ"
+  merchantId  String
+  userId      String
+  methodType  String // "virtual_bank_account"
+  bankCode    String
+  accountNo   String
+  accountName String
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([provider, merchantId, userId, methodType, bankCode])
+}
+
+// Fees per merchant & method
+model FeeRule {
+  id          String   @id @default(cuid())
+  merchantId  String
+  methodId    String
+  kind        FeeKind
+  amountCents Int?
+  percentBps  Int?
+  active      Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([merchantId, methodId, active])
 }

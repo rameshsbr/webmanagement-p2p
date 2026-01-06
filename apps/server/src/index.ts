@@ -28,6 +28,7 @@ import { webhookRouter } from "./routes/webhooks.js";
 import { sdkRouter } from "./routes/sdk.js";
 import { requireAdmin } from "./middleware/auth.js";
 import { merchantPortalRouter } from "./routes/merchantPortal.js";
+import { fazzWebhookRouter } from "./routes/webhooks-fazz.js";
 
 // import { requireMerchantSession } from "./middleware/auth.js"; // no longer used
 import { superAdminRouter } from './routes/superAdmin.js';
@@ -392,6 +393,9 @@ app.get("/auth/whoami", (req, res) => {
 
 // errors last
 app.use(errorHandler);
+
+app.use("/webhooks/fazz", fazzWebhookRouter);
+
 
 // Start
 const PORT = Number(process.env.PORT ?? 4000);

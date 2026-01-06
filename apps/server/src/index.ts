@@ -35,6 +35,9 @@ import { auditHttpWrites } from "./services/audit.js";
 import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
 
+import { fazzWebhookRouter } from "./routes/webhooks-fazz.js";
+app.use(fazzWebhookRouter);
+
 
 const app = express();
 

@@ -30,3 +30,12 @@ export async function ensureMerchantMethod(merchantId: string, code: string) {
     },
   });
 }
+
+export function resolveProviderByMethodCode(code: string) {
+  // Map Method.code → provider & capabilities
+  const upper = (code || "").toUpperCase();
+  if (upper === "VIRTUAL_BANK_ACCOUNT_STATIC" || upper === "VIRTUAL_BANK_ACCOUNT_DYNAMIC") {
+    return { provider: "FAZZ", adapterName: "fazz" as const };
+  }
+  return null;
+}

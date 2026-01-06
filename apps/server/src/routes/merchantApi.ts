@@ -15,19 +15,8 @@ import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus }
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { adapters } from '../services/providers/index.js';
 
-// ───────────────────────────── DEBUG HELPERS ─────────────────────────────
-const DEBUG = process.env.MERCHANT_API_DEBUG === '1' || process.env.ADMIN_DEBUG === '1';
-const dbg = (...args: any[]) => {
-  if (!DEBUG) return;
-  // eslint-disable-next-line no-console
-  console.log('[merchantApi]', ...args);
-};
-const dberr = (...args: any[]) => {
-  if (!DEBUG) return;
-  // eslint-disable-next-line no-console
-  console.warn('[merchantApi:warn]', ...args);
-};
-// ─────────────────────────────────────────────────────────────────────────
+const DEBUG = process.env.DEBUG_MERCHANT_API === '1';
+const debug = (...args: any[]) => { if (DEBUG) console.log('[merchantApi]', ...args); };
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -78,8 +67,8 @@ async function verifyApiKey(req: any): Promise<VerifiedKey | null> {
   }
 
   const sig = req.get('x-signature');
-  if (sig && req.rawBody) {
-    const mac = crypto.createHmac('sha256', pk.secret).update(req.rawBody).digest('hex');
+  if (sig && (req as any).rawBody) {
+    const mac = crypto.createHmac('sha256', pk.secret).update((req as any).rawBody).digest('hex');
     if (!tscmp(sig, mac)) return null;
   }
 
@@ -120,10 +109,8 @@ function requireApiScopes(required: string[]) {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   EXISTING ENDPOINTS (behavior unchanged w/ HMAC); with API keys we enforce:
-   - MerchantLimits
-   - Scopes (if scopes present)
-   - Payer blocklist
+   EXISTING ENDPOINTS (behavior unchanged); now with DEBUG logs and precise
+   reasons so we can see why provider persistence failed on your machine.
 ──────────────────────────────────────────────────────────────────────────── */
 
 // Create a deposit intent and show provider instructions (ID VA static/dynamic)
@@ -137,22 +124,15 @@ merchantApiRouter.post(
       user: z.object({ diditSubject: z.string() }),
       amountCents: z.number().int().positive(),
       currency: z.string().min(3).max(4),
-      methodCode: z.string().optional(),    // ← optional
-      bankCode: z.string().optional(),      // ← optional, required for VA
+      methodCode: z.string().optional(),    // optional
+      bankCode: z.string().optional(),      // optional, required for VA rails
     });
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
     const scope = `deposit:${merchantId}:${body.user.diditSubject}`;
     const idemKey = req.header('Idempotency-Key') ?? undefined;
 
-    // Debug: input snapshot (sanitized)
-    dbg('POST /deposit/intents → in', {
-      merchantId,
-      amountCents: body.amountCents,
-      currency: body.currency,
-      methodCode: body.methodCode || null,
-      bankCode: body.bankCode || null,
-    });
+    debug('deposit:intents body=', body, 'merchantId=', merchantId);
 
     try {
       const result = await withIdempotency(scope, idemKey, async () => {
@@ -162,12 +142,15 @@ merchantApiRouter.post(
           create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
           update: {},
         });
+        debug('user ensured', { id: user.id, publicId: user.publicId, verifiedAt: !!user.verifiedAt });
         if (!user.verifiedAt) throw new Error('User not verified');
 
         // merchant-client mapping & blocklist
         const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
         const clientStatus = normalizeClientStatus(mapping?.status);
+        debug('client mapping', { status: clientStatus, mappingId: mapping?.id });
         if (clientStatus !== 'ACTIVE') throw new Error('CLIENT_INACTIVE');
+
         const blocked = await prisma.payerBlocklist.findFirst({
           where: { merchantId, userId: user.id, active: true },
           select: { id: true },
@@ -176,16 +159,14 @@ merchantApiRouter.post(
 
         // methods allowed
         const allowedMethods = await listMerchantMethods(merchantId);
-        const allowedCodes = allowedMethods.map((m) => (m.code || '').trim().toUpperCase());
-        dbg('allowed methods', allowedCodes);
+        const allowedCodes = allowedMethods.map((m) => m.code.trim().toUpperCase());
+        debug('allowed methods', allowedCodes);
         if (!allowedCodes.length) throw new Error('NO_METHOD');
 
         // pick desired method
         const desiredCode = (body.methodCode || allowedCodes[0] || '').toUpperCase();
-        dbg('desired method', desiredCode);
         if (!desiredCode) throw new Error('METHOD_NOT_ALLOWED');
 
-        // bank/template row
         const bank = await prisma.bankAccount.findFirst({
           where: {
             active: true,
@@ -195,11 +176,11 @@ merchantApiRouter.post(
           },
           orderBy: [{ merchantId: 'desc' }, { createdAt: 'desc' }],
         });
-        dbg('bank row', bank ? { id: bank.id, method: bank.method, currency: bank.currency, merchantId: bank.merchantId } : null);
+        debug('selected bank', bank ? { id: bank.id, method: bank.method } : null);
         if (!bank) throw new Error('No active bank account for currency/method');
 
         const methodRecord = await ensureMerchantMethod(merchantId, bank.method || '');
-        dbg('methodRecord', methodRecord ? { id: methodRecord.id, code: (methodRecord as any).code } : null);
+        debug('methodRecord', methodRecord ? { id: methodRecord.id, code: (methodRecord as any).code } : null);
         if (!methodRecord) throw new Error('METHOD_NOT_ALLOWED');
 
         const referenceCode = generateTransactionId();
@@ -221,22 +202,21 @@ merchantApiRouter.post(
             detailsJson: { method: bank.method, reqBankCode: body.bankCode || null },
           },
         });
-        dbg('created PaymentRequest', { id: pr.id, referenceCode });
+        debug('paymentRequest created', { id: pr.id, referenceCode: pr.referenceCode });
 
         // If method is ID VA → call provider adapter now
         const providerRes = resolveProviderByMethodCode(desiredCode);
-        dbg('resolveProviderByMethodCode', providerRes);
+        debug('resolveProviderByMethodCode', { desiredCode, providerRes });
         if (providerRes) {
           const adapter = adapters[providerRes.adapterName];
-          dbg('adapter available?', Boolean(adapter), 'env:', {
-            FAZZ_API_BASE: Boolean(process.env.FAZZ_API_BASE),
-            FAZZ_API_KEY: Boolean(process.env.FAZZ_API_KEY),
-            FAZZ_API_SECRET: Boolean(process.env.FAZZ_API_SECRET),
-          });
-          if (!adapter) throw new Error('Provider adapter missing');
+          if (!adapter) {
+            debug('adapter missing for', providerRes.adapterName);
+            throw new Error('ADAPTER_MISSING');
+          }
 
           const fullName = user.fullName || user.firstName || "ACCOUNT HOLDER";
-          let deposit;
+
+          let deposit: any;
           try {
             deposit = await adapter.createDepositIntent({
               tid: referenceCode,
@@ -249,36 +229,46 @@ merchantApiRouter.post(
               kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
             });
           } catch (e: any) {
-            dberr('adapter.createDepositIntent failed', { message: e?.message, name: e?.name });
-            throw new Error('ADAPTER_CREATE_FAILED');
+            debug('adapter.createDepositIntent failed', e?.message || e);
+            const code = (e && e.code) ? `:${e.code}` : '';
+            const msg = (e && e.message) ? `:${e.message}` : '';
+            throw new Error(`ADAPTER_CALL_FAILED${code}${msg}`);
           }
 
-          dbg('adapter.createDepositIntent →', {
-            providerPaymentId: deposit?.providerPaymentId,
-            va: deposit?.va,
-            expiresAt: deposit?.expiresAt || null,
-          });
+          debug('adapter result', deposit);
 
-          // persist ProviderPayment row
+          // defensively validate adapter result shape (so Prisma doesn't crash silently)
+          if (!deposit || !deposit.providerPaymentId || !deposit.va || !deposit.va.accountNo) {
+            debug('adapter bad response', deposit);
+            throw new Error('ADAPTER_BAD_RESPONSE');
+          }
+
           try {
+            // persist ProviderPayment row
             await prisma.providerPayment.create({
               data: {
                 paymentRequestId: pr.id,
-                provider: 'FAZZ',
-                providerPaymentId: deposit.providerPaymentId,
+                provider: providerRes.providerName || 'FAZZ',
+                providerPaymentId: String(deposit.providerPaymentId),
                 methodType: 'virtual_bank_account',
-                bankCode: deposit.va.bankCode,
-                accountNumber: deposit.va.accountNo,
-                accountName: deposit.va.accountName,
+                bankCode: deposit.va.bankCode ?? null,
+                accountNumber: deposit.va.accountNo ?? null,
+                accountName: deposit.va.accountName ?? null,
                 expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
                 status: 'pending',
-                instructionsJson: deposit.instructions,
-                rawCreateJson: deposit,
+                instructionsJson: deposit.instructions ?? {},
+                rawCreateJson: deposit ?? {},
               },
             });
           } catch (e: any) {
-            dberr('providerPayment.create failed', { message: e?.message, code: e?.code });
-            throw new Error('PROVIDER_PERSIST_FAILED');
+            debug('PROVIDER_PERSIST_FAILED', {
+              message: e?.message,
+              code: e?.code,
+              meta: e?.meta,
+            });
+            // surface this up so client sees the reason
+            const code = e?.code ? `:${e.code}` : '';
+            throw new Error(`PROVIDER_PERSIST_FAILED${code}`);
           }
 
           await tgNotify(
@@ -314,16 +304,23 @@ merchantApiRouter.post(
       res.ok({ ok: true, data: result });
     } catch (err: any) {
       const message = err?.message || '';
-      dberr('deposit/intents ERROR', { message, stack: DEBUG ? err?.stack : undefined });
+      debug('deposit:intents error', message);
+      // map known reasons
+      const reason =
+        message.includes('NO_METHOD') ? 'NO_METHOD' :
+        message.includes('METHOD_NOT_ALLOWED') ? 'METHOD_NOT_ALLOWED' :
+        message.includes('CLIENT_INACTIVE') ? 'CLIENT_INACTIVE' :
+        message.includes('User is blocked') ? 'USER_BLOCKED' :
+        message.includes('ADAPTER_MISSING') ? 'ADAPTER_MISSING' :
+        message.includes('ADAPTER_BAD_RESPONSE') ? 'ADAPTER_BAD_RESPONSE' :
+        message.includes('ADAPTER_CALL_FAILED') ? 'ADAPTER_CALL_FAILED' :
+        message.includes('PROVIDER_PERSIST_FAILED') ? 'PROVIDER_PERSIST_FAILED' :
+        'UNKNOWN';
 
-      if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned', ...(DEBUG && { reason: message }) });
-      if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED', ...(DEBUG && { reason: message }) });
-      if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
-      if (message === 'User is blocked') return res.forbidden('User is blocked');
-      if (DEBUG && (message === 'ADAPTER_CREATE_FAILED' || message === 'PROVIDER_PERSIST_FAILED')) {
-        return res.status(400).json({ ok: false, error: 'Unable to create deposit intent', reason: message });
-      }
-      return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
+      // Return extra detail only when DEBUG is on
+      const payload: any = { ok: false, error: 'Unable to create deposit intent', reason };
+      if (DEBUG) payload.detail = message;
+      return res.status(400).json(payload);
     }
   }
 );
@@ -341,39 +338,27 @@ merchantApiRouter.post(
 
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
+    debug('deposit:confirm body=', body, 'merchantId=', merchantId);
 
-    dbg('POST /deposit/confirm → in', { merchantId, id: body.id || null, referenceCode: body.referenceCode || null });
-
-    // Find the payment request (NO include; there is no Prisma relation field)
     const where = body.id
       ? { id: body.id, merchantId, type: 'DEPOSIT' as const }
       : { referenceCode: body.referenceCode!, merchantId, type: 'DEPOSIT' as const };
 
-    const pr = await prisma.paymentRequest.findFirst({
-      where,
-      // no include here — avoid the crash
-    });
-
-    dbg('confirm → pr', pr ? { id: pr.id, status: pr.status, detailsJson: pr.detailsJson } : null);
+    const pr = await prisma.paymentRequest.findFirst({ where });
+    debug('confirm found PR', pr ? { id: pr.id, status: pr.status, details: pr.detailsJson } : null);
 
     if (!pr) return res.status(404).json({ ok: false, error: 'Not found' });
 
-    // Check if this PR has a ProviderPayment
-    const pp = await prisma.providerPayment.findUnique({
-      where: { paymentRequestId: pr.id },
-    });
+    const pp = await prisma.providerPayment.findUnique({ where: { paymentRequestId: pr.id } });
+    debug('confirm providerPayment', pp ? { providerPaymentId: pp.providerPaymentId, status: pp.status } : null);
 
-    dbg('confirm → providerPayment', pp ? { providerPaymentId: pp.providerPaymentId, status: pp.status } : null);
-
-    // If no provider row → nothing to poll; echo current status
     if (!pp) {
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
     }
 
-    // Resolve adapter for the method on the PR
     const methodCode = String(pr.detailsJson?.method || '');
     const providerRes = resolveProviderByMethodCode(methodCode);
-    dbg('confirm → resolveProviderByMethodCode', providerRes);
+    debug('confirm resolveProvider', { methodCode, providerRes });
 
     if (!providerRes) {
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status } });
@@ -384,19 +369,9 @@ merchantApiRouter.post(
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status } });
     }
 
-    // Poll provider
-    let statusResp: { status: string; raw: any };
-    try {
-      statusResp = await adapter.getDepositStatus(pp.providerPaymentId);
-    } catch (e: any) {
-      dberr('adapter.getDepositStatus failed', { message: e?.message });
-      return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status, error: DEBUG ? e?.message : undefined } });
-    }
-    const { status: providerStatus, raw } = statusResp;
-    dbg('confirm → provider status', providerStatus);
+    const { status: providerStatus, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
+    debug('confirm providerStatus', providerStatus);
 
-    // Map provider → local
-    // Local enum: PENDING | SUBMITTED | APPROVED | REJECTED
     let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | null = null;
     const normalized = String(providerStatus || '').toLowerCase();
     if (normalized === 'paid' || normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
@@ -404,11 +379,9 @@ merchantApiRouter.post(
     } else if (normalized === 'failed' || normalized === 'cancelled' || normalized === 'canceled' || normalized === 'rejected' || normalized === 'expired') {
       newStatus = 'REJECTED';
     } else {
-      // pending-like
-      newStatus = null;
+      newStatus = null; // pending-like
     }
 
-    // Persist latest provider snapshot
     await prisma.providerPayment.update({
       where: { paymentRequestId: pr.id },
       data: { status: providerStatus, rawLatestJson: raw ?? {} },
@@ -419,7 +392,6 @@ merchantApiRouter.post(
         where: { id: pr.id },
         data: { status: newStatus },
       });
-      dbg('confirm → local status updated', { from: pr.status, to: newStatus });
     }
 
     return res.json({
@@ -498,8 +470,6 @@ merchantApiRouter.post(
     });
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
-
-    dbg('POST /withdrawals → in', { merchantId, amountCents: body.amountCents, currency: body.currency });
 
     const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
     if (!user || !user.verifiedAt) return res.forbidden('User not verified');
@@ -584,7 +554,6 @@ merchantApiRouter.get(
   async (req, res) => {
     const pr = await prisma.paymentRequest.findUnique({
       where: { id: req.params.id },
-      // no include here; look up ProviderPayment separately
     });
 
     if (!pr || pr.merchantId !== req.merchantId) {

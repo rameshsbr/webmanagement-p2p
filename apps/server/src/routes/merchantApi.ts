@@ -4,7 +4,6 @@ import multer from 'multer';
 import path from 'node:path';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-
 import { prisma } from '../lib/prisma.js';
 import { merchantHmacAuth } from '../middleware/hmac.js';
 import { withIdempotency } from '../services/idempotency.js';
@@ -21,8 +20,6 @@ fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ dest: uploadDir, limits: { fileSize: 10 * 1024 * 1024 } });
 
 export const merchantApiRouter = Router();
-
-/* ───────────────── helpers ───────────────── */
 
 function rejectForClientStatus(res: any, status: ClientStatus) {
   const message = status === 'BLOCKED' ? 'User is blocked' : 'User is deactivated';
@@ -108,7 +105,12 @@ function requireApiScopes(required: string[]) {
   };
 }
 
-/* ───────────────── EXISTING ENDPOINTS (kept, with provider support) ───────────────── */
+/* ────────────────────────────────────────────────────────────────────────────
+   EXISTING ENDPOINTS (behavior unchanged w/ HMAC); with API keys we enforce:
+   - MerchantLimits
+   - Scopes (if scopes present)
+   - Payer blocklist
+──────────────────────────────────────────────────────────────────────────── */
 
 // Create a deposit intent and show provider instructions (ID VA static/dynamic)
 merchantApiRouter.post(
@@ -121,17 +123,10 @@ merchantApiRouter.post(
       user: z.object({ diditSubject: z.string() }),
       amountCents: z.number().int().positive(),
       currency: z.string().min(3).max(4),
-      methodCode: z.string().optional(), // optional
-      bankCode: z.string().optional(),   // optional, required for VA
+      methodCode: z.string().optional(),    // ← optional
+      bankCode: z.string().optional(),      // ← optional, required for VA
     });
-
-    let body: z.infer<typeof schema>;
-    try {
-      body = schema.parse(req.body);
-    } catch (e: any) {
-      return res.status(400).json({ ok: false, error: 'Invalid request body' });
-    }
-
+    const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
     const scope = `deposit:${merchantId}:${body.user.diditSubject}`;
     const idemKey = req.header('Idempotency-Key') ?? undefined;
@@ -161,11 +156,10 @@ merchantApiRouter.post(
         const allowedCodes = allowedMethods.map((m) => m.code.trim().toUpperCase());
         if (!allowedCodes.length) throw new Error('NO_METHOD');
 
-        // pick desired method (optional in request, otherwise first allowed)
+        // pick desired method
         const desiredCode = (body.methodCode || allowedCodes[0] || '').toUpperCase();
-        if (!desiredCode || !allowedCodes.includes(desiredCode)) throw new Error('METHOD_NOT_ALLOWED');
+        if (!desiredCode) throw new Error('METHOD_NOT_ALLOWED');
 
-        // select a bank account "template" row by currency+method (prefer merchant row)
         const bank = await prisma.bankAccount.findFirst({
           where: {
             active: true,
@@ -177,14 +171,13 @@ merchantApiRouter.post(
         });
         if (!bank) throw new Error('No active bank account for currency/method');
 
-        // ensure method link row exists/enabled
         const methodRecord = await ensureMerchantMethod(merchantId, bank.method || '');
         if (!methodRecord) throw new Error('METHOD_NOT_ALLOWED');
 
         const referenceCode = generateTransactionId();
         const uniqueReference = generateUniqueReference();
 
-        // create PaymentRequest first (status=PENDING)
+        // create PaymentRequest
         const pr = await prisma.paymentRequest.create({
           data: {
             type: 'DEPOSIT',
@@ -201,37 +194,29 @@ merchantApiRouter.post(
           },
         });
 
-        // If method is supported by a provider → call adapter now
+        // If method is ID VA → call provider adapter now
         const providerRes = resolveProviderByMethodCode(desiredCode);
         if (providerRes) {
           const adapter = adapters[providerRes.adapterName];
           if (!adapter) throw new Error('Provider adapter missing');
 
-          const fullName = (user.fullName || user.firstName || 'ACCOUNT HOLDER').toString();
+          const fullName = user.fullName || user.firstName || "ACCOUNT HOLDER";
+          const deposit = await adapter.createDepositIntent({
+            tid: referenceCode,
+            uid: user.publicId,
+            merchantId,
+            methodCode: desiredCode,
+            amountCents: body.amountCents,
+            currency: body.currency,
+            bankCode: body.bankCode || 'BCA',
+            kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
+          });
 
-          let deposit;
-          try {
-            deposit = await adapter.createDepositIntent({
-              tid: referenceCode,
-              uid: user.publicId,
-              merchantId,
-              methodCode: desiredCode,
-              amountCents: body.amountCents,
-              currency: body.currency,
-              bankCode: body.bankCode || 'BCA', // default for testing
-              kyc: { fullName: fullName, diditSubject: user.diditSubject || '' },
-            });
-          } catch (e: any) {
-            // ensure we keep PR but surface a clear error
-            await tgNotify(`❌ Provider error creating deposit\nRef: <b>${referenceCode}</b>\n${e?.message || e}`);
-            throw new Error('PROVIDER_CREATE_FAILED');
-          }
-
-          // persist ProviderPayment
+          // persist ProviderPayment row
           await prisma.providerPayment.create({
             data: {
               paymentRequestId: pr.id,
-              provider: providerRes.provider, // e.g. 'FAZZ'
+              provider: 'FAZZ',
               providerPaymentId: deposit.providerPaymentId,
               methodType: 'virtual_bank_account',
               bankCode: deposit.va.bankCode,
@@ -245,7 +230,7 @@ merchantApiRouter.post(
           });
 
           await tgNotify(
-            `🟢 New DEPOSIT intent (provider)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
+            `🟢 New DEPOSIT intent (ID VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
           );
 
           return {
@@ -257,9 +242,9 @@ merchantApiRouter.post(
           };
         }
 
-        // fallback: legacy static bank details (no provider)
+        // fallback (legacy, static bank details)
         await tgNotify(
-          `🟢 New DEPOSIT intent (legacy)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
+          `🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
         );
         return {
           id: pr.id,
@@ -276,80 +261,100 @@ merchantApiRouter.post(
 
       res.ok({ ok: true, data: result });
     } catch (err: any) {
-      const message = String(err?.message || '');
+      const message = err?.message || '';
       if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned' });
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
-      if (message === 'CLIENT_INACTIVE') return rejectForClientStatus(res, 'DEACTIVATED');
-      if (message === 'User is blocked') return rejectForClientStatus(res, 'BLOCKED');
-      if (message === 'PROVIDER_CREATE_FAILED') return res.status(400).json({ ok: false, error: 'Provider failed to create VA' });
+      if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
+      if (message === 'User is blocked') return res.forbidden('User is blocked');
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
     }
   }
 );
 
-// Confirm/poll a provider-backed deposit by PaymentRequest ID or referenceCode
-// Body: { id?: string; referenceCode?: string }
+// Confirm a deposit (poll provider & update local status)
 merchantApiRouter.post(
   '/deposit/confirm',
   apiKeyOnly,
-  requireApiScopes(['read:deposit']),
+  requireApiScopes(['write:deposit', 'read:deposit']),
   async (req, res) => {
     const schema = z.object({
       id: z.string().optional(),
       referenceCode: z.string().optional(),
-    }).refine((v) => Boolean(v.id || v.referenceCode), { message: 'id or referenceCode required' });
+    }).refine(v => v.id || v.referenceCode, { message: 'id or referenceCode is required' });
 
-    let body: z.infer<typeof schema>;
-    try {
-      body = schema.parse(req.body);
-    } catch {
-      return res.status(400).json({ ok: false, error: 'Invalid request body' });
-    }
+    const body = schema.parse(req.body);
+    const merchantId = (req as any).merchantId as string;
 
-    const where = body.id ? { id: body.id } : { referenceCode: body.referenceCode! };
+    // Find the payment request (NO include; there is no Prisma relation field)
+    const where = body.id
+      ? { id: body.id, merchantId, type: 'DEPOSIT' as const }
+      : { referenceCode: body.referenceCode!, merchantId, type: 'DEPOSIT' as const };
+
     const pr = await prisma.paymentRequest.findFirst({
-      where: { ...where, merchantId: req.merchantId, type: 'DEPOSIT' },
-      include: { providerPayment: true as any },
-    }) as any;
+      where,
+      // no include here — avoid the crash you hit
+    });
 
     if (!pr) return res.status(404).json({ ok: false, error: 'Not found' });
 
-    const methodCode = (pr.detailsJson?.method || '').toString();
+    // Check if this PR has a ProviderPayment
+    const pp = await prisma.providerPayment.findUnique({
+      where: { paymentRequestId: pr.id },
+    });
+
+    // If no provider row → nothing to poll; echo current status
+    if (!pp) {
+      return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
+    }
+
+    // Resolve adapter for the method on the PR
+    const methodCode = String(pr.detailsJson?.method || '');
     const providerRes = resolveProviderByMethodCode(methodCode);
-    if (!providerRes || !pr.providerPayment) {
-      // legacy path: nothing to poll; just return current local status
-      return res.json({ ok: true, status: pr.status, provider: null });
+    if (!providerRes) {
+      return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status } });
     }
 
     const adapter = adapters[providerRes.adapterName];
-    if (!adapter) return res.status(500).json({ ok: false, error: 'Provider adapter not available' });
-
-    try {
-      const { status, raw } = await adapter.getDepositStatus(pr.providerPayment.providerPaymentId);
-
-      // Map provider → local. IMPORTANT: do NOT use SETTLED (not in enum).
-      // We'll keep APPROVED as terminal success.
-      let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' = pr.status;
-      const s = status.toLowerCase();
-      if (s === 'paid' || s === 'completed' || s === 'success') newStatus = 'APPROVED';
-      else if (s === 'pending' || s === 'awaiting_payment') newStatus = 'PENDING';
-      else if (s === 'expired' || s === 'cancelled' || s === 'failed') newStatus = 'REJECTED';
-
-      if (newStatus !== pr.status) {
-        await prisma.paymentRequest.update({
-          where: { id: pr.id },
-          data: { status: newStatus, updatedAt: new Date() },
-        });
-      }
-      await prisma.providerPayment.update({
-        where: { paymentRequestId: pr.id },
-        data: { status, rawLatestJson: raw ?? {} },
-      });
-
-      return res.json({ ok: true, status: newStatus, provider: { status, raw } });
-    } catch (e: any) {
-      return res.status(400).json({ ok: false, error: e?.message || 'Unable to confirm deposit' });
+    if (!adapter) {
+      return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status } });
     }
+
+    // Poll provider
+    const { status: providerStatus, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
+
+    // Map provider → local
+    // Local enum: PENDING | SUBMITTED | APPROVED | REJECTED
+    let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | null = null;
+    const normalized = String(providerStatus || '').toLowerCase();
+    if (normalized === 'paid' || normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
+      newStatus = 'APPROVED';
+    } else if (normalized === 'failed' || normalized === 'cancelled' || normalized === 'canceled' || normalized === 'rejected' || normalized === 'expired') {
+      newStatus = 'REJECTED';
+    } else {
+      // pending-like
+      newStatus = null;
+    }
+
+    // Persist latest provider snapshot
+    await prisma.providerPayment.update({
+      where: { paymentRequestId: pr.id },
+      data: { status: providerStatus, rawLatestJson: raw ?? {} },
+    });
+
+    if (newStatus && newStatus !== pr.status) {
+      await prisma.paymentRequest.update({
+        where: { id: pr.id },
+        data: { status: newStatus },
+      });
+    }
+
+    return res.json({
+      ok: true,
+      id: pr.id,
+      referenceCode: pr.referenceCode,
+      status: newStatus || pr.status,
+      provider: { status: providerStatus, raw },
+    });
   }
 );
 
@@ -399,7 +404,7 @@ merchantApiRouter.post(
   }
 );
 
-// Create withdrawal request (kept same; will use provider layer later)
+// Create withdrawal request (unchanged for now)
 merchantApiRouter.post(
   '/withdrawals',
   eitherMerchantAuth,
@@ -417,14 +422,7 @@ merchantApiRouter.post(
         iban: z.string().optional(),
       }),
     });
-
-    let body: z.infer<typeof schema>;
-    try {
-      body = schema.parse(req.body);
-    } catch {
-      return res.status(400).json({ ok: false, error: 'Invalid request body' });
-    }
-
+    const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
 
     const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
@@ -432,7 +430,7 @@ merchantApiRouter.post(
 
     const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
     const clientStatus = normalizeClientStatus(mapping?.status);
-    if (clientStatus !== 'ACTIVE') return rejectForClientStatus(res, clientStatus);
+    if (clientStatus !== 'ACTIVE') return res.forbidden('Client is blocked or deactivated');
 
     const allowedMethods = await listMerchantMethods(merchantId);
     const selectedMethod = allowedMethods[0] || null;
@@ -455,7 +453,6 @@ merchantApiRouter.post(
 
     const referenceCode = generateTransactionId();
     const uniqueReference = generateUniqueReference();
-
     const pr = await prisma.paymentRequest.create({
       data: {
         type: 'WITHDRAWAL',
@@ -470,7 +467,6 @@ merchantApiRouter.post(
         detailsJson: { method: selectedMethod.code, destinationId: dest.id },
       },
     });
-
     await tgNotify(
       `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
     );
@@ -504,7 +500,7 @@ merchantApiRouter.get(
   }
 );
 
-// Helper: check a provider status for a payment (by ID)
+// Helper: check a provider status for a payment
 merchantApiRouter.get(
   '/deposit/:id/status',
   apiKeyOnly,
@@ -512,13 +508,12 @@ merchantApiRouter.get(
   async (req, res) => {
     const pr = await prisma.paymentRequest.findUnique({
       where: { id: req.params.id },
-      include: { providerPayment: true as any },
-    }) as any;
+      // no include here; look up ProviderPayment separately
+    });
 
     if (!pr || pr.merchantId !== req.merchantId) {
       return res.status(404).json({ ok: false, error: 'Not found' });
     }
-
     const pp = await prisma.providerPayment.findUnique({ where: { paymentRequestId: pr.id } });
     if (!pp) return res.json({ ok: true, status: pr.status, provider: null });
 

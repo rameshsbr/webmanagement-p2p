@@ -576,6 +576,34 @@ merchantApiRouter.get(
   }
 );
 
+
+merchantApiRouter.get(
+  '/payments',
+  apiKeyOnly,
+  applyMerchantLimits,
+  requireApiScopes(['read:payments']),
+  async (req: any, res) => {
+    const items = await prisma.paymentRequest.findMany({
+      where: { merchantId: req.merchantId },
+      orderBy: { createdAt: 'desc' },
+      take: 50,
+      select: {
+        id: true,
+        referenceCode: true,
+        uniqueReference: true,
+        type: true,
+        status: true,
+        amountCents: true,
+        currency: true,
+        createdAt: true,
+      },
+    });
+    res.json({ ok: true, items });
+  }
+);
+
+
+
 // Helper: check a provider status for a payment
 merchantApiRouter.get(
   '/deposit/:id/status',

@@ -15,6 +15,20 @@ import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus }
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { adapters } from '../services/providers/index.js';
 
+// ───────────────────────────── DEBUG HELPERS ─────────────────────────────
+const DEBUG = process.env.MERCHANT_API_DEBUG === '1' || process.env.ADMIN_DEBUG === '1';
+const dbg = (...args: any[]) => {
+  if (!DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.log('[merchantApi]', ...args);
+};
+const dberr = (...args: any[]) => {
+  if (!DEBUG) return;
+  // eslint-disable-next-line no-console
+  console.warn('[merchantApi:warn]', ...args);
+};
+// ─────────────────────────────────────────────────────────────────────────
+
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
 const upload = multer({ dest: uploadDir, limits: { fileSize: 10 * 1024 * 1024 } });
@@ -131,6 +145,15 @@ merchantApiRouter.post(
     const scope = `deposit:${merchantId}:${body.user.diditSubject}`;
     const idemKey = req.header('Idempotency-Key') ?? undefined;
 
+    // Debug: input snapshot (sanitized)
+    dbg('POST /deposit/intents → in', {
+      merchantId,
+      amountCents: body.amountCents,
+      currency: body.currency,
+      methodCode: body.methodCode || null,
+      bankCode: body.bankCode || null,
+    });
+
     try {
       const result = await withIdempotency(scope, idemKey, async () => {
         // ensure user
@@ -153,13 +176,16 @@ merchantApiRouter.post(
 
         // methods allowed
         const allowedMethods = await listMerchantMethods(merchantId);
-        const allowedCodes = allowedMethods.map((m) => m.code.trim().toUpperCase());
+        const allowedCodes = allowedMethods.map((m) => (m.code || '').trim().toUpperCase());
+        dbg('allowed methods', allowedCodes);
         if (!allowedCodes.length) throw new Error('NO_METHOD');
 
         // pick desired method
         const desiredCode = (body.methodCode || allowedCodes[0] || '').toUpperCase();
+        dbg('desired method', desiredCode);
         if (!desiredCode) throw new Error('METHOD_NOT_ALLOWED');
 
+        // bank/template row
         const bank = await prisma.bankAccount.findFirst({
           where: {
             active: true,
@@ -169,9 +195,11 @@ merchantApiRouter.post(
           },
           orderBy: [{ merchantId: 'desc' }, { createdAt: 'desc' }],
         });
+        dbg('bank row', bank ? { id: bank.id, method: bank.method, currency: bank.currency, merchantId: bank.merchantId } : null);
         if (!bank) throw new Error('No active bank account for currency/method');
 
         const methodRecord = await ensureMerchantMethod(merchantId, bank.method || '');
+        dbg('methodRecord', methodRecord ? { id: methodRecord.id, code: (methodRecord as any).code } : null);
         if (!methodRecord) throw new Error('METHOD_NOT_ALLOWED');
 
         const referenceCode = generateTransactionId();
@@ -193,41 +221,65 @@ merchantApiRouter.post(
             detailsJson: { method: bank.method, reqBankCode: body.bankCode || null },
           },
         });
+        dbg('created PaymentRequest', { id: pr.id, referenceCode });
 
         // If method is ID VA → call provider adapter now
         const providerRes = resolveProviderByMethodCode(desiredCode);
+        dbg('resolveProviderByMethodCode', providerRes);
         if (providerRes) {
           const adapter = adapters[providerRes.adapterName];
+          dbg('adapter available?', Boolean(adapter), 'env:', {
+            FAZZ_API_BASE: Boolean(process.env.FAZZ_API_BASE),
+            FAZZ_API_KEY: Boolean(process.env.FAZZ_API_KEY),
+            FAZZ_API_SECRET: Boolean(process.env.FAZZ_API_SECRET),
+          });
           if (!adapter) throw new Error('Provider adapter missing');
 
           const fullName = user.fullName || user.firstName || "ACCOUNT HOLDER";
-          const deposit = await adapter.createDepositIntent({
-            tid: referenceCode,
-            uid: user.publicId,
-            merchantId,
-            methodCode: desiredCode,
-            amountCents: body.amountCents,
-            currency: body.currency,
-            bankCode: body.bankCode || 'BCA',
-            kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
+          let deposit;
+          try {
+            deposit = await adapter.createDepositIntent({
+              tid: referenceCode,
+              uid: user.publicId,
+              merchantId,
+              methodCode: desiredCode,
+              amountCents: body.amountCents,
+              currency: body.currency,
+              bankCode: body.bankCode || 'BCA',
+              kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
+            });
+          } catch (e: any) {
+            dberr('adapter.createDepositIntent failed', { message: e?.message, name: e?.name });
+            throw new Error('ADAPTER_CREATE_FAILED');
+          }
+
+          dbg('adapter.createDepositIntent →', {
+            providerPaymentId: deposit?.providerPaymentId,
+            va: deposit?.va,
+            expiresAt: deposit?.expiresAt || null,
           });
 
           // persist ProviderPayment row
-          await prisma.providerPayment.create({
-            data: {
-              paymentRequestId: pr.id,
-              provider: 'FAZZ',
-              providerPaymentId: deposit.providerPaymentId,
-              methodType: 'virtual_bank_account',
-              bankCode: deposit.va.bankCode,
-              accountNumber: deposit.va.accountNo,
-              accountName: deposit.va.accountName,
-              expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
-              status: 'pending',
-              instructionsJson: deposit.instructions,
-              rawCreateJson: deposit,
-            },
-          });
+          try {
+            await prisma.providerPayment.create({
+              data: {
+                paymentRequestId: pr.id,
+                provider: 'FAZZ',
+                providerPaymentId: deposit.providerPaymentId,
+                methodType: 'virtual_bank_account',
+                bankCode: deposit.va.bankCode,
+                accountNumber: deposit.va.accountNo,
+                accountName: deposit.va.accountName,
+                expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
+                status: 'pending',
+                instructionsJson: deposit.instructions,
+                rawCreateJson: deposit,
+              },
+            });
+          } catch (e: any) {
+            dberr('providerPayment.create failed', { message: e?.message, code: e?.code });
+            throw new Error('PROVIDER_PERSIST_FAILED');
+          }
 
           await tgNotify(
             `🟢 New DEPOSIT intent (ID VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
@@ -262,10 +314,15 @@ merchantApiRouter.post(
       res.ok({ ok: true, data: result });
     } catch (err: any) {
       const message = err?.message || '';
-      if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned' });
-      if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
+      dberr('deposit/intents ERROR', { message, stack: DEBUG ? err?.stack : undefined });
+
+      if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned', ...(DEBUG && { reason: message }) });
+      if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED', ...(DEBUG && { reason: message }) });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
+      if (DEBUG && (message === 'ADAPTER_CREATE_FAILED' || message === 'PROVIDER_PERSIST_FAILED')) {
+        return res.status(400).json({ ok: false, error: 'Unable to create deposit intent', reason: message });
+      }
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
     }
   }
@@ -285,6 +342,8 @@ merchantApiRouter.post(
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
 
+    dbg('POST /deposit/confirm → in', { merchantId, id: body.id || null, referenceCode: body.referenceCode || null });
+
     // Find the payment request (NO include; there is no Prisma relation field)
     const where = body.id
       ? { id: body.id, merchantId, type: 'DEPOSIT' as const }
@@ -292,8 +351,10 @@ merchantApiRouter.post(
 
     const pr = await prisma.paymentRequest.findFirst({
       where,
-      // no include here — avoid the crash you hit
+      // no include here — avoid the crash
     });
+
+    dbg('confirm → pr', pr ? { id: pr.id, status: pr.status, detailsJson: pr.detailsJson } : null);
 
     if (!pr) return res.status(404).json({ ok: false, error: 'Not found' });
 
@@ -301,6 +362,8 @@ merchantApiRouter.post(
     const pp = await prisma.providerPayment.findUnique({
       where: { paymentRequestId: pr.id },
     });
+
+    dbg('confirm → providerPayment', pp ? { providerPaymentId: pp.providerPaymentId, status: pp.status } : null);
 
     // If no provider row → nothing to poll; echo current status
     if (!pp) {
@@ -310,6 +373,8 @@ merchantApiRouter.post(
     // Resolve adapter for the method on the PR
     const methodCode = String(pr.detailsJson?.method || '');
     const providerRes = resolveProviderByMethodCode(methodCode);
+    dbg('confirm → resolveProviderByMethodCode', providerRes);
+
     if (!providerRes) {
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status } });
     }
@@ -320,7 +385,15 @@ merchantApiRouter.post(
     }
 
     // Poll provider
-    const { status: providerStatus, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
+    let statusResp: { status: string; raw: any };
+    try {
+      statusResp = await adapter.getDepositStatus(pp.providerPaymentId);
+    } catch (e: any) {
+      dberr('adapter.getDepositStatus failed', { message: e?.message });
+      return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status, error: DEBUG ? e?.message : undefined } });
+    }
+    const { status: providerStatus, raw } = statusResp;
+    dbg('confirm → provider status', providerStatus);
 
     // Map provider → local
     // Local enum: PENDING | SUBMITTED | APPROVED | REJECTED
@@ -346,6 +419,7 @@ merchantApiRouter.post(
         where: { id: pr.id },
         data: { status: newStatus },
       });
+      dbg('confirm → local status updated', { from: pr.status, to: newStatus });
     }
 
     return res.json({
@@ -353,7 +427,7 @@ merchantApiRouter.post(
       id: pr.id,
       referenceCode: pr.referenceCode,
       status: newStatus || pr.status,
-      provider: { status: providerStatus, raw },
+      provider: { status: providerStatus, raw: DEBUG ? raw : undefined },
     });
   }
 );
@@ -424,6 +498,8 @@ merchantApiRouter.post(
     });
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
+
+    dbg('POST /withdrawals → in', { merchantId, amountCents: body.amountCents, currency: body.currency });
 
     const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
     if (!user || !user.verifiedAt) return res.forbidden('User not verified');
@@ -522,6 +598,6 @@ merchantApiRouter.get(
 
     const adapter = adapters[providerRes.adapterName];
     const { status, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
-    return res.json({ ok: true, status: pr.status, provider: { status, raw } });
+    return res.json({ ok: true, status: pr.status, provider: { status, raw: DEBUG ? raw : undefined } });
   }
 );

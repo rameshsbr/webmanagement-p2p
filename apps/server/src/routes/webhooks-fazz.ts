@@ -4,13 +4,11 @@ import { prisma } from "../lib/prisma.js";
 
 export const fazzWebhookRouter = Router();
 
-/**
- * Constant-time HMAC verification (hex digest).
- */
+/** Constant-time HMAC verification (hex digest). */
 function verifySignature(raw: Buffer, headerSig: string | undefined, secret: string | undefined) {
   if (!raw || !headerSig || !secret) return false;
-  const mac = crypto.createHmac("sha256", secret).update(raw).digest("hex");
   try {
+    const mac = crypto.createHmac("sha256", secret).update(raw).digest("hex");
     return mac.length === headerSig.length &&
       crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(headerSig));
   } catch {
@@ -19,9 +17,9 @@ function verifySignature(raw: Buffer, headerSig: string | undefined, secret: str
 }
 
 /**
- * Figure out which secret to use based on topic or payload.
- * - Accept (payments / VA): FAZZ_ACCEPT_WEBHOOK_SECRET
- * - Send (disbursements):   FAZZ_SEND_WEBHOOK_SECRET
+ * Pick the correct secret:
+ *  - Accept (payments / VA)           → FAZZ_ACCEPT_WEBHOOK_SECRET
+ *  - Send   (disbursements / payouts) → FAZZ_SEND_WEBHOOK_SECRET
  */
 function pickSecret(headers: Record<string, any>, payload: any) {
   const accept = process.env.FAZZ_ACCEPT_WEBHOOK_SECRET || "";
@@ -29,6 +27,7 @@ function pickSecret(headers: Record<string, any>, payload: any) {
 
   const topicHeader = String(headers["x-fazz-topic"] || headers["x-topic"] || "").toLowerCase();
   const event = String(payload?.event || payload?.type || "").toLowerCase();
+  const resource = String(payload?.resource || "").toLowerCase();
 
   const looksLikeSend =
     topicHeader.includes("send") ||
@@ -37,19 +36,19 @@ function pickSecret(headers: Record<string, any>, payload: any) {
     event.includes("send") ||
     event.includes("disbursement") ||
     event.includes("payout") ||
-    // some payloads use a resource hint
-    String(payload?.resource || "").toLowerCase().includes("disbursement");
+    resource.includes("disbursement") ||
+    resource.includes("payout");
 
-  // Default to Accept if we can’t tell
+  // default to Accept when unknown
   return looksLikeSend ? send : accept;
 }
 
-/** Provider -> local mapping (deposits/payments) */
+/** Provider → local mapping (deposits / payments) */
 function mapDepositStatus(provider: string): "PENDING" | "SUBMITTED" | "APPROVED" | "REJECTED" | null {
   const s = String(provider || "").toLowerCase();
   if (["paid", "success", "succeeded", "completed"].includes(s)) return "APPROVED";
   if (["failed", "cancelled", "canceled", "expired", "rejected"].includes(s)) return "REJECTED";
-  return null; // keep as pending-ish
+  return null; // leave as pending-ish
 }
 
 /** Normalize disbursement status for storage */
@@ -61,29 +60,34 @@ function normalizePayoutStatus(s: string) {
 }
 
 /**
- * NOTE: this route MUST receive the raw (unparsed) body to verify HMAC.
- * Ensure in your app bootstrap you mount:
- *   app.use("/webhooks/fazz", express.raw({ type: "*/*" }));
- *   app.use("/webhooks/fazz", fazzWebhookRouter);
+ * IMPORTANT: In index.ts you already mounted:
+ *
+ * app.use("/webhooks/fazz",
+ *   express.raw({ type: "application/json" }),
+ *   (req, _res, next) => { if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body; next(); },
+ *   fazzWebhookRouter
+ * );
+ *
+ * That’s perfect. Keep it exactly like that.
  */
 fazzWebhookRouter.post("/", async (req: any, res) => {
-  // 1) Grab raw body + compute signature with the correct secret
+  // 1) raw body & signature
   const raw: Buffer = req.rawBody || Buffer.from([]);
   const sig = String(req.get("x-fazz-signature") || req.get("x-signature") || "").trim();
 
-  // Parse ONLY after verifying (but we need a peek to select the secret)
-  let parsedForSecret: any = {};
-  try { parsedForSecret = JSON.parse(raw.toString("utf8")); } catch {}
+  // 2) minimally parse to decide which secret to use
+  let peek: any = {};
+  try { peek = JSON.parse(raw.toString("utf8")); } catch {}
 
-  const secret = pickSecret(req.headers || {}, parsedForSecret);
+  const secret = pickSecret(req.headers || {}, peek);
   const okSig = verifySignature(raw, sig, secret);
 
-  // 2) Parse JSON (safe)
+  // 3) parse full payload (safe)
   let payload: any;
   const payloadText = raw.toString("utf8");
   try { payload = JSON.parse(payloadText); } catch { payload = { _raw: payloadText }; }
 
-  // 3) Persist webhook log first (idempotency & audit)
+  // 4) persist webhook log (idempotent-ish; we store everything before state changes)
   let logId: string | undefined;
   try {
     const topic = String(payload?.event || payload?.type || "unknown");
@@ -101,21 +105,21 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
     });
     logId = log.id;
   } catch {
-    // if DB down, we still try to process (best-effort), but will 200 to avoid provider storms
+    // ignore log errors; continue
   }
 
   if (!okSig) {
-    // Bad signature: tell provider to retry (or 200 if you prefer to absorb)
+    // bad signature → ask provider to retry
     return res.status(400).json({ ok: false, error: "bad_signature" });
   }
 
-  // 4) Route by event/topic to Accept vs Send handlers
+  // 5) route by topic/event to Accept vs Send handlers
   const topic = String(payload?.event || payload?.type || "").toLowerCase();
   const isSend = topic.includes("send") || topic.includes("disbursement") || topic.includes("payout");
 
   try {
     if (isSend) {
-      // --------- FAZZ SEND (disbursement) ----------
+      // ---------- FAZZ SEND (disbursements) ----------
       const providerPayoutId: string | undefined =
         payload?.data?.id || payload?.data?.payout_id || payload?.payoutId || payload?.id;
       const providerStatus: string | undefined =
@@ -125,16 +129,20 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
         const pd = await prisma.providerDisbursement.findFirst({
           where: { provider: "FAZZ", providerPayoutId },
         });
+
         if (pd) {
           await prisma.providerDisbursement.update({
             where: { id: pd.id },
-            data: { status: normalizePayoutStatus(providerStatus || "processing"), rawLatestJson: payload },
+            data: {
+              status: normalizePayoutStatus(providerStatus || "processing"),
+              rawLatestJson: payload,
+            },
           });
-          // (Later) ledger effects for completed/failed belong here.
+          // TODO (later): ledger side-effects for completed/failed
         }
       }
     } else {
-      // --------- FAZZ ACCEPT (payments / VA) ----------
+      // ---------- FAZZ ACCEPT (payments / VA) ----------
       const providerPaymentId: string | undefined =
         payload?.data?.id || payload?.data?.payment_id || payload?.paymentId || payload?.id;
       const providerStatus: string | undefined =
@@ -148,7 +156,10 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
         if (pp) {
           await prisma.providerPayment.update({
             where: { paymentRequestId: pp.paymentRequestId },
-            data: { status: providerStatus || "unknown", rawLatestJson: payload },
+            data: {
+              status: providerStatus || "unknown",
+              rawLatestJson: payload,
+            },
           });
 
           const mapped = providerStatus ? mapDepositStatus(providerStatus) : null;
@@ -162,12 +173,12 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       }
     }
   } catch (e: any) {
-    // If anything fails post-verification, mark the log error but still 200 to avoid retries storm
+    // Mark the log with error but 200 so we don’t cause retry storms
     if (logId) {
       await prisma.providerWebhookLog.update({
         where: { id: logId },
         data: { processed: false, error: String(e?.message || e) },
-      }).catch(()=>{});
+      }).catch(() => {});
     }
   }
 

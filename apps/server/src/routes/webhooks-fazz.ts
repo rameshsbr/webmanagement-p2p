@@ -1,85 +1,140 @@
 import { Router } from "express";
+import crypto from "node:crypto";
+import { prisma } from "../lib/prisma.js";
+
 export const fazzWebhookRouter = Router();
 
-function verifySignature(req: any): boolean {
-  // You already have raw body capture middleware.
-  // Fazz: HMAC-SHA256 with WEBHOOK_SIGNING_SECRET over raw body (adjust header key if needed).
-  const secret = process.env.FAZZ_WEBHOOK_SIGNING_SECRET || "";
-  const sigHeader = req.get("x-signature") || req.get("x-fazz-signature") || "";
-  if (!secret || !sigHeader) return false;
-
-  const raw: Buffer = (req as any).rawBody || Buffer.from("");
-  const computed = require("crypto").createHmac("sha256", secret).update(raw).digest("hex");
+/**
+ * HMAC verify helper.
+ * We accept either:
+ *  - header "x-fazz-signature" OR "x-signature" (hex),
+ *  - env secret FAZZ_WEBHOOK_SECRET
+ * If the provider uses a different header name, we can add it later.
+ */
+function verifySignature(raw: Buffer, headerSig: string | undefined, secret: string | undefined) {
+  if (!headerSig || !secret) return false;
+  const mac = crypto.createHmac("sha256", secret).update(raw).digest("hex");
   // constant-time compare
-  return computed.length === sigHeader.length && crypto.timingSafeEqual(Buffer.from(computed), Buffer.from(sigHeader));
+  return mac.length === headerSig.length && crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(headerSig));
 }
 
-fazzWebhookRouter.post("/webhooks/fazz", async (req, res) => {
-  // 1) Verify signature
-  if (!verifySignature(req)) return res.status(401).send("invalid signature");
+/**
+ * Map provider statuses to our local enums (deposits)
+ * provider: pending | paid | completed | failed | cancelled | canceled | expired | success | succeeded
+ * local:    PENDING | SUBMITTED | APPROVED | REJECTED
+ */
+function mapDepositStatus(provider: string): "PENDING" | "SUBMITTED" | "APPROVED" | "REJECTED" | null {
+  const s = String(provider || "").toLowerCase();
+  if (["paid", "success", "succeeded", "completed"].includes(s)) return "APPROVED";
+  if (["failed", "cancelled", "canceled", "expired", "rejected"].includes(s)) return "REJECTED";
+  // still pending-like
+  return null;
+}
 
-  const payload = req.body;
-  const headers = req.headers;
+/**
+ * Map provider statuses for disbursements
+ * We'll store raw, and for ledger later:
+ *  - completed -> success
+ *  - failed    -> failed
+ *  - processing/pending -> noop
+ */
+function normalizePayoutStatus(s: string) {
+  const v = String(s || "").toLowerCase();
+  if (["completed", "success", "succeeded"].includes(v)) return "completed";
+  if (["failed", "rejected", "cancelled", "canceled"].includes(v)) return "failed";
+  return "processing";
+}
 
-  // 2) Persist log
-  const { prisma } = await import("../lib/prisma.js");
-  await prisma.providerWebhookLog.create({
-    data: {
-      provider: "FAZZ",
-      topic: String(payload?.event || payload?.type || "unknown"),
-      signature: (req.get("x-signature") || req.get("x-fazz-signature") || "") as string,
-      headersJson: headers as any,
-      payloadJson: payload as any,
-      processed: false,
-    },
-  });
-
-  // 3) Map events
+// This route expects raw body (Buffer) to verify HMAC; we’ll attach middleware in index.ts
+fazzWebhookRouter.post("/", async (req: any, res) => {
   try {
-    const evType = String(payload?.event || payload?.type || "");
-    // Extract referenceId or provider ids to find local row(s)
-    const providerPaymentId = payload?.data?.id || payload?.id || null;
-    const providerStatus = payload?.data?.status || payload?.status || null;
+    const secret = process.env.FAZZ_WEBHOOK_SECRET || "";
+    const sig = (req.get("x-fazz-signature") || req.get("x-signature") || "").trim();
+    const raw: Buffer = req.rawBody || Buffer.from([]);
 
-    if (evType.startsWith("payment.")) {
-      // Find provider payment
-      const pp = await prisma.providerPayment.findFirst({ where: { provider: "FAZZ", providerPaymentId } });
-      if (pp) {
-        const pr = await prisma.paymentRequest.findUnique({ where: { id: pp.paymentRequestId } });
-        if (pr) {
-          let newStatus = pr.status;
-          if (providerStatus === "paid") newStatus = "APPROVED";
-          if (providerStatus === "completed") newStatus = "SETTLED";
-          if (["expired","cancelled","failed"].includes(providerStatus || "")) newStatus = "REJECTED";
+    const ok = verifySignature(raw, sig, secret);
+    // We persist payload regardless (with processed=false) so we can replay if needed
+    const payloadText = raw.toString("utf8");
+    let payload: any;
+    try { payload = JSON.parse(payloadText); } catch { payload = { _raw: payloadText }; }
 
-          await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: newStatus } });
-          await prisma.providerPayment.update({ where: { paymentRequestId: pr.id }, data: { status: providerStatus || "pending", rawLatestJson: payload as any } });
-
-          // TODO: forward to merchant webhook (your existing signer + retry)
-        }
-      }
-    }
-
-    if (evType.startsWith("disbursement.")) {
-      const pd = await prisma.providerDisbursement.findFirst({ where: { provider: "FAZZ", providerPayoutId: providerPaymentId! } });
-      if (pd) {
-        await prisma.providerDisbursement.update({ where: { id: pd.id }, data: { status: providerStatus || "pending", rawLatestJson: payload as any } });
-        if (["completed"].includes(providerStatus || "")) {
-          // TODO: ledger debit; update PaymentRequest if you link them
-        }
-        // TODO: forward to merchant webhook
-      }
-    }
-
-    // Mark log processed
-    await prisma.providerWebhookLog.updateMany({
-      where: { provider: "FAZZ", topic: evType, processed: false },
-      data: { processed: true, processedAt: new Date() },
+    const log = await prisma.providerWebhookLog.create({
+      data: {
+        provider: "FAZZ",
+        topic: String(payload?.event || payload?.type || "unknown"),
+        signature: sig || null,
+        headersJson: req.headers as any,
+        payloadJson: payload,
+        processed: ok, // mark processed only if signature verified
+        processedAt: ok ? new Date() : null,
+        error: ok ? null : "signature_verification_failed",
+      },
     });
 
-    return res.status(200).json({ ok: true });
-  } catch (e: any) {
-    console.error(e);
-    return res.status(500).json({ ok: false });
+    if (!ok) {
+      // Don’t process if signature bad; return 400 so provider retries (optional)
+      return res.status(400).json({ ok: false });
+    }
+
+    // Branch by topic/event. Adjust these fields once you know exact Fazz payload names.
+    const topic = String(payload?.event || payload?.type || "").toLowerCase();
+
+    if (topic.includes("payment")) {
+      // Accept (VA) side
+      const providerPaymentId: string | undefined =
+        payload?.data?.id || payload?.data?.payment_id || payload?.paymentId || payload?.id;
+      const providerStatus: string | undefined =
+        payload?.data?.status || payload?.status;
+
+      if (providerPaymentId) {
+        // update ProviderPayment + PaymentRequest
+        const pp = await prisma.providerPayment.findFirst({
+          where: { provider: "FAZZ", providerPaymentId },
+        });
+
+        if (pp) {
+          // persist latest snapshot
+          await prisma.providerPayment.update({
+            where: { paymentRequestId: pp.paymentRequestId },
+            data: { status: providerStatus || "unknown", rawLatestJson: payload },
+          });
+
+          // map to local PaymentRequest status
+          const mapped = providerStatus ? mapDepositStatus(providerStatus) : null;
+          if (mapped) {
+            await prisma.paymentRequest.update({
+              where: { id: pp.paymentRequestId },
+              data: { status: mapped },
+            });
+          }
+        }
+      }
+    } else if (topic.includes("disbursement") || topic.includes("transfer") || topic.includes("payout")) {
+      // Send (payout) side
+      const providerPayoutId: string | undefined =
+        payload?.data?.id || payload?.data?.payout_id || payload?.payoutId || payload?.id;
+      const providerStatus: string | undefined =
+        payload?.data?.status || payload?.status;
+
+      if (providerPayoutId) {
+        const pd = await prisma.providerDisbursement.findFirst({
+          where: { provider: "FAZZ", providerPayoutId },
+        });
+        if (pd) {
+          await prisma.providerDisbursement.update({
+            where: { id: pd.id },
+            data: { status: providerStatus || "unknown", rawLatestJson: payload },
+          });
+          // (Later) ledger side-effects when status transitions to completed/failed
+        }
+      }
+    } else {
+      // unknown topic; nothing to do
+    }
+
+    return res.json({ ok: true, id: log.id });
+  } catch (e) {
+    // Best-effort logging; if prisma fails before insert, we still 200 so provider doesn’t spam.
+    return res.json({ ok: true });
   }
 });

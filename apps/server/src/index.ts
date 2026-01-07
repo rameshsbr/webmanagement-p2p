@@ -3,6 +3,7 @@ import "dotenv/config";
 import "./lib/augmentExpress.js";
 
 import express from "express";
+import { fazzWebhookRouter } from "./routes/webhooks-fazz.js";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import morgan from "morgan";
@@ -355,6 +356,16 @@ app.use(
     credentials: true,
   })
 );
+
+app.use("/webhooks/fazz", express.raw({ type: "application/json" }));
+app.use("/webhooks/fazz", (req: any, _res, next) => {
+  // make raw body accessible (some code paths expect req.rawBody)
+  if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body;
+  next();
+});
+app.use("/webhooks/fazz", fazzWebhookRouter);
+
+
 
 // Public checkout endpoints (must be before generic /public and /merchant)
 app.use(checkoutPublicRouter);

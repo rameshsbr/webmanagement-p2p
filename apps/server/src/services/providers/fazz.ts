@@ -8,18 +8,18 @@ import { prisma } from "../../lib/prisma.js";
 
 /**
  * Dual mode:
- *  - SIM (default): no outbound calls, fully simulated (your current behavior)
+ *  - SIM (default): no outbound calls, fully simulated
  *  - REAL: calls Fazz v4-ID (sandbox) using FAZZ_API_* envs
  *
- * Minimal REAL coverage for MVP:
- *  - createDepositIntent (virtual_account - dynamic/static)
- *  - getDepositStatus
- * The rest (validate / disbursements) stay simulated for now.
+ * REAL mode (per docs):
+ *  - Base URL (sandbox): https://sandbox-id.xfers.com/api/v4
+ *  - Auth: HTTP Basic (base64(apiKey:apiSecret))
+ *  - Create VA payment: POST /payments with paymentMethodOptions.virtualBankAccount
+ *  - Get status:        GET  /payments/{id}
  */
-
 const MODE = (process.env.FAZZ_MODE || "SIM").toUpperCase();
-const API_BASE = process.env.FAZZ_API_BASE || "";
-const API_KEY  = process.env.FAZZ_API_KEY  || "";
+const API_BASE = (process.env.FAZZ_API_BASE || "").replace(/\/+$/, "");
+const API_KEY = process.env.FAZZ_API_KEY || "";
 const API_SECRET = process.env.FAZZ_API_SECRET || "";
 
 const makeFakeId = (prefix: string) =>
@@ -32,7 +32,6 @@ const BANK_NAME_LIMITS: Record<string, number> = {
   BRI: Number(process.env.FAZZ_BANK_NAME_LIMIT_BRI || 20),
   MANDIRI: Number(process.env.FAZZ_BANK_NAME_LIMIT_MANDIRI || 20),
 };
-
 const DEFAULT_NAME_LIMIT = Number(process.env.FAZZ_BANK_NAME_LIMIT_DEFAULT || 40);
 
 function bankNameLimit(bankCode: string) {
@@ -46,9 +45,7 @@ function normalizeNameForBank(name: string, bankCode: string) {
   return raw.slice(0, limit);
 }
 
-/**
- * Deterministic static VA number (SIM mode only)
- */
+/** SIM: deterministic static VA */
 function staticVaNumber(merchantId: string, uid: string, bankCode: string) {
   const h = crypto
     .createHash("sha1")
@@ -59,7 +56,7 @@ function staticVaNumber(merchantId: string, uid: string, bankCode: string) {
   return "988" + tail;
 }
 
-/** Dynamic VA number (SIM mode only) */
+/** SIM: dynamic VA */
 function dynamicVaNumber() {
   const now = Date.now().toString();
   const tail = now.slice(-10).padStart(10, "0");
@@ -67,36 +64,18 @@ function dynamicVaNumber() {
 }
 
 /** ---- REAL helpers ---- **/
-function hmacSha256Hex(payload: string, secret: string) {
-  return crypto.createHmac("sha256", secret).update(payload).digest("hex");
-}
-
-function fazzHeaders(body: string, idempotencyKey?: string) {
-  // These header names vary across tenants/docs. We send both “X-API-KEY” and “X-Api-Key” to be safe,
-  // along with a simple HMAC signature over the raw body. If your account expects different headers
-  // (e.g., Authorization: Bearer), swap here.
-  const sig = hmacSha256Hex(body, API_SECRET);
-  const h: Record<string, string> = {
-    "Content-Type": "application/json",
-    "Accept": "application/json",
-    "X-API-KEY": API_KEY,
-    "X-Api-Key": API_KEY,
-    "X-API-SIGNATURE": sig,
-    "X-Api-Signature": sig,
-  };
-  if (idempotencyKey) {
-    h["Idempotency-Key"] = idempotencyKey;
-  }
-  return h;
-}
-
 function ensureRealReady() {
   if (!API_BASE || !API_KEY || !API_SECRET) {
     throw new Error("FAZZ REAL mode requires FAZZ_API_BASE, FAZZ_API_KEY, FAZZ_API_SECRET");
   }
 }
 
-/** defensively pull nested fields */
+function basicAuthHeader() {
+  const token = Buffer.from(`${API_KEY}:${API_SECRET}`).toString("base64");
+  return `Basic ${token}`;
+}
+
+/** tiny safe picker */
 function pick<T = any>(obj: any, paths: string[]): T | undefined {
   for (const p of paths) {
     const parts = p.split(".");
@@ -111,24 +90,27 @@ function pick<T = any>(obj: any, paths: string[]): T | undefined {
   return undefined;
 }
 
-/** Try to extract VA & status from Fazz responses with leniency */
+/** Parse VA + expires + id from varied JSON shapes (covers snake/camel & nested paymentMethod) */
 function parseFazzAcceptCreateResponse(json: any, fallbackName: string, bankCode: string) {
   const providerPaymentId =
-    pick<string>(json, ["id", "data.id", "payment.id", "payment.data.id"]) ||
-    makeFakeId("pay");
+    pick<string>(json, ["id", "data.id", "payment.id", "payment.data.id"]) || makeFakeId("pay");
 
   const expiresAt =
-    pick<string>(json, ["expiresAt", "data.expiresAt", "payment.expiresAt"]) ||
-    undefined;
+    pick<string>(json, ["expiresAt", "data.expiresAt", "payment.expiresAt"]) || undefined;
 
   const accountNo =
     pick<string>(json, [
+      // direct VA shapes
       "va.account_no",
       "va.accountNo",
       "virtual_account.account_no",
       "virtual_account.accountNo",
       "data.va.account_no",
       "data.virtual_account.account_no",
+      // nested paymentMethod shapes (per docs)
+      "paymentMethod.virtual_bank_account.account_no",
+      "paymentMethod.virtualBankAccount.accountNo",
+      "data.paymentMethod.virtual_bank_account.account_no",
     ]) || undefined;
 
   const accountName =
@@ -139,63 +121,85 @@ function parseFazzAcceptCreateResponse(json: any, fallbackName: string, bankCode
       "virtual_account.accountName",
       "data.va.account_name",
       "data.virtual_account.account_name",
+      "paymentMethod.virtual_bank_account.account_name",
+      "paymentMethod.virtualBankAccount.accountName",
     ]) || fallbackName;
+
+  // helpful to have paymentMethodId later for sandbox “mock receive” (if present)
+  const paymentMethodId =
+    pick<string>(json, ["paymentMethod.id", "data.paymentMethod.id"]);
 
   return {
     providerPaymentId,
     expiresAt,
-    va: {
-      bankCode,
-      accountNo,
-      accountName,
-    },
+    va: { bankCode, accountNo, accountName },
+    paymentMethodId,
     raw: json,
   };
 }
 
+/** ---- REAL calls (per docs) ----
+ * Create VA payment: POST /payments
+ * Body must include paymentMethodOptions.virtualBankAccount with bankShortCode/displayName
+ */
 async function realCreateDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult> {
   ensureRealReady();
 
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
   const displayName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
 
-  // The exact schema differs per Fazz tenant; this is a safe, minimal payload
-  // that many v4-ID setups accept for VA.
   const body = {
-    method: "virtual_bank_account",
-    type: isDynamic ? "DYNAMIC" : "STATIC",
+    amount: input.amountCents,
     currency: input.currency,
-    amount: input.amountCents, // cents
-    referenceId: input.tid,    // keep your TID idempotency semantics
-    bankCode: input.bankCode,  // sometimes named bank_short_code/bank_code
-    customer: {
-      name: displayName,
+    referenceId: input.tid, // keep your TID
+    paymentMethodOptions: {
+      virtualBankAccount: {
+        bankShortCode: input.bankCode,   // e.g., "BCA"
+        displayName,                     // name that shows on VA
+        // suffixNo: "optional"          // you can add if your tenant supports
+      },
     },
+    // metadata is often accepted and handy for tracing
     metadata: {
       uid: input.uid,
       merchantId: input.merchantId,
       methodCode: input.methodCode,
+      mode: isDynamic ? "DYNAMIC" : "STATIC",
     },
   };
 
-  const raw = JSON.stringify(body);
-  const res = await fetch(`${API_BASE}/payments`, {
+  const url = `${API_BASE}/payments`;
+  const res = await fetch(url, {
     method: "POST",
-    headers: fazzHeaders(raw, input.tid),
-    body: raw,
+    headers: {
+      "Authorization": basicAuthHeader(),
+      "Content-Type": "application/json",
+      "Accept": "application/json",
+      "Idempotency-Key": input.tid, // safe idempotency on provider
+    },
+    body: JSON.stringify(body),
   });
 
-  const json = await res.json().catch(() => ({}));
+  let json: any = null;
+  let text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+
   if (!res.ok) {
-    // surface provider error to caller/UI
-    const msg = pick<string>(json, ["message", "error", "errors[0].message"]) || `HTTP ${res.status}`;
+    console.error("[FAZZ_ACCEPT_FAILED] POST /payments",
+      { status: res.status, body: json ?? text, url });
+    const msg =
+      pick<string>(json, ["message", "error", "errors[0].message"]) ||
+      (text || `HTTP ${res.status}`);
     throw new Error(`Fazz createDepositIntent failed: ${msg}`);
   }
 
-  const parsed = parseFazzAcceptCreateResponse(json, displayName, input.bankCode);
+  const parsed = parseFazzAcceptCreateResponse(json ?? {}, displayName, input.bankCode);
+  const accountNo = parsed.va.accountNo || dynamicVaNumber(); // some tenants emit VA later
 
-  // Some sandboxes don’t immediately return VA number; if missing, keep fallback
-  const accountNo = parsed.va.accountNo || dynamicVaNumber();
+  // Attach paymentMethodId to raw for your sandbox mocks later
+  if (json && parsed.paymentMethodId && typeof json === "object") {
+    json.__paymentMethodId = parsed.paymentMethodId;
+  }
 
   return {
     providerPaymentId: parsed.providerPaymentId,
@@ -220,31 +224,40 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
 
 async function realGetDepositStatus(providerPaymentId: string) {
   ensureRealReady();
-  const res = await fetch(`${API_BASE}/payments/${encodeURIComponent(providerPaymentId)}`, {
+  const url = `${API_BASE}/payments/${encodeURIComponent(providerPaymentId)}`;
+  const res = await fetch(url, {
     method: "GET",
-    headers: fazzHeaders("", undefined),
+    headers: {
+      "Authorization": basicAuthHeader(),
+      "Accept": "application/json",
+    },
   });
-  const json = await res.json().catch(() => ({}));
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
   if (!res.ok) {
-    const msg = pick<string>(json, ["message", "error", "errors[0].message"]) || `HTTP ${res.status}`;
+    console.error("[FAZZ_STATUS_FAILED] GET /payments/:id",
+      { status: res.status, body: json ?? text, url });
+    const msg =
+      pick<string>(json, ["message", "error", "errors[0].message"]) ||
+      (text || `HTTP ${res.status}`);
     throw new Error(`Fazz getDepositStatus failed: ${msg}`);
   }
   const status =
-    pick<string>(json, ["status", "data.status", "payment.status"]) ||
-    "pending";
-  return { status, raw: json };
+    pick<string>(json, ["status", "data.status", "payment.status"]) || "pending";
+  return { status, raw: json ?? text };
 }
 
+/** ---- Public adapter ---- */
 export const fazzAdapter: ProviderAdapter = {
   async createDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult> {
     if (MODE === "REAL") {
       return realCreateDepositIntent(input);
     }
 
-    // ---- SIM mode (your existing behavior) ----
+    // ---- SIM mode (unchanged) ----
     const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
     const now = Date.now();
-    const expiresMs = isDynamic ? 30 * 60_000 : 7 * 24 * 60 * 60_000; // 30 min vs 7 days
+    const expiresMs = isDynamic ? 30 * 60_000 : 7 * 24 * 60 * 60_000;
 
     const providerPaymentId = makeFakeId("pay");
     const vaNumber = isDynamic
@@ -308,13 +321,13 @@ export const fazzAdapter: ProviderAdapter = {
     // no-op in both modes for now
   },
 
-  // keep validate as SIM for the moment (low risk)
+  // keep validate as SIM for the moment
   async validateBankAccount({ bankCode, accountNo }) {
     const holder = "VALIDATED HOLDER";
     return { ok: true, holder, raw: { simulated: true, bankCode, accountNo, holder } };
   },
 
-  // keep disbursement as SIM for the moment (we’ll wire REAL after Accept is green)
+  // keep disbursement as SIM for the moment
   async createDisbursement({
     tid,
     amountCents,

@@ -1,5 +1,5 @@
-import "dotenv/config";
 // apps/server/src/index.ts
+import "dotenv/config";
 import "./lib/augmentExpress.js";
 
 import express from "express";
@@ -29,7 +29,6 @@ import { webhookRouter } from "./routes/webhooks.js";
 import { sdkRouter } from "./routes/sdk.js";
 import { requireAdmin } from "./middleware/auth.js";
 import { merchantPortalRouter } from "./routes/merchantPortal.js";
-import { fazzWebhookRouter } from "./routes/webhooks-fazz.ts";
 
 // import { requireMerchantSession } from "./middleware/auth.js"; // no longer used
 import { superAdminRouter } from './routes/superAdmin.js';
@@ -51,6 +50,19 @@ backfillShortIdentifiers().catch((err) => {
   console.warn("[BOOT] short-id backfill skipped", err?.message || err);
 });
 
+app.use("/webhooks/fazz",
+  express.raw({ type: "application/json" }),      // keep the body as Buffer
+  (req: any, _res, next) => {                     // expose it as req.rawBody for our verifier
+    if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body;
+    next();
+  },
+  fazzWebhookRouter
+);
+
+app.use(express.json({ limit: "2mb", verify: captureRawBody }));
+app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
+
+
 // Security & logging
 app.use(
   helmet({
@@ -69,8 +81,7 @@ app.use(
 );
 app.use(morgan("dev"));
 
-app.use(express.json({ limit: "2mb", verify: captureRawBody }));
-app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
+
 app.use(cookieParser());
 app.use(responseHelpers);
 
@@ -357,15 +368,6 @@ app.use(
   })
 );
 
-app.use("/webhooks/fazz", express.raw({ type: "application/json" }));
-app.use("/webhooks/fazz", (req: any, _res, next) => {
-  // make raw body accessible (some code paths expect req.rawBody)
-  if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body;
-  next();
-});
-app.use("/webhooks/fazz", fazzWebhookRouter);
-
-
 
 // Public checkout endpoints (must be before generic /public and /merchant)
 app.use(checkoutPublicRouter);
@@ -404,9 +406,6 @@ app.get("/auth/whoami", (req, res) => {
 
 // errors last
 app.use(errorHandler);
-
-app.use("/webhooks/fazz", fazzWebhookRouter);
-
 
 // Start
 const PORT = Number(process.env.PORT ?? 4000);

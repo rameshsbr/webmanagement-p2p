@@ -14,7 +14,7 @@ import { prisma } from "../../lib/prisma.js";
  * REAL mode (per docs):
  *  - Base URL (sandbox): https://sandbox-id.xfers.com/api/v4
  *  - Auth: HTTP Basic (base64(apiKey:apiSecret))
- *  - Create VA payment: POST /payments with paymentMethodOptions.virtualBankAccount
+ *  - Create VA payment: POST /payments with payment_method_options.virtual_bank_account
  *  - Get status:        GET  /payments/{id}
  */
 const MODE = (process.env.FAZZ_MODE || "SIM").toUpperCase();
@@ -125,7 +125,6 @@ function parseFazzAcceptCreateResponse(json: any, fallbackName: string, bankCode
       "paymentMethod.virtualBankAccount.accountName",
     ]) || fallbackName;
 
-  // helpful to have paymentMethodId later for sandbox “mock receive” (if present)
   const paymentMethodId =
     pick<string>(json, ["paymentMethod.id", "data.paymentMethod.id"]);
 
@@ -140,31 +139,42 @@ function parseFazzAcceptCreateResponse(json: any, fallbackName: string, bankCode
 
 /** ---- REAL calls (per docs) ----
  * Create VA payment: POST /payments
- * Body must include paymentMethodOptions.virtualBankAccount with bankShortCode/displayName
+ * Body must include payment_method_options.virtual_bank_account with bank_short_code/display_name
+ * Amount for IDR is whole rupiah (send amountCents/100).
  */
 async function realCreateDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult> {
   ensureRealReady();
 
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
   const displayName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
+  const amountIdr = Math.round(input.amountCents / 100); // IDR has 0 decimals in most APIs
 
-  const body = {
-    amount: input.amountCents,
+  // send both snake_case and camelCase to be tenant-tolerant
+  const body: any = {
+    amount: amountIdr,
     currency: input.currency,
-    referenceId: input.tid, // keep your TID
-    paymentMethodOptions: {
-      virtualBankAccount: {
-        bankShortCode: input.bankCode,   // e.g., "BCA"
-        displayName,                     // name that shows on VA
-        // suffixNo: "optional"          // you can add if your tenant supports
+    reference_id: input.tid,
+    referenceId: input.tid,
+
+    payment_method_options: {
+      virtual_bank_account: {
+        bank_short_code: input.bankCode,
+        display_name: displayName,
+        mode: isDynamic ? "DYNAMIC" : "STATIC",
       },
     },
-    // metadata is often accepted and handy for tracing
+    paymentMethodOptions: {
+      virtualBankAccount: {
+        bankShortCode: input.bankCode,
+        displayName,
+        mode: isDynamic ? "DYNAMIC" : "STATIC",
+      },
+    },
+
     metadata: {
       uid: input.uid,
       merchantId: input.merchantId,
       methodCode: input.methodCode,
-      mode: isDynamic ? "DYNAMIC" : "STATIC",
     },
   };
 
@@ -175,7 +185,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       "Authorization": basicAuthHeader(),
       "Content-Type": "application/json",
       "Accept": "application/json",
-      "Idempotency-Key": input.tid, // safe idempotency on provider
+      "Idempotency-Key": input.tid,
     },
     body: JSON.stringify(body),
   });
@@ -185,8 +195,11 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   try { json = await res.clone().json(); } catch { text = await res.text(); }
 
   if (!res.ok) {
-    console.error("[FAZZ_ACCEPT_FAILED] POST /payments",
-      { status: res.status, body: json ?? text, url });
+    console.error("[FAZZ_ACCEPT_FAILED] POST /payments", {
+      status: res.status,
+      body: json ?? text,
+      url,
+    });
     const msg =
       pick<string>(json, ["message", "error", "errors[0].message"]) ||
       (text || `HTTP ${res.status}`);
@@ -194,9 +207,8 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   }
 
   const parsed = parseFazzAcceptCreateResponse(json ?? {}, displayName, input.bankCode);
-  const accountNo = parsed.va.accountNo || dynamicVaNumber(); // some tenants emit VA later
+  const accountNo = parsed.va.accountNo || dynamicVaNumber(); // some sandboxes emit VA later
 
-  // Attach paymentMethodId to raw for your sandbox mocks later
   if (json && parsed.paymentMethodId && typeof json === "object") {
     json.__paymentMethodId = parsed.paymentMethodId;
   }
@@ -210,7 +222,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       bankCode: input.bankCode,
       steps: [
         "Open your banking app.",
-        `Transfer IDR ${(input.amountCents / 100).toFixed(2)} to the VA below.`,
+        `Transfer IDR ${amountIdr.toLocaleString("en-AU")} to the VA below.`,
         "Use immediate transfer if available.",
       ],
     },
@@ -235,8 +247,11 @@ async function realGetDepositStatus(providerPaymentId: string) {
   let json: any = null, text = "";
   try { json = await res.clone().json(); } catch { text = await res.text(); }
   if (!res.ok) {
-    console.error("[FAZZ_STATUS_FAILED] GET /payments/:id",
-      { status: res.status, body: json ?? text, url });
+    console.error("[FAZZ_STATUS_FAILED] GET /payments/:id", {
+      status: res.status,
+      body: json ?? text,
+      url,
+    });
     const msg =
       pick<string>(json, ["message", "error", "errors[0].message"]) ||
       (text || `HTTP ${res.status}`);
@@ -272,7 +287,7 @@ export const fazzAdapter: ProviderAdapter = {
       bankCode: input.bankCode,
       steps: [
         "Open your banking app.",
-        `Transfer IDR ${(input.amountCents / 100).toFixed(2)} to the VA below.`,
+        `Transfer IDR ${(input.amountCents / 100).toFixed(0)} to the VA below.`,
         "Use immediate transfer if available.",
       ],
     };

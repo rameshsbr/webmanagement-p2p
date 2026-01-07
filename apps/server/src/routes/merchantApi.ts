@@ -261,29 +261,30 @@ merchantApiRouter.post(
             await prisma.providerPayment.create({
               data: {
                 paymentRequestId: pr.id,
-                provider: 'FAZZ',
+                provider: "FAZZ",
                 providerPaymentId: String(deposit.providerPaymentId),
-                methodType: 'virtual_bank_account',
+                methodType: "virtual_bank_account",
                 bankCode: deposit.va.bankCode ?? null,
                 accountNumber: deposit.va.accountNo ?? null,
                 accountName: deposit.va.accountName ?? null,
-                expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
-                status: 'pending',
+                expiresAt: deposit.expiresAt
+                  ? new Date(deposit.expiresAt)
+                  : null,
+                status: "pending",
                 instructionsJson,
                 rawCreateJson,
               },
             });
           } catch (e: any) {
-            // surface useful diagnostics in debug mode
-            if (isDebug) {
-              console.error('[DEPOSIT] provider persist failed:', {
-                code: e?.code,
-                message: e?.message,
-                meta: e?.meta,
-              });
-            }
-            throw Object.assign(new Error('PROVIDER_PERSIST_FAILED'), { cause: e });
+            const msg =
+              e?.message ||
+              e?.response?.data?.message ||
+              e?.response?.data?.error ||
+              "Unable to create deposit intent";
+            console.error("[DEPOSIT_INTENT_ERROR]", msg, e?.__attempts || "");
+            return res.status(400).json({ ok: false, error: msg });
           }
+
 
           await tgNotify(
             `🟢 New DEPOSIT intent (ID VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`

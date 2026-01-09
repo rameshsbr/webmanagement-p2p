@@ -1,3 +1,4 @@
+// apps/server/src/services/providers/fazz.ts
 import type {
   ProviderAdapter,
   DepositIntentInput,
@@ -9,23 +10,24 @@ import { prisma } from "../../lib/prisma.js";
 /**
  * Dual mode:
  *  - SIM (default): no outbound calls, fully simulated
- *  - REAL: calls Fazz v4-ID (sandbox) using FAZZ_API_* envs
+ *  - REAL: calls Fazz v4-ID (sandbox) using FAZZ_API_* envs (JSON:API)
  *
- * REAL (per docs):
+ * JSON:API:
  *  - Base URL (sandbox): https://sandbox-id.xfers.com/api/v4
  *  - Auth: HTTP Basic (base64(apiKey:apiSecret))
- *  - Create payment (VA): POST /payments  (JSON:API: data.type, data.attributes.*)
- *  - Get status:          GET  /payments/{id}
+ *  - Create VA: POST /payments  (Content-Type/Accept: application/vnd.api+json)
+ *  - Get status:  GET /payments/{id}
  */
 const MODE = (process.env.FAZZ_MODE || "SIM").toUpperCase();
 const API_BASE = (process.env.FAZZ_API_BASE || "").replace(/\/+$/, "");
 const API_KEY = process.env.FAZZ_API_KEY || "";
 const API_SECRET = process.env.FAZZ_API_SECRET || "";
 
+/* ---------- helpers (shared) ---------- */
+
 const makeFakeId = (prefix: string) =>
   prefix + "_" + crypto.randomBytes(6).toString("hex");
 
-// per-bank name length limits (tweak as needed; defaults to 40)
 const BANK_NAME_LIMITS: Record<string, number> = {
   BCA: Number(process.env.FAZZ_BANK_NAME_LIMIT_BCA || 20),
   BNI: Number(process.env.FAZZ_BANK_NAME_LIMIT_BNI || 20),
@@ -38,7 +40,6 @@ function bankNameLimit(bankCode: string) {
   const code = (bankCode || "").toUpperCase();
   return BANK_NAME_LIMITS[code] ?? DEFAULT_NAME_LIMIT;
 }
-
 function normalizeNameForBank(name: string, bankCode: string) {
   const limit = bankNameLimit(bankCode);
   const raw = (name || "").trim();
@@ -55,7 +56,6 @@ function staticVaNumber(merchantId: string, uid: string, bankCode: string) {
   const tail = digits.slice(0, 10);
   return "988" + tail;
 }
-
 /** SIM: dynamic VA */
 function dynamicVaNumber() {
   const now = Date.now().toString();
@@ -63,13 +63,13 @@ function dynamicVaNumber() {
   return "988" + tail;
 }
 
-/** ---- REAL helpers ---- **/
+/* ---------- REAL helpers ---------- */
+
 function ensureRealReady() {
   if (!API_BASE || !API_KEY || !API_SECRET) {
     throw new Error("FAZZ REAL mode requires FAZZ_API_BASE, FAZZ_API_KEY, FAZZ_API_SECRET");
   }
 }
-
 function basicAuthHeader() {
   const token = Buffer.from(`${API_KEY}:${API_SECRET}`).toString("base64");
   return `Basic ${token}`;
@@ -90,98 +90,167 @@ function pick<T = any>(obj: any, paths: string[]): T | undefined {
   return undefined;
 }
 
-/** Parse VA + expires + id from varied JSON shapes (covers snake/camel & JSON:API) */
-function parseFazzAcceptCreateResponse(json: any, fallbackName: string, bankCode: string) {
-  // id
-  const providerPaymentId =
-    pick<string>(json, [
-      "data.id",
-      "id",
-      "payment.id",
-      "payment.data.id",
-    ]) || makeFakeId("pay");
+/** parse `included[]` to find a relationship by type (payment_method[s]) */
+function findIncludedId(json: any): string | undefined {
+  const arr = json?.included;
+  if (!Array.isArray(arr)) return undefined;
+  const candTypes = new Set([
+    "payment_method", "payment_methods", "PaymentMethod", "paymentMethod",
+  ]);
+  for (const it of arr) {
+    if (it && typeof it === "object" && typeof it.id === "string" && candTypes.has(String(it.type || ""))) {
+      return String(it.id);
+    }
+  }
+  return undefined;
+}
 
-  // expires
+/** Parse VA + expires + id from varied JSON shapes (legacy + JSON:API) */
+function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
+  // STRICT: payment id from JSON:API 'data.id' if present
+  const providerPaymentId =
+    pick<string>(json, ["data.id"]) ||
+    pick<string>(json, ["id"]) || // very old shapes
+    makeFakeId("pay");
+
   const expiresAt =
     pick<string>(json, [
       "data.attributes.expiresAt",
       "expiresAt",
+      "data.expiresAt",
       "payment.expiresAt",
     ]) || undefined;
 
-  // VA number
+  // VA details may be embedded under attributes or legacy nests
   const accountNo =
     pick<string>(json, [
-      "data.attributes.paymentMethod.virtualBankAccount.accountNo",
       "data.attributes.paymentMethod.virtual_bank_account.account_no",
-      "va.accountNo",
+      "data.attributes.payment_method.virtual_bank_account.account_no",
       "va.account_no",
-      "virtual_account.accountNo",
       "virtual_account.account_no",
       "data.va.account_no",
       "data.virtual_account.account_no",
+      "paymentMethod.virtual_bank_account.account_no",
+      "data.paymentMethod.virtual_bank_account.account_no",
     ]) || undefined;
 
-  // VA name
   const accountName =
     pick<string>(json, [
-      "data.attributes.paymentMethod.virtualBankAccount.accountName",
       "data.attributes.paymentMethod.virtual_bank_account.account_name",
-      "va.accountName",
+      "data.attributes.payment_method.virtual_bank_account.account_name",
       "va.account_name",
-      "virtual_account.accountName",
       "virtual_account.account_name",
       "data.va.account_name",
       "data.virtual_account.account_name",
+      "paymentMethod.virtual_bank_account.account_name",
+      "data.paymentMethod.virtual_bank_account.account_name",
     ]) || fallbackName;
 
-  // paymentMethodId helpful for sandbox “mock payment” task
-  const paymentMethodId =
+  // paymentMethodId can be under relationships (singular/plural), attributes, or included
+  let paymentMethodId =
     pick<string>(json, [
       "data.relationships.paymentMethod.data.id",
+      "data.relationships.payment_method.data.id",
+      "data.relationships.paymentMethods.data.0.id",
+      "data.relationships.payment_methods.data.0.id",
       "data.attributes.paymentMethod.id",
-      "paymentMethod.id",
-      "data.paymentMethod.id"
-    ]);
+      "data.attributes.payment_method.id",
+    ]) || findIncludedId(json);
 
   return {
-    providerPaymentId,
+    providerPaymentId: String(providerPaymentId),
     expiresAt,
     va: { bankCode, accountNo, accountName },
-    paymentMethodId,
+    paymentMethodId: paymentMethodId ? String(paymentMethodId) : undefined,
     raw: json,
   };
 }
 
-/** ---- REAL calls (JSON:API) ----
- * Create VA payment: POST /payments
- * Body must be JSON:API: { data: { type: "payments", attributes: {...} } }
- */
+/** GET /payments/{id} to backfill paymentMethodId & VA fields */
+async function fetchPaymentDetails(paymentId: string) {
+  const url = `${API_BASE}/payments/${encodeURIComponent(paymentId)}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Authorization": basicAuthHeader(),
+      "Accept": "application/vnd.api+json",
+    },
+  });
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+  if (!res.ok) {
+    console.error("[FAZZ_STATUS_FAILED] GET /payments/:id", JSON.stringify({
+      status: res.status, url, body: json ?? text,
+    }, null, 2));
+    return null;
+  }
+
+  let paymentMethodId =
+    pick<string>(json, [
+      "data.relationships.paymentMethod.data.id",
+      "data.relationships.payment_method.data.id",
+      "data.relationships.paymentMethods.data.0.id",
+      "data.relationships.payment_methods.data.0.id",
+      "data.attributes.paymentMethod.id",
+      "data.attributes.payment_method.id",
+    ]) || findIncludedId(json);
+
+  const parsed = parseCreateResp(json, "", "");
+  return {
+    json,
+    paymentMethodId: paymentMethodId ? String(paymentMethodId) : parsed.paymentMethodId,
+    va: parsed.va,
+  };
+}
+
+/** GET /payment_methods?paymentId=:id — some tenants only expose PM id here */
+async function fetchPaymentMethodsForPayment(paymentId: string) {
+  const url = `${API_BASE}/payment_methods?paymentId=${encodeURIComponent(paymentId)}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: {
+      "Authorization": basicAuthHeader(),
+      "Accept": "application/vnd.api+json",
+    },
+  });
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+  if (!res.ok) {
+    console.error("[FAZZ_PM_LIST_FAILED] GET /payment_methods?paymentId", JSON.stringify({
+      status: res.status, url, body: json ?? text,
+    }, null, 2));
+    return { id: undefined, raw: json ?? text };
+  }
+
+  // JSON:API: data is an array; take first id if present
+  const firstId =
+    pick<string>(json, ["data.0.id"]) ||
+    pick<string>(json, ["data[0].id"]); // very defensive
+
+  return { id: firstId, raw: json ?? text };
+}
+
+/* ---------- REAL calls ---------- */
+
 async function realCreateDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult> {
   ensureRealReady();
 
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
   const displayName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
 
-  // Fazz ID uses whole rupiah for IDR; your system stores cents.
-  const providerAmount =
-    input.currency === "IDR" ? Math.round(input.amountCents / 100) : input.amountCents;
-
-  const body = {
+  // JSON:API envelope
+  const payload = {
     data: {
       type: "payments",
       attributes: {
-        amount: providerAmount,
-        currency: input.currency,
-        referenceId: input.tid,                 // << required (camelCase)
-        paymentMethodType: "virtual_bank_account", // << required
+        amount: input.amountCents,                 // integer rupiah
+        currency: input.currency,                  // "IDR"
+        referenceId: input.tid,                    // your TID
+        paymentMethodType: "virtual_bank_account",
         paymentMethodOptions: {
-          virtualBankAccount: {
-            bankShortCode: input.bankCode,      // e.g. "BCA"
-            displayName,                        // shows on payer’s bank
-            mode: isDynamic ? "DYNAMIC" : "STATIC",
-            // suffixNo: "optional"
-          },
+          bankShortCode: input.bankCode,           // e.g., "BCA"
+          displayName,                             // VA display name
+          mode: isDynamic ? "DYNAMIC" : "STATIC",
         },
         metadata: {
           uid: input.uid,
@@ -201,7 +270,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       "Accept": "application/vnd.api+json",
       "Idempotency-Key": input.tid,
     },
-    body: JSON.stringify(body),
+    body: JSON.stringify(payload),
   });
 
   let json: any = null;
@@ -209,29 +278,71 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   try { json = await res.clone().json(); } catch { text = await res.text(); }
 
   if (!res.ok) {
-    console.error("[FAZZ_ACCEPT_FAILED] POST /payments", {
+    console.error("[FAZZ_ACCEPT_FAILED] POST /payments", JSON.stringify({
       status: res.status,
       url,
       body: json ?? text,
-      sent: body.data.attributes,
-      hint: "Make sure FAZZ_API_BASE is the sandbox v4 endpoint, keys are sandbox keys, and headers are JSON:API. Amount must be whole rupiah for IDR."
-    });
+      sent: payload.data.attributes,
+      hint: "Make sure FAZZ_API_BASE is the sandbox v4 endpoint, keys are sandbox keys, and headers are JSON:API. Amount must be whole rupiah for IDR.",
+    }, null, 2));
     const msg =
-      pick<string>(json, ["errors.0.detail", "errors.0.title", "message", "error"]) ||
+      pick<string>(json, ["errors[0].detail", "message", "error"]) ||
       (text || `HTTP ${res.status}`);
     throw new Error(`Fazz createDepositIntent failed: ${msg}`);
   }
 
-  const parsed = parseFazzAcceptCreateResponse(json ?? {}, displayName, input.bankCode);
-  const accountNo = parsed.va.accountNo || dynamicVaNumber(); // some tenants emit VA later
+  // 1) Parse initial response strictly (payment id from data.id)
+  const parsed = parseCreateResp(json ?? {}, displayName, input.bankCode);
 
-  // If we got a paymentMethodId, stash it in raw for your sandbox mock helper later
-  if (json && parsed.paymentMethodId && typeof json === "object") {
-    json.__paymentMethodId = parsed.paymentMethodId;
+  // 2) Backfill paymentMethodId & VA via GET /payments/:id (many sandboxes only populate on read)
+  let paymentMethodId = parsed.paymentMethodId;
+  let vaAccountNo = parsed.va.accountNo;
+  let vaAccountName = parsed.va.accountName;
+
+  if (!paymentMethodId || !vaAccountNo) {
+    const details = await fetchPaymentDetails(parsed.providerPaymentId);
+    if (details) {
+      paymentMethodId = paymentMethodId || details.paymentMethodId || undefined;
+      vaAccountNo = vaAccountNo || details.va.accountNo || undefined;
+      vaAccountName = vaAccountName || details.va.accountName || displayName;
+      if (json && typeof json === "object") {
+        json.__fetchedPayment = details.json;
+      }
+    }
+  }
+
+  // 3) If still missing PM id, try GET /payment_methods?paymentId=:id
+  if (!paymentMethodId) {
+    const { id: fromList, raw } = await fetchPaymentMethodsForPayment(parsed.providerPaymentId);
+    if (fromList) paymentMethodId = fromList;
+    if (json && typeof json === "object") {
+      json.__fetchedPaymentMethods = raw;
+    }
+  }
+
+  // 4) Ensure we always return a VA number so UI can render
+  const accountNo = vaAccountNo || dynamicVaNumber();
+
+  // 5) Build a small meta bundle that preserves the paymentMethodId and any fetched raws
+  const meta: any = {};
+  if (paymentMethodId) meta.paymentMethodId = paymentMethodId;
+  // carry along any fetched payloads for debugging / future reuse (non-breaking, lives under meta)
+  const fetched: any = {};
+  if (json && (json as any).__fetchedPayment) {
+    fetched.payment = (json as any).__fetchedPayment;
+  }
+  if (json && (json as any).__fetchedPaymentMethods) {
+    fetched.paymentMethods = (json as any).__fetchedPaymentMethods;
+  }
+  if (Object.keys(fetched).length) meta.fetched = fetched;
+
+  // (optional) keep the legacy top-level marker in case something upstream looks for it later
+  if (json && paymentMethodId && typeof json === "object") {
+    (json as any).__paymentMethodId = paymentMethodId;
   }
 
   return {
-    providerPaymentId: parsed.providerPaymentId,
+    providerPaymentId: String(parsed.providerPaymentId),
     expiresAt: parsed.expiresAt,
     instructions: {
       type: "virtual_account",
@@ -242,13 +353,18 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
         `Transfer IDR ${(input.amountCents / 100).toFixed(2)} to the VA below.`,
         "Use immediate transfer if available.",
       ],
+      // 🔴 new, non-breaking: your DB will now store the paymentMethodId here
+      meta, 
     },
     va: {
       bankCode: input.bankCode,
       accountNo,
-      accountName: parsed.va.accountName || displayName,
+      accountName: vaAccountName || displayName,
+      // mirror here too for convenience when you only load VA from DB
+      meta,
     },
   };
+
 }
 
 async function realGetDepositStatus(providerPaymentId: string) {
@@ -264,13 +380,11 @@ async function realGetDepositStatus(providerPaymentId: string) {
   let json: any = null, text = "";
   try { json = await res.clone().json(); } catch { text = await res.text(); }
   if (!res.ok) {
-    console.error("[FAZZ_STATUS_FAILED] GET /payments/:id", {
-      status: res.status,
-      url,
-      body: json ?? text
-    });
+    console.error("[FAZZ_STATUS_FAILED] GET /payments/:id", JSON.stringify({
+      status: res.status, url, body: json ?? text,
+    }, null, 2));
     const msg =
-      pick<string>(json, ["errors.0.detail", "errors.0.title", "message", "error"]) ||
+      pick<string>(json, ["errors[0].detail", "message", "error"]) ||
       (text || `HTTP ${res.status}`);
     throw new Error(`Fazz getDepositStatus failed: ${msg}`);
   }
@@ -278,12 +392,14 @@ async function realGetDepositStatus(providerPaymentId: string) {
     pick<string>(json, [
       "data.attributes.status",
       "status",
-      "payment.status"
+      "data.status",
+      "payment.status",
     ]) || "pending";
   return { status, raw: json ?? text };
 }
 
-/** ---- Public adapter ---- */
+/* ---------- Public adapter ---------- */
+
 export const fazzAdapter: ProviderAdapter = {
   async createDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult> {
     if (MODE === "REAL") {
@@ -357,13 +473,11 @@ export const fazzAdapter: ProviderAdapter = {
     // no-op in both modes for now
   },
 
-  // keep validate as SIM for the moment
   async validateBankAccount({ bankCode, accountNo }) {
     const holder = "VALIDATED HOLDER";
     return { ok: true, holder, raw: { simulated: true, bankCode, accountNo, holder } };
   },
 
-  // keep disbursement as SIM for the moment
   async createDisbursement({
     tid,
     amountCents,
@@ -388,7 +502,6 @@ export const fazzAdapter: ProviderAdapter = {
   },
 
   async getDisbursementStatus(providerPayoutId: string) {
-    // Prefer DB if present
     try {
       const pd = await prisma.providerDisbursement.findFirst({
         where: { providerPayoutId },
@@ -400,11 +513,7 @@ export const fazzAdapter: ProviderAdapter = {
           raw: pd.rawLatestJson ?? { source: "db", providerPayoutId, status: pd.status },
         };
       }
-    } catch {
-      // ignore DB failures
-    }
-
-    // SIM
+    } catch {}
     const h = crypto.createHash("sha256").update(providerPayoutId).digest("hex");
     const bucket = parseInt(h.slice(0, 2), 16) % 3;
     const status = bucket === 0 ? "processing" : bucket === 1 ? "completed" : "failed";

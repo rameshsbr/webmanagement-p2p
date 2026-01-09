@@ -46,6 +46,25 @@ function normalizeNameForBank(name: string, bankCode: string) {
   return raw.slice(0, limit);
 }
 
+/** minor units map (display only) */
+const ZERO_DECIMAL = new Set(["IDR", "JPY", "KRW"]);
+function minorUnit(currency: string) {
+  return ZERO_DECIMAL.has((currency || "").toUpperCase()) ? 1 : 100;
+}
+function formatAmountForDisplay(amountCents: number, currency: string) {
+  const mu = minorUnit(currency);
+  const major = amountCents / mu;
+  // IDR custom formatting (no decimals)
+  if ((currency || "").toUpperCase() === "IDR") {
+    return `IDR ${major.toLocaleString("en-US", { maximumFractionDigits: 0 })}`;
+  }
+  // generic
+  return `${(currency || "").toUpperCase()} ${major.toLocaleString("en-US", {
+    minimumFractionDigits: mu === 1 ? 0 : 2,
+    maximumFractionDigits: mu === 1 ? 0 : 2,
+  })}`;
+}
+
 /** SIM: deterministic static VA */
 function staticVaNumber(merchantId: string, uid: string, bankCode: string) {
   const h = crypto
@@ -326,7 +345,6 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   // 5) Build a small meta bundle that preserves the paymentMethodId and any fetched raws
   const meta: any = {};
   if (paymentMethodId) meta.paymentMethodId = paymentMethodId;
-  // carry along any fetched payloads for debugging / future reuse (non-breaking, lives under meta)
   const fetched: any = {};
   if (json && (json as any).__fetchedPayment) {
     fetched.payment = (json as any).__fetchedPayment;
@@ -350,21 +368,18 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       bankCode: input.bankCode,
       steps: [
         "Open your banking app.",
-        `Transfer IDR ${(input.amountCents / 100).toFixed(2)} to the VA below.`,
+        `Transfer ${formatAmountForDisplay(input.amountCents, input.currency)} to the VA below.`,
         "Use immediate transfer if available.",
       ],
-      // 🔴 new, non-breaking: your DB will now store the paymentMethodId here
-      meta, 
+      meta,
     },
     va: {
       bankCode: input.bankCode,
       accountNo,
       accountName: vaAccountName || displayName,
-      // mirror here too for convenience when you only load VA from DB
       meta,
     },
   };
-
 }
 
 async function realGetDepositStatus(providerPaymentId: string) {
@@ -406,7 +421,7 @@ export const fazzAdapter: ProviderAdapter = {
       return realCreateDepositIntent(input);
     }
 
-    // ---- SIM mode (unchanged) ----
+    // ---- SIM mode (unchanged except money formatting) ----
     const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
     const now = Date.now();
     const expiresMs = isDynamic ? 30 * 60_000 : 7 * 24 * 60 * 60_000;
@@ -424,7 +439,7 @@ export const fazzAdapter: ProviderAdapter = {
       bankCode: input.bankCode,
       steps: [
         "Open your banking app.",
-        `Transfer IDR ${(input.amountCents / 100).toFixed(2)} to the VA below.`,
+        `Transfer ${formatAmountForDisplay(input.amountCents, input.currency)} to the VA below.`,
         "Use immediate transfer if available.",
       ],
     };

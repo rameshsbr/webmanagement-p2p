@@ -1,8 +1,7 @@
 // apps/server/src/index.ts
 import "dotenv/config";
-import "./lib/augmentExpress.js";
-
 import express from "express";
+import { augmentExpress } from "./lib/augmentExpress.js";
 import { fazzWebhookRouter } from "./routes/webhooks-fazz.js";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
@@ -38,6 +37,7 @@ import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
 
 
 const app = express();
+augmentExpress(app); 
 
 app.use((_, res, next) => {
   if (typeof res.locals.siteKey === "undefined") {
@@ -228,18 +228,7 @@ app.use((req: any, res: any, next: any) => {
       return `<span class="date-stack" data-dt="${iso}" data-tz="${escapeAttr(tz)}"><span>${dateText}</span><span>${timeText}</span></span>`;
     };
   }
-  if (typeof res.locals.formatAmount === "undefined") {
-    res.locals.formatAmount = (cents: number, currency?: string | null) => {
-      if (typeof cents !== "number" || !Number.isFinite(cents)) return "-";
-      const abs = Math.abs(cents);
-      const hasFraction = abs % 100 !== 0;
-      const value = (cents / 100).toLocaleString("en-AU", {
-        minimumFractionDigits: hasFraction ? 2 : 0,
-        maximumFractionDigits: hasFraction ? 2 : 0,
-      });
-      return currency ? `${value} ${currency}` : value;
-    };
-  }
+  
   if (typeof res.locals.formatDuration === "undefined") {
     res.locals.formatDuration = (start?: Date | string | null, end?: Date | string | null) => {
       if (!start || !end) return "-";

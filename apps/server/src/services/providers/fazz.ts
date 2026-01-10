@@ -3,7 +3,7 @@ import type {
   ProviderAdapter,
   DepositIntentInput,
   DepositIntentResult,
-} from "./Provider.js";
+} from "./Provider"; // 👈 remove ".js" so TS can find the .d.ts during build
 import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 
@@ -256,7 +256,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
     data: {
       type: "payments",
       attributes: {
-        amount: input.amountCents,                 // integer IDR
+        amount: input.amountCents,                 // integer IDR (no cents)
         currency: input.currency,                  // "IDR"
         referenceId: input.tid,                    // your TID
         paymentMethodType: "virtual_bank_account",
@@ -396,7 +396,7 @@ async function realGetDepositStatus(providerPaymentId: string) {
       "payment.status",
     ]) || "pending";
 
-  // 💾 Persist fresh status so the portals (which read DB first) reflect it
+  // Persist fresh status so portals (which read DB first) reflect it immediately
   try {
     await prisma.providerPayment.updateMany({
       where: { providerPaymentId },
@@ -457,7 +457,6 @@ export const fazzAdapter: ProviderAdapter = {
   },
 
   async getDepositStatus(providerPaymentId: string) {
-    // NOTE: In REAL mode we always refresh from provider and persist.
     if (MODE === "REAL") {
       return realGetDepositStatus(providerPaymentId);
     }
@@ -485,34 +484,31 @@ export const fazzAdapter: ProviderAdapter = {
     return { status, raw: { simulated: true, providerPaymentId, status } };
   },
 
-  async cancelDeposit() {
+  async cancelDeposit(_providerPaymentId?: string) {
     // no-op in both modes for now
   },
 
-  async validateBankAccount({ bankCode, accountNo }) {
+  async validateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
     const holder = "VALIDATED HOLDER";
-    return { ok: true, holder, raw: { simulated: true, bankCode, accountNo, holder } };
+    return { ok: true, holder, raw: { simulated: true, bankCode: input.bankCode, accountNo: input.accountNo, holder } };
   },
 
-  async createDisbursement({
-    tid,
-    amountCents,
-    currency,
-    bankCode,
-    accountNo,
-    holderName,
+  async createDisbursement(input: {
+    tid: string;
+    merchantId: string;
+    uid: string;
+    amountCents: number;
+    currency: string;
+    bankCode: string;
+    accountNo: string;
+    holderName: string;
   }) {
     const providerPayoutId = makeFakeId("pout");
     return {
       providerPayoutId,
       raw: {
         simulated: true,
-        tid,
-        amountCents,
-        currency,
-        bankCode,
-        accountNo,
-        holderName,
+        ...input,
       },
     };
   },

@@ -1,3 +1,4 @@
+// apps/server/src/routes/merchantApi.ts
 import { Router } from 'express';
 import { z } from 'zod';
 import multer from 'multer';
@@ -107,15 +108,11 @@ function requireApiScopes(required: string[]) {
   };
 }
 
-/** ---- helper: safe-JSON sanitizer for Prisma Json fields ----
- *  - strips undefined / NaN / Infinity
- *  - converts Date to ISO string
- *  - ensures the value is JSON-serializable
- */
+/** ---- helper: safe-JSON sanitizer for Prisma Json fields ---- */
 function toJsonSafe<T = any>(value: T): any {
   const seen = new WeakSet();
   const replacer = (_key: string, v: any) => {
-    if (v === undefined) return undefined; // JSON.stringify will drop it
+    if (v === undefined) return undefined;
     if (Number.isNaN(v) || v === Infinity || v === -Infinity) return null;
     if (v instanceof Date) return v.toISOString();
     if (typeof v === 'bigint') return String(v);
@@ -126,10 +123,8 @@ function toJsonSafe<T = any>(value: T): any {
     return v;
   };
   try {
-    // stringify then parse to fully drop undefined entries
     return JSON.parse(JSON.stringify(value, replacer));
   } catch {
-    // worst case: store stringified form
     try {
       return JSON.stringify(value, replacer);
     } catch {
@@ -138,11 +133,17 @@ function toJsonSafe<T = any>(value: T): any {
   }
 }
 
+/** ---- helper: read method from Prisma JsonValue safely ---- */
+function getMethodFromDetails(details: unknown): string {
+  if (details && typeof details === "object" && "method" in (details as any)) {
+    const m = (details as any).method;
+    if (typeof m === "string") return m;
+  }
+  return "";
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
-   EXISTING ENDPOINTS (behavior unchanged w/ HMAC); with API keys we enforce:
-   - MerchantLimits
-   - Scopes (if scopes present)
-   - Payer blocklist
+   EXISTING ENDPOINTS
 ──────────────────────────────────────────────────────────────────────────── */
 
 // Create a deposit intent and show provider instructions (ID VA static/dynamic)
@@ -246,17 +247,16 @@ merchantApiRouter.post(
             kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
           });
 
-          // Basic shape validation (guard against missing fields)
+          // Basic shape validation
           if (!deposit || !deposit.providerPaymentId || !deposit.va || !deposit.va.accountNo) {
             const dbg = isDebug ? { depositSnapshot: toJsonSafe(deposit) } : undefined;
             return { _error: 'ADAPTER_BAD_RESPONSE', prId: pr.id, ...dbg } as any;
           }
 
-          // sanitize JSON payloads before Prisma
           const instructionsJson = toJsonSafe(deposit.instructions);
           const rawCreateJson = toJsonSafe(deposit);
 
-          // persist ProviderPayment row (guard all JSON)
+          // persist ProviderPayment row
           try {
             await prisma.providerPayment.create({
               data: {
@@ -267,9 +267,7 @@ merchantApiRouter.post(
                 bankCode: deposit.va.bankCode ?? null,
                 accountNumber: deposit.va.accountNo ?? null,
                 accountName: deposit.va.accountName ?? null,
-                expiresAt: deposit.expiresAt
-                  ? new Date(deposit.expiresAt)
-                  : null,
+                expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
                 status: "pending",
                 instructionsJson,
                 rawCreateJson,
@@ -284,7 +282,6 @@ merchantApiRouter.post(
             console.error("[DEPOSIT_INTENT_ERROR]", msg, e?.__attempts || "");
             return res.status(400).json({ ok: false, error: msg });
           }
-
 
           await tgNotify(
             `🟢 New DEPOSIT intent (ID VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
@@ -338,7 +335,6 @@ merchantApiRouter.post(
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
 
-      // Special surface for PROVIDER_PERSIST_FAILED (with optional debug)
       if (message === 'PROVIDER_PERSIST_FAILED') {
         const cause = err?.cause;
         return res.status(400).json({
@@ -390,7 +386,7 @@ merchantApiRouter.post(
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
     }
 
-    const methodCode = String(pr.detailsJson?.method || '');
+    const methodCode = getMethodFromDetails(pr.detailsJson);
     const providerRes = resolveProviderByMethodCode(methodCode);
     if (!providerRes) {
       return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status, provider: { status: pp.status } });
@@ -577,7 +573,6 @@ merchantApiRouter.get(
   }
 );
 
-
 merchantApiRouter.get(
   '/payments',
   apiKeyOnly,
@@ -603,8 +598,6 @@ merchantApiRouter.get(
   }
 );
 
-
-
 // Helper: check a provider status for a payment
 merchantApiRouter.get(
   '/deposit/:id/status',
@@ -621,7 +614,8 @@ merchantApiRouter.get(
     const pp = await prisma.providerPayment.findUnique({ where: { paymentRequestId: pr.id } });
     if (!pp) return res.json({ ok: true, status: pr.status, provider: null });
 
-    const providerRes = resolveProviderByMethodCode((pr.detailsJson?.method || '').toString());
+    const methodCode = getMethodFromDetails(pr.detailsJson);
+    const providerRes = resolveProviderByMethodCode((methodCode || '').toString());
     if (!providerRes) return res.json({ ok: true, status: pr.status, provider: { status: pp.status } });
 
     const adapter = adapters[providerRes.adapterName];

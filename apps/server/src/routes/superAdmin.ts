@@ -243,19 +243,48 @@ superAdminRouter.get("/methods/:id/merchants", async (req, res, next) => {
 superAdminRouter.post("/methods/:id/merchants", async (req, res, next) => {
   try {
     const { id } = req.params;
-    const selected = req.body?.merchantIds || [];
-    const merchantIds = Array.isArray(selected) ? selected : [selected];
 
+    // New names from the updated view:
+    // - merchantIdsDeposit[]       (array of merchant IDs)
+    // - merchantIdsWithdrawal[]    (array of merchant IDs)
+    // Backward compatibility:
+    // - merchantIds[]              (the old single checkbox array)
+    //
+    // We will treat "enabled" as the union of Deposit and Withdrawal (or just the old list).
+    const rawDep = req.body?.merchantIdsDeposit ?? [];
+    const rawWdr = req.body?.merchantIdsWithdrawal ?? [];
+    const rawOld = req.body?.merchantIds ?? [];
+
+    const toArray = (v: any): string[] =>
+      Array.isArray(v) ? v : (typeof v === "string" && v) ? [v] : [];
+
+    const dep = toArray(rawDep);
+    const wdr = toArray(rawWdr);
+    const old = toArray(rawOld);
+
+    const union = new Set<string>([...dep, ...wdr, ...old].filter(Boolean));
+
+    // Clear existing links for this method
     await prisma.merchantMethod.deleteMany({ where: { methodId: id } });
 
-    const validIds = merchantIds.filter((m) => !!m);
-    if (validIds.length) {
+    // Recreate based on union (enabled=true)
+    const payload = Array.from(union).map((merchantId) => ({
+      merchantId,
+      methodId: id,
+      enabled: true,
+    }));
+
+    if (payload.length) {
       await prisma.merchantMethod.createMany({
-        data: validIds.map((merchantId: string) => ({ merchantId, methodId: id, enabled: true })),
+        data: payload,
         skipDuplicates: true,
       });
     }
 
+    // NOTE:
+    // If later you add columns like `depositEnabled` / `withdrawalEnabled` on MerchantMethod,
+    // this is where you’d persist them separately. For now we keep the single 'enabled' flag,
+    // which preserves compatibility across the rest of the app.
     res.redirect("/superadmin/methods");
   } catch (err) {
     next(err);

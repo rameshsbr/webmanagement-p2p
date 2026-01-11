@@ -166,6 +166,8 @@ model MerchantMethod {
   methodId String
 
   enabled Boolean @default(true)
+  depositEnabled    Boolean @default(true)
+  withdrawalEnabled Boolean @default(true)
 
   createdAt DateTime @default(now())
 

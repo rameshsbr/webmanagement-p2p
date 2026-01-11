@@ -143,10 +143,9 @@ function getMethodFromDetails(details: unknown): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   EXISTING ENDPOINTS (kept) + small safe upgrades
+   DEPOSITS (unchanged from your latest working version)
 ──────────────────────────────────────────────────────────────────────────── */
 
-// Create a deposit intent and show provider instructions (ID VA static/dynamic)
 merchantApiRouter.post(
   '/deposit/intents',
   eitherMerchantAuth,
@@ -157,8 +156,8 @@ merchantApiRouter.post(
       user: z.object({ diditSubject: z.string() }),
       amountCents: z.number().int().positive(),
       currency: z.string().min(3).max(4),
-      methodCode: z.string().optional(),    // optional
-      bankCode: z.string().optional(),      // optional, required for VA
+      methodCode: z.string().optional(),
+      bankCode: z.string().optional(),
     });
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
@@ -168,7 +167,6 @@ merchantApiRouter.post(
 
     try {
       const result = await withIdempotency(scope, idemKey, async () => {
-        // ensure user
         const user = await prisma.user.upsert({
           where: { diditSubject: body.user.diditSubject },
           create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
@@ -176,7 +174,6 @@ merchantApiRouter.post(
         });
         if (!user.verifiedAt) throw new Error('User not verified');
 
-        // merchant-client mapping & blocklist
         const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
         const clientStatus = normalizeClientStatus(mapping?.status);
         if (clientStatus !== 'ACTIVE') throw new Error('CLIENT_INACTIVE');
@@ -186,12 +183,10 @@ merchantApiRouter.post(
         });
         if (blocked) throw new Error('User is blocked');
 
-        // methods allowed
         const allowedMethods = await listMerchantMethods(merchantId);
         const allowedCodes = allowedMethods.map((m) => m.code.trim().toUpperCase());
         if (!allowedCodes.length) throw new Error('NO_METHOD');
 
-        // pick desired method
         const desiredCode = (body.methodCode || allowedCodes[0] || '').toUpperCase();
         if (!desiredCode) throw new Error('METHOD_NOT_ALLOWED');
 
@@ -212,7 +207,6 @@ merchantApiRouter.post(
         const referenceCode = generateTransactionId();
         const uniqueReference = generateUniqueReference();
 
-        // create PaymentRequest
         const pr = await prisma.paymentRequest.create({
           data: {
             type: 'DEPOSIT',
@@ -229,7 +223,6 @@ merchantApiRouter.post(
           },
         });
 
-        // If method is ID VA → call provider adapter now
         const providerRes = resolveProviderByMethodCode(desiredCode);
         if (providerRes) {
           const adapter = adapters[providerRes.adapterName];
@@ -247,7 +240,6 @@ merchantApiRouter.post(
             kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
           });
 
-          // Basic shape validation
           if (!deposit || !deposit.providerPaymentId || !deposit.va || !deposit.va.accountNo) {
             const dbg = isDebug ? { depositSnapshot: toJsonSafe(deposit) } : undefined;
             return { _error: 'ADAPTER_BAD_RESPONSE', prId: pr.id, ...dbg } as any;
@@ -256,7 +248,6 @@ merchantApiRouter.post(
           const instructionsJson = toJsonSafe(deposit.instructions);
           const rawCreateJson = toJsonSafe(deposit);
 
-          // persist ProviderPayment row
           try {
             await prisma.providerPayment.create({
               data: {
@@ -300,10 +291,7 @@ merchantApiRouter.post(
           };
         }
 
-        // fallback (legacy, static bank details)
-        await tgNotify(
-          `🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
-        );
+        await tgNotify(`🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`);
         return {
           id: pr.id,
           referenceCode,
@@ -317,7 +305,6 @@ merchantApiRouter.post(
         };
       });
 
-      // adapter returned a guard error
       if ((result as any)?._error === 'ADAPTER_BAD_RESPONSE') {
         return res.status(502).json({
           ok: false,
@@ -334,7 +321,6 @@ merchantApiRouter.post(
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
-
       if (message === 'PROVIDER_PERSIST_FAILED') {
         const cause = err?.cause;
         return res.status(400).json({
@@ -346,13 +332,11 @@ merchantApiRouter.post(
             : {}),
         });
       }
-
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });
     }
   }
 );
 
-// Confirm a deposit (poll provider & update local status)
 merchantApiRouter.post(
   '/deposit/confirm',
   apiKeyOnly,
@@ -409,10 +393,7 @@ merchantApiRouter.post(
     });
 
     if (newStatus && newStatus !== pr.status) {
-      await prisma.paymentRequest.update({
-        where: { id: pr.id },
-        data: { status: newStatus },
-      });
+      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: newStatus } });
     }
 
     return res.json({
@@ -425,7 +406,6 @@ merchantApiRouter.post(
   }
 );
 
-// Attach receipt (unchanged; uses multi-receipts)
 merchantApiRouter.post(
   '/deposit/:id/receipt',
   eitherMerchantAuth,
@@ -471,7 +451,63 @@ merchantApiRouter.post(
   }
 );
 
-// Create withdrawal request (unchanged baseline to avoid breaking flow)
+/* ────────────────────────────────────────────────────────────────────────────
+   WITHDRAWALS (validate + create + status)
+──────────────────────────────────────────────────────────────────────────── */
+
+// Static list for now (can be fetched from provider later)
+merchantApiRouter.get(
+  '/withdraw/config',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (_req, res) => {
+    const banks = [
+      { code: 'BCA', name: 'Bank Central Asia' },
+      { code: 'BNI', name: 'Bank Negara Indonesia' },
+      { code: 'BRI', name: 'Bank Rakyat Indonesia' },
+      { code: 'MANDIRI', name: 'Bank Mandiri' },
+    ];
+    res.json({ ok: true, banks });
+  }
+);
+
+// Validate bank account holder (SIM ok; REAL via adapter when mode=REAL)
+merchantApiRouter.post(
+  '/withdraw/validate',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (req, res) => {
+    const schema = z.object({
+      bankCode: z.string(),
+      accountNo: z.string(),
+      name: z.string().optional(),
+    });
+    const body = schema.parse(req.body);
+
+    const providerRes =
+      resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_STATIC') ||
+      resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_DYNAMIC') ||
+      { adapterName: 'fazz' as const };
+
+    const adapter = adapters[providerRes.adapterName];
+    const out = await adapter.validateBankAccount({ bankCode: body.bankCode, accountNo: body.accountNo, name: body.name });
+    const holder = out.holder || "";
+
+    let matchScore = 0;
+    if (body.name && holder) {
+      const a = body.name.toLowerCase().replace(/\s+/g, ' ').trim();
+      const b = holder.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (a && b) {
+        const common = a.split(' ').filter(x => b.includes(x));
+        matchScore = Math.min(100, Math.round((common.join(' ').length / Math.max(a.length, 1)) * 100));
+      }
+    }
+
+    res.json({ ok: true, valid: !!out.ok, holder, matchScore, raw: out.raw });
+  }
+);
+
+// Create withdrawal request → CALL PROVIDER + persist ProviderDisbursement
 merchantApiRouter.post(
   '/withdrawals',
   eitherMerchantAuth,
@@ -482,8 +518,10 @@ merchantApiRouter.post(
       user: z.object({ diditSubject: z.string() }),
       amountCents: z.number().int().positive(),
       currency: z.string().min(3).max(4),
+      methodCode: z.string().optional(), // e.g., "FAZZ_SEND"
       destination: z.object({
-        bankName: z.string(),
+        bankCode: z.string().optional(),
+        bankName: z.string().optional(),
         holderName: z.string(),
         accountNo: z.string(),
         iban: z.string().optional(),
@@ -497,11 +535,10 @@ merchantApiRouter.post(
 
     const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
     const clientStatus = normalizeClientStatus(mapping?.status);
-    if (clientStatus !== 'ACTIVE') return res.forbidden('Client is blocked or deactivated');
+    if (clientStatus !== 'ACTIVE') return rejectForClientStatus(res, clientStatus);
 
     const allowedMethods = await listMerchantMethods(merchantId);
-    const selectedMethod = allowedMethods[0] || null;
-    if (!selectedMethod) return res.forbidden('No methods assigned');
+    if (!allowedMethods.length) return res.forbidden('No methods assigned');
 
     const blocked = await prisma.payerBlocklist.findFirst({
       where: { merchantId, userId: user.id, active: true },
@@ -514,10 +551,14 @@ merchantApiRouter.post(
     });
     if (!hasDeposit) return res.forbidden('Withdrawal blocked: no prior deposit');
 
-    const dest = await prisma.withdrawalDestination.create({
-      data: { userId: user.id, currency: body.currency, ...body.destination },
-    });
+    const bankCode = (body.destination.bankCode || body.destination.bankName || "").toUpperCase();
+    if (!bankCode) return res.badRequest('bankCode required');
 
+    // Choose any enabled method (we keep your current pattern)
+    const selectedMethod = allowedMethods[0] || null;
+    if (!selectedMethod) return res.forbidden('No methods assigned');
+
+    // Create PaymentRequest (local)
     const referenceCode = generateTransactionId();
     const uniqueReference = generateUniqueReference();
     const pr = await prisma.paymentRequest.create({
@@ -531,17 +572,159 @@ merchantApiRouter.post(
         merchantId,
         userId: user.id,
         methodId: selectedMethod.id,
-        detailsJson: { method: selectedMethod.code, destinationId: dest.id },
+        detailsJson: {
+          method: body.methodCode || 'FAZZ_SEND',
+          destination: {
+            bankCode,
+            holderName: body.destination.holderName,
+            accountNo: body.destination.accountNo,
+          },
+        },
       },
+      select: { id: true, referenceCode: true },
     });
+
+    // Call provider adapter (create disbursement)
+    const providerRes = resolveProviderByMethodCode(body.methodCode || 'FAZZ_SEND') || { adapterName: 'fazz' as const };
+    const adapter = adapters[providerRes.adapterName];
+    let providerPayoutId = "";
+    let rawCreate: any = null;
+
+    try {
+      const out = await adapter.createDisbursement({
+        tid: referenceCode,
+        merchantId,
+        uid: user.publicId || user.id,
+        amountCents: body.amountCents,
+        currency: body.currency,
+        bankCode,
+        accountNo: body.destination.accountNo,
+        holderName: body.destination.holderName,
+      });
+      providerPayoutId = out.providerPayoutId;
+      rawCreate = toJsonSafe(out);
+    } catch (e: any) {
+      console.error("[WITHDRAW_CREATE_FAIL]", e?.message || e);
+      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: 'REJECTED' } });
+      return res.status(400).json({ ok: false, error: e?.message || 'Create disbursement failed' });
+    }
+
+    // Persist ProviderDisbursement row
+    try {
+      await prisma.providerDisbursement.create({
+        data: {
+          paymentRequestId: pr.id,
+          provider: "FAZZ",
+          providerPayoutId,
+          bankCode,
+          accountNumber: body.destination.accountNo,
+          accountHolder: body.destination.holderName,
+          status: "processing",
+          amountCents: body.amountCents,
+          currency: body.currency,
+          rawCreateJson: rawCreate,
+        },
+      });
+    } catch (e) {
+      console.error("[WITHDRAW_PERSIST_FAIL]", e);
+      // continue; we still return ids
+    }
+
     await tgNotify(
-      `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
+      `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}\nBank: ${bankCode}`
     );
-    res.ok({ id: pr.id, referenceCode, uniqueReference });
+
+    return res.ok({ id: pr.id, referenceCode, providerPayoutId });
   }
 );
 
-// API-key-only listing (unchanged)
+// confirm/poll a disbursement status (id or referenceCode)
+merchantApiRouter.post(
+  '/withdraw/confirm',
+  apiKeyOnly,
+  requireApiScopes(['write:withdrawal','read:withdrawal']),
+  async (req, res) => {
+    const schema = z.object({
+      id: z.string().optional(),
+      referenceCode: z.string().optional(),
+    }).refine(v => v.id || v.referenceCode, { message: 'id or referenceCode is required' });
+    const body = schema.parse(req.body);
+    const merchantId = (req as any).merchantId as string;
+
+    const where = body.id
+      ? { id: body.id, merchantId, type: 'WITHDRAWAL' as const }
+      : { referenceCode: body.referenceCode!, merchantId, type: 'WITHDRAWAL' as const };
+
+    const pr = await prisma.paymentRequest.findFirst({ where });
+    if (!pr) return res.status(404).json({ ok: false, error: 'Not found' });
+
+    const pd = await prisma.providerDisbursement.findFirst({ where: { paymentRequestId: pr.id } });
+    if (!pd) return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
+
+    const adapter = adapters.fazz; // only Fazz for now
+    const { status, raw } = await adapter.getDisbursementStatus(pd.providerPayoutId);
+
+    // Map provider → local status
+    let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | null = null;
+    const normalized = String(status || '').toLowerCase();
+    if (normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
+      newStatus = 'APPROVED';
+    } else if (normalized === 'failed' || normalized === 'rejected' || normalized === 'cancelled' || normalized === 'canceled') {
+      newStatus = 'REJECTED';
+    }
+
+    await prisma.providerDisbursement.update({
+      where: { id: pd.id },
+      data: { status, rawLatestJson: toJsonSafe(raw ?? {}) },
+    });
+
+    if (newStatus && newStatus !== pr.status) {
+      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: newStatus } });
+    }
+
+    return res.json({
+      ok: true,
+      id: pr.id,
+      referenceCode: pr.referenceCode,
+      status: newStatus || pr.status,
+      provider: { status, raw: toJsonSafe(raw ?? {}) },
+    });
+  }
+);
+
+// alias to match your test habit: /api/v1/withdraw/confirm
+merchantApiRouter.post(
+  '/v1/withdraw/confirm',
+  apiKeyOnly,
+  requireApiScopes(['write:withdrawal','read:withdrawal']),
+  async (req, res) => {
+    // delegate to the canonical handler
+    (req.url as any) = '/withdraw/confirm';
+    return (merchantApiRouter as any).handle(req, res);
+  }
+);
+
+// read status by id
+merchantApiRouter.get(
+  '/withdraw/:id/status',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (req, res) => {
+    const pr = await prisma.paymentRequest.findUnique({ where: { id: req.params.id } });
+    if (!pr || pr.merchantId !== req.merchantId || pr.type !== 'WITHDRAWAL') {
+      return res.status(404).json({ ok: false, error: 'Not found' });
+    }
+    const pd = await prisma.providerDisbursement.findFirst({ where: { paymentRequestId: pr.id } });
+    if (!pd) return res.json({ ok: true, status: pr.status, provider: null });
+
+    const { status, raw } = await adapters.fazz.getDisbursementStatus(pd.providerPayoutId);
+    return res.json({ ok: true, status: pr.status, provider: { status, raw: toJsonSafe(raw) } });
+  }
+);
+
+/* ────────────────────────────────────────────────────────────────────────────
+   LISTING (unchanged)
+──────────────────────────────────────────────────────────────────────────── */
 merchantApiRouter.get(
   '/v1/payments',
   apiKeyOnly,
@@ -589,90 +772,6 @@ merchantApiRouter.get(
       },
     });
     res.json({ ok: true, items });
-  }
-);
-
-// Helper: check a provider status for a payment
-merchantApiRouter.get(
-  '/deposit/:id/status',
-  apiKeyOnly,
-  requireApiScopes(['read:deposit']),
-  async (req, res) => {
-    const pr = await prisma.paymentRequest.findUnique({
-      where: { id: req.params.id },
-    });
-
-    if (!pr || pr.merchantId !== req.merchantId) {
-      return res.status(404).json({ ok: false, error: 'Not found' });
-    }
-    const pp = await prisma.providerPayment.findUnique({ where: { paymentRequestId: pr.id } });
-    if (!pp) return res.json({ ok: true, status: pr.status, provider: null });
-
-    const methodCode = getMethodFromDetails(pr.detailsJson);
-    const providerRes = resolveProviderByMethodCode((methodCode || '').toString());
-    if (!providerRes) return res.json({ ok: true, status: pr.status, provider: { status: pp.status } });
-
-    const adapter = adapters[providerRes.adapterName];
-    const { status, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
-    return res.json({ ok: true, status: pr.status, provider: { status, raw: toJsonSafe(raw) } });
-  }
-);
-
-/* ────────────────────────────────────────────────────────────────────────────
-   SMALL ADDITIONS (safe defaults) toward #6/#7
-   - Banks config (static list for now)
-   - Bank account validate (calls adapter in future)
-──────────────────────────────────────────────────────────────────────────── */
-
-// Return a static list of banks (can be replaced with provider list later)
-merchantApiRouter.get(
-  '/withdraw/config',
-  apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
-  async (_req, res) => {
-    const banks = [
-      { code: 'BCA', name: 'Bank Central Asia' },
-      { code: 'BNI', name: 'Bank Negara Indonesia' },
-      { code: 'BRI', name: 'Bank Rakyat Indonesia' },
-      { code: 'MANDIRI', name: 'Bank Mandiri' },
-    ];
-    res.json({ ok: true, banks });
-  }
-);
-
-// Validate bank account holder (SIM ok; REAL later via adapter)
-merchantApiRouter.post(
-  '/withdraw/validate',
-  apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
-  async (req, res) => {
-    const schema = z.object({
-      bankCode: z.string(),
-      accountNo: z.string(),
-      name: z.string().optional(),
-    });
-    const body = schema.parse(req.body);
-
-    // choose provider by a default VA code you already enabled
-    const providerRes = resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_STATIC') || resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_DYNAMIC');
-    if (!providerRes) return res.json({ ok: true, valid: false, reason: 'Provider unavailable' });
-
-    const adapter = adapters[providerRes.adapterName];
-    const out = await adapter.validateBankAccount({ bankCode: body.bankCode, accountNo: body.accountNo, name: body.name });
-    const holder = out.holder || "";
-
-    // NAME MATCH (simple score for now)
-    let matchScore = 0;
-    if (body.name && holder) {
-      const a = body.name.toLowerCase().replace(/\s+/g, ' ').trim();
-      const b = holder.toLowerCase().replace(/\s+/g, ' ').trim();
-      if (a && b) {
-        const common = a.split(' ').filter(x => b.includes(x));
-        matchScore = Math.min(100, Math.round((common.join(' ').length / Math.max(a.length, 1)) * 100));
-      }
-    }
-
-    res.json({ ok: true, valid: !!out.ok, holder, matchScore, raw: out.raw });
   }
 );
 

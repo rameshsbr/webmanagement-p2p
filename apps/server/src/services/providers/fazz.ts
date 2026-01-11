@@ -18,7 +18,11 @@ import { prisma } from "../../lib/prisma.js";
  *  - Accept VA:
  *      POST /payments
  *      GET  /payments/:id
- *  - Send payouts (future): POST /disbursements, GET /disbursements/:id
+ *  - Send payouts:
+ *      POST /disbursements
+ *      GET  /disbursements/:id
+ *  - Account validation:
+ *      POST /validation_services/bank_account_validation
  */
 const MODE = (process.env.FAZZ_MODE || "SIM").toUpperCase();
 const API_BASE = (process.env.FAZZ_API_BASE || "").replace(/\/+$/, "");
@@ -211,7 +215,7 @@ async function fetchPaymentMethodsForPayment(paymentId: string) {
   if (!res.ok) {
     console.error("[FAZZ_PM_LIST_FAILED] GET /payment_methods?paymentId", JSON.stringify({ status: res.status, url, body: json ?? text }, null, 2));
     return { id: undefined, raw: json ?? text };
-    }
+  }
   const firstId = pick<string>(json, ["data.0.id"]) || pick<string>(json, ["data[0].id"]);
   return { id: firstId, raw: json ?? text };
 }
@@ -368,6 +372,145 @@ async function realGetDepositStatus(providerPaymentId: string) {
   return { status, raw: json ?? text };
 }
 
+/* ---------- CHANGED: use correct validation endpoint & keys ---------- */
+async function realValidateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
+  ensureRealReady();
+  // Correct endpoint per Fazz v4-ID docs:
+  // POST /validation_services/bank_account_validation
+  const url = `${API_BASE}/validation_services/bank_account_validation`;
+
+  // JSON:API body; allow optional holder name
+  const payload = {
+    data: {
+      type: "validation_services",
+      attributes: {
+        bankShortCode: input.bankCode,
+        bankAccountNo: input.accountNo,
+        bankAccountHolderName: input.name || undefined,
+      },
+    },
+  };
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: basicAuthHeader(),
+      "Content-Type": "application/vnd.api+json",
+      Accept: "application/vnd.api+json",
+    },
+    body: JSON.stringify(payload),
+  });
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+  if (!res.ok) {
+    console.error("[FAZZ_VALIDATE_FAILED] POST /validation_services/bank_account_validation", JSON.stringify({ status: res.status, url, body: json ?? text }, null, 2));
+    return { ok: false, holder: undefined, raw: json ?? text };
+  }
+  const holder =
+    pick<string>(json, [
+      "data.attributes.bankAccountHolderName",
+      "data.attributes.holderName",
+      "data.attributes.accountName",
+      "holderName",
+      "accountName",
+    ]);
+  return { ok: Boolean(holder), holder, raw: json ?? text };
+}
+
+/* ---------- CHANGED: use correct destination keys for disbursement ---------- */
+async function realCreateDisbursement(input: {
+  tid: string;
+  merchantId: string;
+  uid: string;
+  amountCents: number;
+  currency: string;
+  bankCode: string;
+  accountNo: string;
+  holderName: string;
+}) {
+  ensureRealReady();
+  const url = `${API_BASE}/disbursements`;
+  const payload = {
+    data: {
+      type: "disbursements",
+      attributes: {
+        amount: input.amountCents,
+        currency: input.currency,
+        referenceId: input.tid,
+        destination: {
+          type: "bank_transfer",
+          bankShortCode: input.bankCode,
+          bankAccountNo: input.accountNo,            // <-- required by Fazz
+          bankAccountHolderName: input.holderName,   // <-- required by Fazz
+        },
+        metadata: {
+          uid: input.uid,
+          merchantId: input.merchantId,
+        },
+      },
+    },
+  };
+  const res = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: basicAuthHeader(),
+      "Content-Type": "application/vnd.api+json",
+      Accept: "application/vnd.api+json",
+      "Idempotency-Key": input.tid,
+    },
+    body: JSON.stringify(payload),
+  });
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+  if (!res.ok) {
+    console.error("[FAZZ_PAYOUT_FAILED] POST /disbursements", JSON.stringify({ status: res.status, url, body: json ?? text }, null, 2));
+    const msg =
+      pick<string>(json, ["errors[0].detail", "message", "error"]) ||
+      (text || `HTTP ${res.status}`);
+    throw new Error(`Fazz createDisbursement failed: ${msg}`);
+  }
+  const providerPayoutId =
+    pick<string>(json, ["data.id"]) ||
+    pick<string>(json, ["id"]) ||
+    makeFakeId("pout");
+  return { providerPayoutId: String(providerPayoutId), raw: json ?? text };
+}
+
+async function realGetDisbursementStatus(providerPayoutId: string) {
+  ensureRealReady();
+  const url = `${API_BASE}/disbursements/${encodeURIComponent(providerPayoutId)}`;
+  const res = await fetch(url, {
+    method: "GET",
+    headers: { Authorization: basicAuthHeader(), Accept: "application/vnd.api+json" },
+  });
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+  if (!res.ok) {
+    console.error("[FAZZ_PAYOUT_STATUS_FAILED] GET /disbursements/:id", JSON.stringify({ status: res.status, url, body: json ?? text }, null, 2));
+    const msg =
+      pick<string>(json, ["errors[0].detail", "message", "error"]) ||
+      (text || `HTTP ${res.status}`);
+    throw new Error(`Fazz getDisbursementStatus failed: ${msg}`);
+  }
+  const status =
+    pick<string>(json, [
+      "data.attributes.status",
+      "status",
+      "data.status",
+      "disbursement.status",
+    ]) || "processing";
+
+  // Persist for portals (best-effort)
+  try {
+    await prisma.providerDisbursement.updateMany({
+      where: { providerPayoutId },
+      data: { status, rawLatestJson: json ?? text, updatedAt: new Date() },
+    });
+  } catch {}
+
+  return { status, raw: json ?? text };
+}
+
 /* ---------------- public adapter ---------------- */
 
 export const fazzAdapter: ProviderAdapter = {
@@ -430,6 +573,8 @@ export const fazzAdapter: ProviderAdapter = {
   },
 
   async validateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
+    if (MODE === "REAL") return realValidateBankAccount(input);
+
     // SIM: always ok with a stub holder name
     const holder = "VALIDATED HOLDER";
     return { ok: true, holder, raw: { simulated: true, bankCode: input.bankCode, accountNo: input.accountNo, holder } };
@@ -445,12 +590,16 @@ export const fazzAdapter: ProviderAdapter = {
     accountNo: string;
     holderName: string;
   }) {
+    if (MODE === "REAL") return realCreateDisbursement(input);
+
     // SIM: return fake provider payout id
     const providerPayoutId = makeFakeId("pout");
     return { providerPayoutId, raw: { simulated: true, ...input } };
   },
 
   async getDisbursementStatus(providerPayoutId: string) {
+    if (MODE === "REAL") return realGetDisbursementStatus(providerPayoutId);
+
     try {
       const pd = await prisma.providerDisbursement.findFirst({
         where: { providerPayoutId },

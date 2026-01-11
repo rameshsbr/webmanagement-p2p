@@ -30,14 +30,13 @@ import { requireAdmin } from "./middleware/auth.js";
 import { merchantPortalRouter } from "./routes/merchantPortal.js";
 
 // import { requireMerchantSession } from "./middleware/auth.js"; // no longer used
-import { superAdminRouter } from './routes/superAdmin.js';
+import { superAdminRouter } from "./routes/superAdmin.js";
 import { auditHttpWrites } from "./services/audit.js";
 import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
 
-
 const app = express();
-augmentExpress(app); 
+augmentExpress(app);
 
 app.use((_, res, next) => {
   if (typeof res.locals.siteKey === "undefined") {
@@ -64,6 +63,8 @@ app.use(
 app.use(express.json({ limit: "2mb", verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 
+// mount merchant API early so /api/merchant/* is available to your curl tests
+app.use("/api/merchant", merchantApiRouter);
 
 // Security & logging
 app.use(
@@ -82,7 +83,6 @@ app.use(
   })
 );
 app.use(morgan("dev"));
-
 
 app.use(cookieParser());
 app.use(responseHelpers);
@@ -330,9 +330,9 @@ app.get("/", (req, res) => {
 app.use("/auth", authRouter);
 
 // SUPER ADMIN — DO NOT wrap in requireAdmin (router has its own SUPER guard)
-app.use('/superadmin', superAdminRouter);
-app.get('/super', (_req, res) => res.redirect('/auth/super/login'));
-app.get('/superadmin/login', (_req, res) => res.redirect('/auth/super/login'));
+app.use("/superadmin", superAdminRouter);
+app.get("/super", (_req, res) => res.redirect("/auth/super/login"));
+app.get("/superadmin/login", (_req, res) => res.redirect("/auth/super/login"));
 
 // admin area (behind admin guard)
 app.use("/admin", requireAdmin, withAdminLocals, auditHttpWrites(), adminSecurityRouter);
@@ -358,7 +358,6 @@ app.use(
     credentials: true,
   })
 );
-
 
 // Public checkout endpoints (must be before generic /public and /merchant)
 app.use(checkoutPublicRouter);

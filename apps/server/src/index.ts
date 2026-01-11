@@ -50,10 +50,12 @@ backfillShortIdentifiers().catch((err) => {
   console.warn("[BOOT] short-id backfill skipped", err?.message || err);
 });
 
-app.use("/webhooks/fazz",
-  express.raw({ type: "application/json" }),      // keep the body as Buffer
-  (req: any, _res, next) => {                     // expose it as req.rawBody for our verifier
-    if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body;
+app.use(
+  "/webhooks/fazz",
+  // accept all JSON-ish content types (Fazz uses application/vnd.api+json)
+  express.raw({ type: ["application/json", "application/*+json", "application/vnd.api+json"] }),
+  (req: any, _res, next) => {
+    if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body; // make raw available to router
     next();
   },
   fazzWebhookRouter

@@ -585,7 +585,7 @@ model ProviderDisbursement {
   paymentRequest   PaymentRequest? @relation(fields: [paymentRequestId], references: [id])
 
   provider         String // 'FAZZ'
-  providerPayoutId String // Fazz disbursement id
+  providerPayoutId String  @unique
   bankCode         String
   accountNumber    String
   accountHolder    String

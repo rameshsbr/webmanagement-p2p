@@ -5,13 +5,24 @@ import { prisma } from "../lib/prisma.js";
 
 export const fazzWebhookRouter = Router();
 
-/** Constant-time HMAC verification (hex digest). */
-function verifySignature(raw: Buffer, headerSig: string | undefined, secret: string | undefined) {
-  if (!raw || !headerSig || !secret) return false;
+/** Normalize header signature: allow hex, "sha256=<hex>", or "hmac-sha256=<hex>" */
+function normalizePresentedSignature(headerSig?: string) {
+  if (!headerSig) return "";
+  return String(headerSig).trim().toLowerCase()
+    .replace(/^sha256=/, "")
+    .replace(/^hmac-sha256=/, "");
+}
+
+/** Compute HMAC hex */
+function computeMac(raw: Buffer, secret: string) {
+  return crypto.createHmac("sha256", secret).update(raw).digest("hex");
+}
+
+/** Constant-time compare (string hex) */
+function safeEqualHex(a: string, b: string) {
+  if (!a || !b || a.length !== b.length) return false;
   try {
-    const mac = crypto.createHmac("sha256", secret).update(raw).digest("hex");
-    return mac.length === headerSig.length &&
-      crypto.timingSafeEqual(Buffer.from(mac), Buffer.from(headerSig));
+    return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
   } catch {
     return false;
   }
@@ -61,32 +72,44 @@ function normalizePayoutStatus(s: string) {
 }
 
 /**
- * NOTE: In index.ts you already mounted:
+ * NOTE (mounting in index.ts):
  *
  * app.use("/webhooks/fazz",
- *   express.raw({ type: "application/json" }),
+ *   express.raw({ type: ["application/json","application/*+json","application/vnd.api+json"] }),
  *   (req, _res, next) => { if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body; next(); },
  *   fazzWebhookRouter
  * );
  */
 fazzWebhookRouter.post("/", async (req: any, res) => {
+  const debug = String(req.query?.debug || "").toLowerCase() === "1" || String(req.query?.debug || "").toLowerCase() === "true";
+
   // 1) raw body & signature
-  const raw: Buffer = req.rawBody || Buffer.from([]);
-  const sig = String(req.get("x-fazz-signature") || req.get("x-signature") || "").trim();
+  const raw: Buffer = (req.rawBody && Buffer.isBuffer(req.rawBody)) ? req.rawBody : Buffer.isBuffer(req.body) ? req.body : Buffer.from([]);
+  // Accept multiple header names; some tenants use different casing
+  const headerSig =
+    req.get("x-fazz-signature") ||
+    req.get("x-xfers-signature") ||
+    req.get("x-signature") ||
+    "";
+
+  const presented = normalizePresentedSignature(headerSig);
 
   // 2) minimally parse to decide which secret to use
   let peek: any = {};
   try { peek = JSON.parse(raw.toString("utf8")); } catch {}
 
   const secret = pickSecret(req.headers || {}, peek);
-  const okSig = verifySignature(raw, sig, secret);
 
-  // 3) parse full payload (safe)
+  // 3) compute server MAC
+  const computed = secret ? computeMac(raw, secret) : "";
+  const okSig = !!secret && !!presented && safeEqualHex(computed, presented);
+
+  // 4) parse full payload (safe)
   let payload: any;
   const payloadText = raw.toString("utf8");
   try { payload = JSON.parse(payloadText); } catch { payload = { _raw: payloadText }; }
 
-  // 4) persist webhook log (store everything before state changes)
+  // 5) persist webhook log (store everything before state changes)
   let logId: string | undefined;
   try {
     const topic = String(payload?.event || payload?.type || "unknown");
@@ -94,7 +117,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       data: {
         provider: "FAZZ",
         topic,
-        signature: sig || null,
+        signature: headerSig || null,
         headersJson: req.headers as any,
         payloadJson: payload,
         processed: okSig,
@@ -108,11 +131,23 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
   }
 
   if (!okSig) {
-    // bad signature → ask provider to retry
+    if (debug) {
+      return res.status(400).json({
+        ok: false,
+        error: "bad_signature",
+        diag: {
+          contentType: req.get("content-type") || null,
+          rawLen: raw.length,
+          secretLen: secret.length,
+          presented,
+          computed,
+        },
+      });
+    }
     return res.status(400).json({ ok: false, error: "bad_signature" });
   }
 
-  // 5) route by topic/event to Accept vs Send handlers
+  // 6) route by topic/event to Accept vs Send handlers
   const topic = String(payload?.event || payload?.type || "").toLowerCase();
   const isSend = topic.includes("send") || topic.includes("disbursement") || topic.includes("payout");
 
@@ -137,13 +172,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
             data: { status: newStatus, rawLatestJson: payload },
           });
 
-          // (Optional) Update PaymentRequest if linked
-          if (pd.paymentRequestId) {
-            // You might map to WITHDRAWAL terminal states here if you keep PR linkage
-            // Skipping to avoid breaking existing flows.
-          }
-
-          // (Optional) Forward to merchant webhook using your internal service if present
+          // Optional forward to merchant webhook
           try {
             const mod = await import("../services/webhooks.js");
             if (typeof (mod as any)?.forwardMerchantWebhook === "function" && pd.paymentRequestId) {
@@ -189,7 +218,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
             });
           }
 
-          // (Optional) Forward to merchant webhook using your internal service if present
+          // Optional forward to merchant webhook
           try {
             const pr = await prisma.paymentRequest.findUnique({
               where: { id: pp.paymentRequestId },

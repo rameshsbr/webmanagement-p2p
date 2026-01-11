@@ -143,7 +143,7 @@ function getMethodFromDetails(details: unknown): string {
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
-   EXISTING ENDPOINTS
+   EXISTING ENDPOINTS (kept) + small safe upgrades
 ──────────────────────────────────────────────────────────────────────────── */
 
 // Create a deposit intent and show provider instructions (ID VA static/dynamic)
@@ -342,13 +342,7 @@ merchantApiRouter.post(
           error: 'Unable to create deposit intent',
           reason: 'PROVIDER_PERSIST_FAILED',
           ...(String(req.query?.debug || '') === '1'
-            ? {
-                prisma: {
-                  code: cause?.code,
-                  message: cause?.message,
-                  meta: cause?.meta,
-                },
-              }
+            ? { prisma: { code: cause?.code, message: cause?.message, meta: cause?.meta } }
             : {}),
         });
       }
@@ -477,7 +471,7 @@ merchantApiRouter.post(
   }
 );
 
-// Create withdrawal request (unchanged for now)
+// Create withdrawal request (unchanged baseline to avoid breaking flow)
 merchantApiRouter.post(
   '/withdrawals',
   eitherMerchantAuth,
@@ -623,3 +617,63 @@ merchantApiRouter.get(
     return res.json({ ok: true, status: pr.status, provider: { status, raw: toJsonSafe(raw) } });
   }
 );
+
+/* ────────────────────────────────────────────────────────────────────────────
+   SMALL ADDITIONS (safe defaults) toward #6/#7
+   - Banks config (static list for now)
+   - Bank account validate (calls adapter in future)
+──────────────────────────────────────────────────────────────────────────── */
+
+// Return a static list of banks (can be replaced with provider list later)
+merchantApiRouter.get(
+  '/withdraw/config',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (_req, res) => {
+    const banks = [
+      { code: 'BCA', name: 'Bank Central Asia' },
+      { code: 'BNI', name: 'Bank Negara Indonesia' },
+      { code: 'BRI', name: 'Bank Rakyat Indonesia' },
+      { code: 'MANDIRI', name: 'Bank Mandiri' },
+    ];
+    res.json({ ok: true, banks });
+  }
+);
+
+// Validate bank account holder (SIM ok; REAL later via adapter)
+merchantApiRouter.post(
+  '/withdraw/validate',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (req, res) => {
+    const schema = z.object({
+      bankCode: z.string(),
+      accountNo: z.string(),
+      name: z.string().optional(),
+    });
+    const body = schema.parse(req.body);
+
+    // choose provider by a default VA code you already enabled
+    const providerRes = resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_STATIC') || resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_DYNAMIC');
+    if (!providerRes) return res.json({ ok: true, valid: false, reason: 'Provider unavailable' });
+
+    const adapter = adapters[providerRes.adapterName];
+    const out = await adapter.validateBankAccount({ bankCode: body.bankCode, accountNo: body.accountNo, name: body.name });
+    const holder = out.holder || "";
+
+    // NAME MATCH (simple score for now)
+    let matchScore = 0;
+    if (body.name && holder) {
+      const a = body.name.toLowerCase().replace(/\s+/g, ' ').trim();
+      const b = holder.toLowerCase().replace(/\s+/g, ' ').trim();
+      if (a && b) {
+        const common = a.split(' ').filter(x => b.includes(x));
+        matchScore = Math.min(100, Math.round((common.join(' ').length / Math.max(a.length, 1)) * 100));
+      }
+    }
+
+    res.json({ ok: true, valid: !!out.ok, holder, matchScore, raw: out.raw });
+  }
+);
+
+export default merchantApiRouter;

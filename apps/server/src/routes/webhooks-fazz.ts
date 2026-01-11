@@ -1,3 +1,4 @@
+// apps/server/src/routes/webhooks-fazz.ts
 import { Router } from "express";
 import crypto from "node:crypto";
 import { prisma } from "../lib/prisma.js";
@@ -48,7 +49,7 @@ function mapDepositStatus(provider: string): "PENDING" | "SUBMITTED" | "APPROVED
   const s = String(provider || "").toLowerCase();
   if (["paid", "success", "succeeded", "completed"].includes(s)) return "APPROVED";
   if (["failed", "cancelled", "canceled", "expired", "rejected"].includes(s)) return "REJECTED";
-  return null; // leave as pending-ish
+  return null;
 }
 
 /** Normalize disbursement status for storage */
@@ -60,15 +61,13 @@ function normalizePayoutStatus(s: string) {
 }
 
 /**
- * IMPORTANT: In index.ts you already mounted:
+ * NOTE: In index.ts you already mounted:
  *
  * app.use("/webhooks/fazz",
  *   express.raw({ type: "application/json" }),
  *   (req, _res, next) => { if (!req.rawBody && Buffer.isBuffer(req.body)) req.rawBody = req.body; next(); },
  *   fazzWebhookRouter
  * );
- *
- * That’s perfect. Keep it exactly like that.
  */
 fazzWebhookRouter.post("/", async (req: any, res) => {
   // 1) raw body & signature
@@ -87,7 +86,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
   const payloadText = raw.toString("utf8");
   try { payload = JSON.parse(payloadText); } catch { payload = { _raw: payloadText }; }
 
-  // 4) persist webhook log (idempotent-ish; we store everything before state changes)
+  // 4) persist webhook log (store everything before state changes)
   let logId: string | undefined;
   try {
     const topic = String(payload?.event || payload?.type || "unknown");
@@ -128,17 +127,39 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       if (providerPayoutId) {
         const pd = await prisma.providerDisbursement.findFirst({
           where: { provider: "FAZZ", providerPayoutId },
+          select: { id: true, status: true, paymentRequestId: true },
         });
 
         if (pd) {
+          const newStatus = normalizePayoutStatus(providerStatus || "processing");
           await prisma.providerDisbursement.update({
             where: { id: pd.id },
-            data: {
-              status: normalizePayoutStatus(providerStatus || "processing"),
-              rawLatestJson: payload,
-            },
+            data: { status: newStatus, rawLatestJson: payload },
           });
-          // TODO (later): ledger side-effects for completed/failed
+
+          // (Optional) Update PaymentRequest if linked
+          if (pd.paymentRequestId) {
+            // You might map to WITHDRAWAL terminal states here if you keep PR linkage
+            // Skipping to avoid breaking existing flows.
+          }
+
+          // (Optional) Forward to merchant webhook using your internal service if present
+          try {
+            const mod = await import("../services/webhooks.js");
+            if (typeof (mod as any)?.forwardMerchantWebhook === "function" && pd.paymentRequestId) {
+              const pr = await prisma.paymentRequest.findUnique({
+                where: { id: pd.paymentRequestId },
+                select: { merchantId: true, referenceCode: true, type: true },
+              });
+              if (pr) {
+                await (mod as any).forwardMerchantWebhook({
+                  merchantId: pr.merchantId,
+                  topic: "disbursement.updated",
+                  payload: { provider: "FAZZ", providerPayoutId, status: newStatus, referenceCode: pr.referenceCode },
+                }).catch(() => {});
+              }
+            }
+          } catch {}
         }
       }
     } else {
@@ -151,15 +172,13 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       if (providerPaymentId) {
         const pp = await prisma.providerPayment.findFirst({
           where: { provider: "FAZZ", providerPaymentId },
+          select: { paymentRequestId: true },
         });
 
         if (pp) {
           await prisma.providerPayment.update({
             where: { paymentRequestId: pp.paymentRequestId },
-            data: {
-              status: providerStatus || "unknown",
-              rawLatestJson: payload,
-            },
+            data: { status: providerStatus || "unknown", rawLatestJson: payload },
           });
 
           const mapped = providerStatus ? mapDepositStatus(providerStatus) : null;
@@ -169,6 +188,28 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
               data: { status: mapped },
             });
           }
+
+          // (Optional) Forward to merchant webhook using your internal service if present
+          try {
+            const pr = await prisma.paymentRequest.findUnique({
+              where: { id: pp.paymentRequestId },
+              select: { merchantId: true, referenceCode: true, type: true },
+            });
+            const mod = await import("../services/webhooks.js");
+            if (pr && typeof (mod as any)?.forwardMerchantWebhook === "function") {
+              await (mod as any).forwardMerchantWebhook({
+                merchantId: pr.merchantId,
+                topic: "payment.updated",
+                payload: {
+                  provider: "FAZZ",
+                  providerPaymentId,
+                  status: providerStatus || "unknown",
+                  referenceCode: pr.referenceCode,
+                  mappedStatus: mapped,
+                },
+              }).catch(() => {});
+            }
+          } catch {}
         }
       }
     }

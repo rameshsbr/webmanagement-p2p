@@ -24,10 +24,12 @@ export type DepositIntentResult = {
 };
 
 export interface ProviderAdapter {
+  /** Accept/VA */
   createDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult>;
   getDepositStatus(providerPaymentId: string): Promise<{ status: string; raw: any }>;
   cancelDeposit?(providerPaymentId: string): Promise<void>;
 
+  /** Send/disbursements */
   validateBankAccount(input: {
     bankCode: string;
     accountNo: string;

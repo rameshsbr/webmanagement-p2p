@@ -99,11 +99,11 @@ async function apiKeyOnly(req: any, res: any, next: any) {
 
 function requireApiScopes(required: string[]) {
   const requiredSet = new Set(required);
-  return function (req: any, res: any, next: any) {
+  return function (req: any, _res: any, next: any) {
     const scopes: string[] | undefined = req.apiKeyScopes;
     if (!scopes) return next();
     const hasAll = Array.from(requiredSet).every((s) => scopes.includes(s));
-    if (!hasAll) return res.status(403).json({ ok: false, error: 'Insufficient API scope' });
+    if (!hasAll) return _res.status(403).json({ ok: false, error: 'Insufficient API scope' });
     next();
   };
 }
@@ -606,7 +606,9 @@ merchantApiRouter.post(
     } catch (e: any) {
       console.error("[WITHDRAW_CREATE_FAIL]", e?.message || e);
       await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: 'REJECTED' } });
-      return res.status(400).json({ ok: false, error: e?.message || 'Create disbursement failed' });
+      // Surface exact provider error string if present
+      const msg = String(e?.message || 'Create disbursement failed');
+      return res.status(400).json({ ok: false, error: msg });
     }
 
     // Persist ProviderDisbursement row
@@ -698,7 +700,6 @@ merchantApiRouter.post(
   apiKeyOnly,
   requireApiScopes(['write:withdrawal','read:withdrawal']),
   async (req, res) => {
-    // delegate to the canonical handler
     (req.url as any) = '/withdraw/confirm';
     return (merchantApiRouter as any).handle(req, res);
   }

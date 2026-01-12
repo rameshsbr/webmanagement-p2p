@@ -15,6 +15,7 @@ import { applyMerchantLimits } from '../middleware/merchantLimits.js';
 import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus } from '../services/merchantClient.js';
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { adapters } from '../services/providers/index.js';
+import { fazzGetBalance } from '../services/providers/fazz.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -452,7 +453,7 @@ merchantApiRouter.post(
 );
 
 /* ────────────────────────────────────────────────────────────────────────────
-   WITHDRAWALS (validate + create + status)
+   WITHDRAWALS (validate + create + status + balance)
 ──────────────────────────────────────────────────────────────────────────── */
 
 // Static list for now (can be fetched from provider later)
@@ -468,6 +469,24 @@ merchantApiRouter.get(
       { code: 'MANDIRI', name: 'Bank Mandiri' },
     ];
     res.json({ ok: true, banks });
+  }
+);
+
+// NEW: Balance (provider overview)
+merchantApiRouter.get(
+  '/withdraw/balance',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (_req, res) => {
+    try {
+      const b = await fazzGetBalance();
+      return res.json({
+        ok: true,
+        balance: { total: b.total, available: b.available, pending: b.pending },
+      });
+    } catch (e: any) {
+      return res.status(400).json({ ok: false, error: e?.message || 'Unable to fetch balance' });
+    }
   }
 );
 
@@ -701,6 +720,17 @@ merchantApiRouter.post(
   requireApiScopes(['write:withdrawal','read:withdrawal']),
   async (req, res) => {
     (req.url as any) = '/withdraw/confirm';
+    return (merchantApiRouter as any).handle(req, res);
+  }
+);
+
+// OPTIONAL alias for balance under /v1 as well
+merchantApiRouter.get(
+  '/v1/withdraw/balance',
+  apiKeyOnly,
+  requireApiScopes(['read:withdrawal']),
+  async (req, res) => {
+    (req.url as any) = '/withdraw/balance';
     return (merchantApiRouter as any).handle(req, res);
   }
 );

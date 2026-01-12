@@ -566,6 +566,30 @@ async function realGetDisbursementStatus(providerPayoutId: string) {
   return { status, raw: json };
 }
 
+/* ---------------- Balance (new) ---------------- */
+
+export type FazzBalance = { total: string; available: string; pending: string; raw?: any };
+
+async function realGetBalance(): Promise<FazzBalance> {
+  ensureRealReady();
+  const res = await fazzGet(`/overviews/balance_overview`);
+  if (!res.ok) {
+    const msg = renderProviderError(res, `HTTP ${res.status}`);
+    throw new Error(`Fazz getBalance failed: ${msg}`);
+  }
+  const total = pick<string>(res.json, ["data.attributes.totalBalance"]) ?? "0.0";
+  const available = pick<string>(res.json, ["data.attributes.availableBalance"]) ?? "0.0";
+  const pending = pick<string>(res.json, ["data.attributes.pendingBalance"]) ?? "0.0";
+  return { total, available, pending, raw: res.json };
+}
+
+/** Public helper the router can call without changing ProviderAdapter typing */
+export async function fazzGetBalance(): Promise<FazzBalance> {
+  if (MODE === "REAL") return realGetBalance();
+  // SIM default
+  return { total: "1000000.0", available: "1000000.0", pending: "0.0", raw: { simulated: true } };
+}
+
 /* ---------------- public adapter ---------------- */
 
 export const fazzAdapter: ProviderAdapter = {

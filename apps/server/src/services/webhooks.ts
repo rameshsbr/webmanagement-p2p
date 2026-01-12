@@ -1,5 +1,6 @@
 import fetch from 'node-fetch';
 import { prisma } from '../lib/prisma.js';
+export const forwardMerchantWebhook = notifyMerchant;
 export async function notifyMerchant(paymentId: string) {
   const pr = await prisma.paymentRequest.findUnique({
     where: { id: paymentId },

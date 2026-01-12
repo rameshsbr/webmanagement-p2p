@@ -63,7 +63,7 @@ async function verifyApiKey(req: any): Promise<VerifiedKey | null> {
   if (!tscmp(stored, pk.secret)) return null;
 
   const merchantStatus = String(rec.merchant?.status || '').toLowerCase();
-  if (!rec.merchant?.active || merchantStatus === 'suspended' || merchantStatus === 'closed') {
+  if (!rec.merchant?.active || ['suspended','closed'].includes(merchantStatus)) {
     return null;
   }
 
@@ -141,6 +141,23 @@ function getMethodFromDetails(details: unknown): string {
     if (typeof m === "string") return m;
   }
   return "";
+}
+
+/** ---- NEW: provider status normalization + local mapping ---- */
+type ProviderNorm = 'processing' | 'completed' | 'failed';
+type LocalStatus = 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
+
+function normalizeProviderStatus(s: unknown): ProviderNorm {
+  const t = String(s || '').toLowerCase();
+  if (['completed', 'success', 'succeeded'].includes(t)) return 'completed';
+  if (['failed', 'rejected', 'cancelled', 'canceled', 'error'].includes(t)) return 'failed';
+  return 'processing';
+}
+
+function mapProviderToLocal(p: ProviderNorm): LocalStatus {
+  if (p === 'completed') return 'APPROVED';
+  if (p === 'failed') return 'REJECTED';
+  return 'PENDING';
 }
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -380,9 +397,9 @@ merchantApiRouter.post(
 
     let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | null = null;
     const normalized = String(providerStatus || '').toLowerCase();
-    if (normalized === 'paid' || normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
+    if (['paid','completed','success','succeeded'].includes(normalized)) {
       newStatus = 'APPROVED';
-    } else if (normalized === 'failed' || normalized === 'cancelled' || normalized === 'canceled' || normalized === 'rejected' || normalized === 'expired') {
+    } else if (['failed','cancelled','canceled','rejected','expired'].includes(normalized)) {
       newStatus = 'REJECTED';
     } else {
       newStatus = null;
@@ -456,19 +473,56 @@ merchantApiRouter.post(
    WITHDRAWALS (validate + create + status + balance)
 ──────────────────────────────────────────────────────────────────────────── */
 
-// Static list for now (can be fetched from provider later)
+// DYNAMIC banks in REAL mode, static fallback otherwise
 merchantApiRouter.get(
   '/withdraw/config',
   apiKeyOnly,
   requireApiScopes(['read:withdrawal']),
   async (_req, res) => {
-    const banks = [
+    const STATIC_BANKS = [
       { code: 'BCA', name: 'Bank Central Asia' },
       { code: 'BNI', name: 'Bank Negara Indonesia' },
       { code: 'BRI', name: 'Bank Rakyat Indonesia' },
       { code: 'MANDIRI', name: 'Bank Mandiri' },
     ];
-    res.json({ ok: true, banks });
+
+    const mode = (process.env.FAZZ_MODE || 'SIM').toUpperCase();
+    if (mode !== 'REAL') return res.json({ ok: true, banks: STATIC_BANKS, source: 'static' });
+
+    try {
+      const base = (process.env.FAZZ_API_BASE || '').replace(/\/+$/, '');
+      const key = process.env.FAZZ_API_KEY || '';
+      const secret = process.env.FAZZ_API_SECRET || '';
+      if (!base || !key || !secret) {
+        return res.json({ ok: true, banks: STATIC_BANKS, source: 'static' });
+      }
+
+      const auth = Buffer.from(`${key}:${secret}`).toString('base64');
+      const r = await fetch(`${base}/banks`, {
+        method: 'GET',
+        headers: {
+          Authorization: `Basic ${auth}`,
+          Accept: 'application/vnd.api+json',
+        },
+      });
+
+      const j: any = await r.json().catch(() => ({} as any));
+      if (r.ok && Array.isArray(j?.data)) {
+        const banks = j.data
+          .map((b: any) => {
+            const a = b?.attributes || {};
+            return {
+              code: a.shortCode || a.bankShortCode || b?.id || a.code || '',
+              name: a.name || a.bankName || a.label || a.shortName || a.fullName || 'Unknown',
+            };
+          })
+          .filter((x: any) => x.code);
+        return res.json({ ok: true, banks, source: 'fazz' });
+      }
+    } catch {
+      // fall through
+    }
+    return res.json({ ok: true, banks: STATIC_BANKS, source: 'static' });
   }
 );
 
@@ -526,7 +580,7 @@ merchantApiRouter.post(
   }
 );
 
-// Create withdrawal request → CALL PROVIDER + persist ProviderDisbursement
+// Create withdrawal request → CALL PROVIDER + persist ProviderDisbursement (NOW IDEMPOTENT)
 merchantApiRouter.post(
   '/withdrawals',
   eitherMerchantAuth,
@@ -549,113 +603,131 @@ merchantApiRouter.post(
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
 
-    const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
-    if (!user || !user.verifiedAt) return res.forbidden('User not verified');
+    const idemKey =
+      req.header('Idempotency-Key') ||
+      req.header('x-idempotency-key') ||
+      undefined;
 
-    const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
-    const clientStatus = normalizeClientStatus(mapping?.status);
-    if (clientStatus !== 'ACTIVE') return rejectForClientStatus(res, clientStatus);
-
-    const allowedMethods = await listMerchantMethods(merchantId);
-    if (!allowedMethods.length) return res.forbidden('No methods assigned');
-
-    const blocked = await prisma.payerBlocklist.findFirst({
-      where: { merchantId, userId: user.id, active: true },
-      select: { id: true },
-    });
-    if (blocked) return res.forbidden('User is blocked');
-
-    const hasDeposit = await prisma.paymentRequest.findFirst({
-      where: { userId: user.id, merchantId, type: 'DEPOSIT', status: 'APPROVED' },
-    });
-    if (!hasDeposit) return res.forbidden('Withdrawal blocked: no prior deposit');
-
+    // compute scope so the same withdrawal won’t be created twice
     const bankCode = (body.destination.bankCode || body.destination.bankName || "").toUpperCase();
-    if (!bankCode) return res.badRequest('bankCode required');
+    const scope = `withdraw:${[
+      merchantId,
+      body.user.diditSubject,
+      body.currency.toUpperCase(),
+      String(body.amountCents),
+      bankCode,
+      body.destination.accountNo,
+    ].join(':')}`;
 
-    // Choose any enabled method (we keep your current pattern)
-    const selectedMethod = allowedMethods[0] || null;
-    if (!selectedMethod) return res.forbidden('No methods assigned');
+    const result = await withIdempotency(scope, idemKey, async () => {
+      const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
+      if (!user || !user.verifiedAt) return res.forbidden('User not verified');
 
-    // Create PaymentRequest (local)
-    const referenceCode = generateTransactionId();
-    const uniqueReference = generateUniqueReference();
-    const pr = await prisma.paymentRequest.create({
-      data: {
-        type: 'WITHDRAWAL',
-        status: 'PENDING',
-        amountCents: body.amountCents,
-        currency: body.currency,
-        referenceCode,
-        uniqueReference,
-        merchantId,
-        userId: user.id,
-        methodId: selectedMethod.id,
-        detailsJson: {
-          method: body.methodCode || 'FAZZ_SEND',
-          destination: {
-            bankCode,
-            holderName: body.destination.holderName,
-            accountNo: body.destination.accountNo,
-          },
-        },
-      },
-      select: { id: true, referenceCode: true },
-    });
+      const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
+      const clientStatus = normalizeClientStatus(mapping?.status);
+      if (clientStatus !== 'ACTIVE') return rejectForClientStatus(res, clientStatus);
 
-    // Call provider adapter (create disbursement)
-    const providerRes = resolveProviderByMethodCode(body.methodCode || 'FAZZ_SEND') || { adapterName: 'fazz' as const };
-    const adapter = adapters[providerRes.adapterName];
-    let providerPayoutId = "";
-    let rawCreate: any = null;
+      const allowedMethods = await listMerchantMethods(merchantId);
+      if (!allowedMethods.length) return res.forbidden('No methods assigned');
 
-    try {
-      const out = await adapter.createDisbursement({
-        tid: referenceCode,
-        merchantId,
-        uid: user.publicId || user.id,
-        amountCents: body.amountCents,
-        currency: body.currency,
-        bankCode,
-        accountNo: body.destination.accountNo,
-        holderName: body.destination.holderName,
+      const blocked = await prisma.payerBlocklist.findFirst({
+        where: { merchantId, userId: user.id, active: true },
+        select: { id: true },
       });
-      providerPayoutId = out.providerPayoutId;
-      rawCreate = toJsonSafe(out);
-    } catch (e: any) {
-      console.error("[WITHDRAW_CREATE_FAIL]", e?.message || e);
-      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: 'REJECTED' } });
-      // Surface exact provider error string if present
-      const msg = String(e?.message || 'Create disbursement failed');
-      return res.status(400).json({ ok: false, error: msg });
-    }
+      if (blocked) return res.forbidden('User is blocked');
 
-    // Persist ProviderDisbursement row
-    try {
-      await prisma.providerDisbursement.create({
+      const hasDeposit = await prisma.paymentRequest.findFirst({
+        where: { userId: user.id, merchantId, type: 'DEPOSIT', status: 'APPROVED' },
+      });
+      if (!hasDeposit) return res.forbidden('Withdrawal blocked: no prior deposit');
+
+      if (!bankCode) return res.badRequest('bankCode required');
+
+      // Choose any enabled method (keep your pattern)
+      const selectedMethod = allowedMethods[0] || null;
+      if (!selectedMethod) return res.forbidden('No methods assigned');
+
+      // Create PaymentRequest (local)
+      const referenceCode = generateTransactionId();
+      const uniqueReference = generateUniqueReference();
+      const pr = await prisma.paymentRequest.create({
         data: {
-          paymentRequestId: pr.id,
-          provider: "FAZZ",
-          providerPayoutId,
-          bankCode,
-          accountNumber: body.destination.accountNo,
-          accountHolder: body.destination.holderName,
-          status: "processing",
+          type: 'WITHDRAWAL',
+          status: 'PENDING',
           amountCents: body.amountCents,
           currency: body.currency,
-          rawCreateJson: rawCreate,
+          referenceCode,
+          uniqueReference,
+          merchantId,
+          userId: user.id,
+          methodId: selectedMethod.id,
+          detailsJson: {
+            method: body.methodCode || 'FAZZ_SEND',
+            destination: {
+              bankCode,
+              holderName: body.destination.holderName,
+              accountNo: body.destination.accountNo,
+            },
+          },
         },
+        select: { id: true, referenceCode: true },
       });
-    } catch (e) {
-      console.error("[WITHDRAW_PERSIST_FAIL]", e);
-      // continue; we still return ids
-    }
 
-    await tgNotify(
-      `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}\nBank: ${bankCode}`
-    );
+      // Call provider adapter (create disbursement)
+      const providerRes = resolveProviderByMethodCode(body.methodCode || 'FAZZ_SEND') || { adapterName: 'fazz' as const };
+      const adapter = adapters[providerRes.adapterName];
+      let providerPayoutId = "";
+      let rawCreate: any = null;
 
-    return res.ok({ id: pr.id, referenceCode, providerPayoutId });
+      try {
+        const out = await adapter.createDisbursement({
+          tid: referenceCode,
+          merchantId,
+          uid: user.publicId || user.id,
+          amountCents: body.amountCents,
+          currency: body.currency,
+          bankCode,
+          accountNo: body.destination.accountNo,
+          holderName: body.destination.holderName,
+        });
+        providerPayoutId = out.providerPayoutId;
+        rawCreate = toJsonSafe(out);
+      } catch (e: any) {
+        console.error("[WITHDRAW_CREATE_FAIL]", e?.message || e);
+        await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: 'REJECTED' } });
+        const msg = String(e?.message || 'Create disbursement failed');
+        return res.status(400).json({ ok: false, error: msg });
+      }
+
+      // Persist ProviderDisbursement row
+      try {
+        await prisma.providerDisbursement.create({
+          data: {
+            paymentRequestId: pr.id,
+            provider: "FAZZ",
+            providerPayoutId,
+            bankCode,
+            accountNumber: body.destination.accountNo,
+            accountHolder: body.destination.holderName,
+            status: "processing",
+            amountCents: body.amountCents,
+            currency: body.currency,
+            rawCreateJson: rawCreate,
+          },
+        });
+      } catch (e) {
+        console.error("[WITHDRAW_PERSIST_FAIL]", e);
+      }
+
+      await tgNotify(
+        `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}\nBank: ${bankCode}`
+      );
+
+      return { id: pr.id, referenceCode, providerPayoutId };
+    });
+
+    if (!result || (result as any).ok === false) return; // early Response from inside callback
+    return res.ok(result);
   }
 );
 
@@ -682,33 +754,69 @@ merchantApiRouter.post(
     const pd = await prisma.providerDisbursement.findFirst({ where: { paymentRequestId: pr.id } });
     if (!pd) return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
 
+    // flags
+    const skipPoll =
+      String(req.query?.skipPoll || '') === '1' ||
+      process.env.WITHDRAW_CONFIRM_SKIP_POLL === '1';
+    const forceSync =
+      String(req.query?.forceSync || '') === '1' ||
+      process.env.SYNC_PAYOUT_TO_PROVIDER === '1';
+    const allowDowngrade = process.env.ALLOW_PAYOUT_DOWNGRADE === '1';
+
+    // Helper to apply a candidate status with downgrade rules
+    const maybeApply = async (candidate: LocalStatus | null) => {
+      if (!candidate || candidate === pr.status) return;
+      if (forceSync) {
+        await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: candidate } });
+        return;
+      }
+      // No force: avoid downgrades unless explicitly allowed
+      const isDowngrade =
+        (pr.status === 'APPROVED' && candidate !== 'APPROVED') ||
+        (pr.status === 'REJECTED' && candidate !== 'REJECTED');
+      if (isDowngrade && !allowDowngrade) return;
+      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: candidate } });
+    };
+
+    if (skipPoll) {
+      // Use last known providerDisbursement.status (normalized) and sync locally if configured
+      const providerNorm = normalizeProviderStatus(pd.status);
+      const candidate = mapProviderToLocal(providerNorm);
+      await maybeApply(candidate);
+      return res.json({
+        ok: true,
+        id: pr.id,
+        referenceCode: pr.referenceCode,
+        status: (candidate ?? pr.status) || pr.status,
+        provider: { status: providerNorm },
+      });
+    }
+
+    // Poll provider (REAL behavior)
     const adapter = adapters.fazz; // only Fazz for now
     const { status, raw } = await adapter.getDisbursementStatus(pd.providerPayoutId);
 
-    // Map provider → local status
-    let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | null = null;
-    const normalized = String(status || '').toLowerCase();
-    if (normalized === 'completed' || normalized === 'success' || normalized === 'succeeded') {
-      newStatus = 'APPROVED';
-    } else if (normalized === 'failed' || normalized === 'rejected' || normalized === 'cancelled' || normalized === 'canceled') {
-      newStatus = 'REJECTED';
-    }
-
+    const providerNorm = normalizeProviderStatus(status);
+    // Store normalized status always
     await prisma.providerDisbursement.update({
       where: { id: pd.id },
-      data: { status, rawLatestJson: toJsonSafe(raw ?? {}) },
+      data: { status: providerNorm, rawLatestJson: toJsonSafe(raw ?? {}) },
     });
 
-    if (newStatus && newStatus !== pr.status) {
-      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: newStatus } });
-    }
+    // Decide local candidate; with forceSync we also allow PENDING from "processing"
+    const candidate: LocalStatus | null =
+      providerNorm === 'completed' ? 'APPROVED'
+      : providerNorm === 'failed' ? 'REJECTED'
+      : (forceSync ? 'PENDING' : null);
+
+    await maybeApply(candidate);
 
     return res.json({
       ok: true,
       id: pr.id,
       referenceCode: pr.referenceCode,
-      status: newStatus || pr.status,
-      provider: { status, raw: toJsonSafe(raw ?? {}) },
+      status: candidate || pr.status,
+      provider: { status: providerNorm, raw: toJsonSafe(raw ?? {}) },
     });
   }
 );
@@ -749,7 +857,8 @@ merchantApiRouter.get(
     if (!pd) return res.json({ ok: true, status: pr.status, provider: null });
 
     const { status, raw } = await adapters.fazz.getDisbursementStatus(pd.providerPayoutId);
-    return res.json({ ok: true, status: pr.status, provider: { status, raw: toJsonSafe(raw) } });
+    const providerNorm = normalizeProviderStatus(status);
+    return res.json({ ok: true, status: pr.status, provider: { status: providerNorm, raw: toJsonSafe(raw) } });
   }
 );
 

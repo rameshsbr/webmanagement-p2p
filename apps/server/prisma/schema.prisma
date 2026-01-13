@@ -567,7 +567,7 @@ model ProviderPayment {
   paymentRequest   PaymentRequest @relation(fields: [paymentRequestId], references: [id])
 
   provider          String // 'FAZZ'
-  providerPaymentId String // Fazz payment id
+  providerPaymentId String @unique   // Fazz payment id
   methodType        String // 'virtual_bank_account'
   bankCode          String?
   accountNumber     String?

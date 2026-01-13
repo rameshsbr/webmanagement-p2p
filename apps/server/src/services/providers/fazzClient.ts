@@ -11,7 +11,6 @@ function basicAuth(): string {
 }
 
 type Jsonish = Record<string, any> | any;
-
 type Init = RequestInit & { json?: Jsonish };
 
 export async function fazzFetch(path: string, init?: Init): Promise<any> {
@@ -52,4 +51,32 @@ export async function fazzFetch(path: string, init?: Init): Promise<any> {
   }
 
   return data ?? text;
+}
+
+/** ---------- Helpers for sandbox tasks ---------- */
+
+/** Mark a VA payment as settled (sandbox only). */
+export async function settlePaymentTask(paymentId: string, idemKey?: string) {
+  return fazzFetch(`/payments/${encodeURIComponent(paymentId)}/tasks`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idemKey || `task-${Date.now()}` },
+    json: { data: { type: "task", attributes: { action: "settle" } } },
+  });
+}
+
+/** Mark a disbursement as completed (sandbox only). */
+export async function completeDisbursementTask(disbursementId: string, idemKey?: string) {
+  return fazzFetch(`/disbursements/${encodeURIComponent(disbursementId)}/tasks`, {
+    method: "POST",
+    headers: { "Idempotency-Key": idemKey || `task-${Date.now()}` },
+    json: { data: { type: "task", attributes: { action: "complete" } } },
+  });
+}
+
+/** Convenience getters (useful for audits/tests) */
+export async function getPayment(paymentId: string) {
+  return fazzFetch(`/payments/${encodeURIComponent(paymentId)}`, { method: "GET" });
+}
+export async function getDisbursement(disbursementId: string) {
+  return fazzFetch(`/disbursements/${encodeURIComponent(disbursementId)}`, { method: "GET" });
 }

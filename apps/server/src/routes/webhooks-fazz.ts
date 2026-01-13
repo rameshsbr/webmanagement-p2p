@@ -78,17 +78,38 @@ function extractPaymentLikeIdentifiers(payload: any) {
   return { id, status, referenceId, topic, typeLower };
 }
 
-/** Choose webhook secret:
- *  - If event/topic/type looks like disbursement/payout → SEND secret
- *  - Else → ACCEPT secret
- *  - Fallback to FAZZ_WEBHOOK_SECRET if present
+/** Choose webhook secret (now with aliases):
+ *  - If event/topic/type looks like disbursement/payout → SEND secret(s)
+ *  - Else → ACCEPT secret(s)
+ *  - If a *unified* secret is present, it wins
+ *  Supported envs:
+ *    FAZZ_WEBHOOK_SIGNING_SECRET | FAZZ_WEBHOOK_SECRET (unified)
+ *    FAZZ_ACCEPT_WEBHOOK_SIGNING_SECRET | FAZZ_ACCEPT_WEBHOOK_SECRET
+ *    FAZZ_SEND_WEBHOOK_SIGNING_SECRET   | FAZZ_SEND_WEBHOOK_SECRET
  */
 function pickSecret(headers: Record<string, any>, payload: any) {
-  const accept = process.env.FAZZ_ACCEPT_WEBHOOK_SECRET || "";
-  const send   = process.env.FAZZ_SEND_WEBHOOK_SECRET || "";
-  const unified = process.env.FAZZ_WEBHOOK_SECRET || "";
+  const unified =
+    process.env.FAZZ_WEBHOOK_SIGNING_SECRET ||
+    process.env.FAZZ_WEBHOOK_SECRET ||
+    "";
 
-  const topicHeader = String(headers["x-fazz-topic"] || headers["x-topic"] || "").toLowerCase();
+  const accept =
+    process.env.FAZZ_ACCEPT_WEBHOOK_SIGNING_SECRET ||
+    process.env.FAZZ_ACCEPT_WEBHOOK_SECRET ||
+    "";
+
+  const send =
+    process.env.FAZZ_SEND_WEBHOOK_SIGNING_SECRET ||
+    process.env.FAZZ_SEND_WEBHOOK_SECRET ||
+    "";
+
+  const topicHeader = String(
+    headers["x-fazz-topic"] ||
+    headers["x-xfers-topic"] ||
+    headers["x-topic"] ||
+    ""
+  ).toLowerCase();
+
   const event = String(payload?.event || payload?.type || "").toLowerCase();
   const resType = String(payload?.data?.type || "").toLowerCase();
 
@@ -102,7 +123,7 @@ function pickSecret(headers: Record<string, any>, payload: any) {
     resType.includes("disbursement") ||
     resType.includes("payout");
 
-  if (unified) return unified; // single secret wins
+  if (unified) return unified;
   return looksSend ? send : accept;
 }
 
@@ -224,7 +245,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
         diag: {
           contentType: req.get("content-type") || null,
           rawLen: raw.length,
-          secretLen: secret.length,
+          secretPresent: Boolean(secret),
           presented,
           computed,
         },

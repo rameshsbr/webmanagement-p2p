@@ -1,6 +1,4 @@
-
-> @app/server@ prisma /Users/ekaterinasubramaniam/Downloads/webmanagement-p2p/apps/server
-> prisma migrate diff --from-empty --to-schema-datamodel prisma/schema.prisma --script
+CREATE SEQUENCE IF NOT EXISTS bank_public_id_seq START 1;
 
 -- CreateEnum
 CREATE TYPE "PaymentType" AS ENUM ('DEPOSIT', 'WITHDRAWAL');

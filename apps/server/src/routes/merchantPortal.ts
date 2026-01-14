@@ -888,6 +888,47 @@ router.get("/payments/test", async (req: any, res) => {
   });
 });
 
+// UPDATED: accept optional currency override (e.g., currency=IDR when using IDR v4 flows)
+router.post("/payments/test/session", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  const externalId = normalizeTestSubject(req.body?.subject || req.query?.subject, merchantId);
+  const subject = deriveDiditSubject(merchantId, externalId);
+
+  // Honor currency override, but clamp to allowed test currencies
+  const defaultCurrency = String(req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
+  const requested = String(req.body?.currency || req.query?.currency || "").toUpperCase();
+  const allowed = new Set(["AUD", "IDR"]);
+  const currency = allowed.has(requested) ? requested : defaultCurrency;
+
+  const clientStatus = await getClientStatusBySubject(merchantId, subject);
+  if (clientStatus !== "ACTIVE") {
+    return res.status(403).json({
+      ok: false,
+      error: "CLIENT_INACTIVE",
+      message: `Client is ${formatClientStatusLabel(clientStatus)}`,
+      clientStatus: formatClientStatusLabel(clientStatus),
+    });
+  }
+
+  const token = signCheckoutToken({
+    merchantId,
+    diditSubject: subject,
+    currency,
+    externalId,
+    clientStatus,
+  });
+
+  res.json({
+    ok: true,
+    token,
+    subject,
+    clientStatus: formatClientStatusLabel(clientStatus),
+    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+  });
+});
+
 router.get("/methods", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   if (!merchantId) return res.redirect("/merchant");
@@ -915,33 +956,6 @@ router.get("/methods", async (req: any, res) => {
     section: "methods",
     methods,
     stats,
-  });
-});
-
-router.post("/payments/test/session", async (req: any, res) => {
-  const merchantId = req.merchant?.sub as string;
-  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
-  const externalId = normalizeTestSubject(req.body?.subject || req.query?.subject, merchantId);
-  const subject = deriveDiditSubject(merchantId, externalId);
-  const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
-  const clientStatus = await getClientStatusBySubject(merchantId, subject);
-  if (clientStatus !== "ACTIVE") {
-    return res
-      .status(403)
-      .json({
-        ok: false,
-        error: "CLIENT_INACTIVE",
-        message: `Client is ${formatClientStatusLabel(clientStatus)}`,
-        clientStatus: formatClientStatusLabel(clientStatus),
-      });
-  }
-  const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId, clientStatus });
-  res.json({
-    ok: true,
-    token,
-    subject,
-    clientStatus: formatClientStatusLabel(clientStatus),
-    expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
   });
 });
 

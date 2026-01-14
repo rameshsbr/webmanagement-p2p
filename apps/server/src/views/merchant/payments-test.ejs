@@ -1,9 +1,40 @@
 <% layout('merchant/layout') -%>
 
-<div class="card" data-test-payments data-session-endpoint="/merchant/payments/test/session" data-default-subject="<%= testCheckout.subject %>" data-initial-token="<%= testCheckout.token %>">
-  <div class="row" style="justify-content:center; gap:16px">
-    <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
-    <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
+<div
+  class="card"
+  data-test-payments
+  data-session-endpoint="/merchant/payments/test/session"
+  data-default-subject="<%= testCheckout.subject %>"
+  data-initial-token="<%= testCheckout.token %>"
+  style="display:flex; flex-direction:column; gap:14px;"
+>
+  <!-- Method group selector -->
+  <div class="row" style="justify-content:center; gap:16px; flex-wrap:wrap;">
+    <label class="form-line" style="display:grid; grid-template-columns: 96px 220px; gap:8px; align-items:center;">
+      <span class="muted">Method</span>
+      <select data-test-method>
+        <option value="p2p" selected>P2P</option>
+        <option value="idr-v4">IDR v4</option>
+      </select>
+    </label>
   </div>
-  <div data-test-message style="margin-top:10px; text-align:center; font-size:14px; opacity:.85; display:none;"></div>
+
+  <!-- Message area -->
+  <div data-test-message style="margin-top:2px; text-align:center; font-size:14px; opacity:.85; display:none;"></div>
+
+  <!-- P2P section: keep your existing test buttons/flow -->
+  <div data-test-section="p2p" style="display:block;">
+    <div class="row" style="justify-content:center; gap:16px; margin-top:4px;">
+      <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
+      <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
+    </div>
+  </div>
+
+  <!-- IDR v4 section: buttons only (modal opens inside page just like P2P) -->
+  <div data-test-section="idr-v4" style="display:none;">
+    <div class="row" style="justify-content:center; gap:16px; margin-top:4px;">
+      <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
+      <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
+    </div>
+  </div>
 </div>

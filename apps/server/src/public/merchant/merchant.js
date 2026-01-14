@@ -585,23 +585,16 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
-// Merchant test payments widget
+// Merchant test payments widget (UPDATED for IDR v4 selector + currency override)
+
+// Merchant test payments widget (P2P + IDR v4 buttons-only, currency-aware)
 (() => {
   const root = document.querySelector('[data-test-payments]');
   if (!root) return;
 
-  const buttons = root.querySelectorAll('[data-test-action]');
-  if (!buttons.length) return;
-
-  const sessionEndpoint = root.getAttribute('data-session-endpoint') || '/merchant/payments/test/session';
-  let subject = root.getAttribute('data-default-subject') || '';
-  let bootstrapToken = root.getAttribute('data-initial-token') || '';
-  let locked = false;
-
-  const notify = (msg) => {
-    if (typeof window.toast === 'function') window.toast(msg || 'Something went wrong');
-    else if (msg) console.warn(msg);
-  };
+  const methodSel = root.querySelector('[data-test-method]');
+  const sectionP2P = root.querySelector('[data-test-section="p2p"]');
+  const sectionIDR = root.querySelector('[data-test-section="idr-v4"]');
 
   const messageEl = root.querySelector('[data-test-message]');
   const setMessage = (text, variant = 'info') => {
@@ -612,12 +605,47 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     messageEl.style.opacity = text ? '.9' : '.85';
   };
 
+  const notify = (msg) => {
+    if (typeof window.toast === 'function') window.toast(msg || 'Something went wrong');
+    else if (msg) console.warn(msg);
+  };
+
+  const allActionButtons = root.querySelectorAll('[data-test-action]');
+  const sessionEndpoint = root.getAttribute('data-session-endpoint') || '/merchant/payments/test/session';
+  let subject = root.getAttribute('data-default-subject') || '';
+  let bootstrapToken = root.getAttribute('data-initial-token') || '';
+  let prefetchedToken = '';
+  let locked = false;
+  let currentMode = (methodSel?.value || 'p2p').toLowerCase(); // 'p2p' | 'idr-v4'
+
   const setBusy = (busy) => {
-    buttons.forEach((btn) => {
+    allActionButtons.forEach((btn) => {
       btn.disabled = !!busy || locked;
       btn.style.opacity = busy ? '.6' : '';
     });
     if (busy) setMessage('Preparing checkout…');
+  };
+
+  const hardHideLegacyInlineForms = () => {
+    // If old cached markup exists, hide it to enforce "buttons-only"
+    root.querySelectorAll('[data-idr-deposit-amount],[data-idr-withdraw-amount]').forEach(el => {
+      const panel = el.closest('.panel') || el;
+      panel.style.display = 'none';
+    });
+  };
+
+  const showSection = (mode) => {
+    currentMode = mode;
+    if (mode === 'idr-v4') {
+      sectionP2P && (sectionP2P.style.display = 'none');
+      sectionIDR && (sectionIDR.style.display = '');
+      setMessage('IDR v4 limits: 10,000.00 – 100,000,000.00 IDR. Enter a valid amount in the popup.');
+      hardHideLegacyInlineForms();
+    } else {
+      sectionP2P && (sectionP2P.style.display = '');
+      sectionIDR && (sectionIDR.style.display = 'none');
+      setMessage('');
+    }
   };
 
   const loadPayX = (() => {
@@ -629,10 +657,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
           const script = document.createElement('script');
           script.src = '/public/checkout/checkout-widget.js';
           script.async = true;
-          script.onload = () => {
-            if (window.PayX) resolve(window.PayX);
-            else reject(new Error('Checkout widget unavailable'));
-          };
+          script.onload = () => window.PayX ? resolve(window.PayX) : reject(new Error('Checkout widget unavailable'));
           script.onerror = () => reject(new Error('Failed to load checkout widget'));
           document.head.appendChild(script);
         });
@@ -642,11 +667,15 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   })();
 
   const fetchSession = async () => {
+    const payload = { subject };
+    // Tell server we want IDR for IDR v4; server patch below honors this
+    if (currentMode === 'idr-v4') payload.currency = 'IDR';
+
     const resp = await fetch(sessionEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ subject }),
+      body: JSON.stringify(payload),
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data || !data.ok) {
@@ -660,14 +689,33 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     return data.token;
   };
 
-  const claimToken = async () => {
-    if (bootstrapToken) {
-      const token = bootstrapToken;
-      bootstrapToken = '';
-      return token;
+  const prefetchSession = async () => {
+    try {
+      prefetchedToken = await fetchSession();
+    } catch {
+      prefetchedToken = '';
+      // non-fatal; will retry on click
     }
+  };
+
+  const claimToken = async () => {
+    if (prefetchedToken) { const t = prefetchedToken; prefetchedToken = ''; return t; }
+    if (bootstrapToken)  { const t = bootstrapToken;  bootstrapToken  = ''; return t; }
     return fetchSession();
   };
+
+  methodSel?.addEventListener('change', () => {
+    const v = (methodSel.value || 'p2p').toLowerCase();
+    // ensure first click uses a fresh token for the new mode
+    bootstrapToken = '';
+    prefetchedToken = '';
+    showSection(v);
+    prefetchSession();
+  });
+
+  // First render
+  showSection(currentMode);
+  prefetchSession();
 
   const open = async (kind) => {
     setBusy(true);
@@ -691,9 +739,9 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     }
   };
 
-  buttons.forEach((btn) => {
-    btn.addEventListener('click', (event) => {
-      event.preventDefault();
+  allActionButtons.forEach((btn) => {
+    btn.addEventListener('click', (e) => {
+      e.preventDefault();
       const kind = (btn.getAttribute('data-test-action') || '').toLowerCase();
       if (kind === 'deposit' || kind === 'withdrawal') open(kind);
     });

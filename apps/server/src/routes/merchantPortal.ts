@@ -1337,9 +1337,9 @@ router.post("/keys/:id/reveal", async (req: any, res) => {
       merchantUserId: user.id,
       password,
       totp,
-      stepToken,
       ip: ipFromReq(req) || req.ip || null,
       userAgent: uaFromReq(req),
+      stepToken,
     });
 
     return res.json({

@@ -238,7 +238,7 @@ function computeDisplayFields(bank: any) {
 type UIField = {
   name: string;
   display: "input" | "file" | "select";
-  field: "text" | "number" | null;
+  field: "text" | "number" | "phone" | "email" | "phone_email" | null; // ← upgraded
   placeholder?: string;
   required?: boolean;
   minDigits?: number;
@@ -252,14 +252,20 @@ function normalizeField(r: any): UIField | null {
   if (!name) return null;
   const displayRaw = String(r.display ?? r.mode ?? "input").toLowerCase();
   const display: "input" | "file" | "select" = displayRaw === "file" ? "file" : displayRaw === "select" ? "select" : "input";
-  const field = display === "input" ? (String(r.field || "text").toLowerCase() === "number" ? "number" : "text") : null;
+  let field: UIField["field"] = null;
+  if (display === "input") {
+    const ft = String(r.field || "text").toLowerCase();
+    field = (["text","number","phone","email","phone_email"] as const).includes(ft as any) ? (ft as UIField["field"]) : "text";
+  }
   const placeholder = r.placeholder ?? "";
   const required = !!r.required;
+
   let minDigits = 0;
   let maxDigits: number | null = null;
   if (display === "input" && field === "number") {
     const minRaw = Number(r.minDigits);
     minDigits = Number.isFinite(minRaw) ? Math.max(0, Math.min(64, Math.floor(minRaw))) : 0;
+
     if (r.maxDigits === null || typeof r.maxDigits === "undefined" || r.maxDigits === "") {
       maxDigits = null;
     } else {
@@ -274,9 +280,11 @@ function normalizeField(r: any): UIField | null {
       maxDigits = Math.max(minDigits, Math.min(64, Math.floor(legacyDigits)));
     }
   }
+
   let options: string[] = [];
   if (Array.isArray(r.options)) options = r.options.map((x: any) => String(x));
   else if (typeof r.data === "string") options = r.data.split(",").map((s: string) => s.trim()).filter(Boolean);
+
   return { name, display, field, placeholder, required, minDigits, maxDigits, options };
 }
 
@@ -320,6 +328,7 @@ function validateExtras(fields: UIField[], extras: any) {
       continue;
     }
 
+    // number input with digit bounds
     if (f.display === "input" && f.field === "number") {
       if (trimmed === "") {
         sanitized[key] = "";
@@ -338,11 +347,7 @@ function validateExtras(fields: UIField[], extras: any) {
           : null;
       const len = normalized.length;
       if (max !== null && min > 0 && (len < min || len > max)) {
-        return {
-          ok: false,
-          error: `Enter between ${min} and ${max} digits.`,
-          field: key,
-        };
+        return { ok: false, error: `Enter between ${min} and ${max} digits.`, field: key };
       }
       if (min > 0 && len < min) {
         return { ok: false, error: `Enter at least ${min} digits.`, field: key };
@@ -354,6 +359,33 @@ function validateExtras(fields: UIField[], extras: any) {
       continue;
     }
 
+    // NEW: phone / email / phone_email
+    if (f.display === "input" && (f.field === "email" || f.field === "phone" || f.field === "phone_email")) {
+      if (trimmed === "") {
+        sanitized[key] = "";
+        continue;
+      }
+
+      const looksLikeEmail = trimmed.includes("@");
+
+      if (f.field === "email" || (f.field === "phone_email" && looksLikeEmail)) {
+        if (!emailRe.test(trimmed)) {
+          return { ok: false, error: "Enter a valid email address.", field: key };
+        }
+        sanitized[key] = trimmed;
+        continue;
+      }
+
+      // phone or phone_email (phone branch)
+      const normalized = normalizeAuMobile(trimmed);
+      if (!/^\+61\d{9}$/.test(normalized)) {
+        return { ok: false, error: "Enter a valid AU mobile (04xxxxxxxx or +61xxxxxxxxx).", field: key };
+      }
+      sanitized[key] = normalized;
+      continue;
+    }
+
+    // default text-like
     sanitized[key] = trimmed;
   }
 

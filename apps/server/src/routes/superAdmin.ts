@@ -155,6 +155,51 @@ superAdminRouter.get("/methods", async (_req, res) => {
     include: { merchantLinks: true },
   });
 
+  // Load all banks once, then bucket them by method code
+  const allBanks = await prisma.bankAccount.findMany({
+    orderBy: [{ merchantId: "asc" }, { currency: "asc" }, { createdAt: "desc" }],
+    select: {
+      id: true,
+      merchantId: true,
+      currency: true,
+      method: true,
+      label: true,
+      bankName: true,
+      accountNo: true,
+      active: true,
+      // four limit columns on BankAccount:
+      // (cast as any in case your Prisma client hasn't regenerated with these columns yet)
+      // @ts-ignore
+      minDepositCents: true,
+      // @ts-ignore
+      maxDepositCents: true,
+      // @ts-ignore
+      minWithdrawalCents: true,
+      // @ts-ignore
+      maxWithdrawalCents: true,
+    } as any,
+  });
+
+  // Resolve merchant names for nicer labels
+  const merchantIds = Array.from(new Set(allBanks.map(b => b.merchantId).filter(Boolean))) as string[];
+  const merchantMap = new Map<string, string>();
+  if (merchantIds.length) {
+    const merchants = await prisma.merchant.findMany({ where: { id: { in: merchantIds } }, select: { id: true, name: true } });
+    merchants.forEach(m => merchantMap.set(m.id, m.name));
+  }
+
+  const byCode: Record<string, any[]> = {};
+  for (const b of allBanks) {
+    const code = String(b.method || "").toUpperCase();
+    if (!byCode[code]) byCode[code] = [];
+    byCode[code].push({ ...b, merchantName: b.merchantId ? merchantMap.get(b.merchantId) || "" : "" });
+  }
+
+  // Attach banks to each method for the template
+  methods.forEach((m) => {
+    (m as any).banks = byCode[m.code.trim().toUpperCase()] || [];
+  });
+
   const stats: Record<string, { merchants: number; deposits: number; withdrawals: number }> = {};
 
   await Promise.all(
@@ -163,8 +208,8 @@ superAdminRouter.get("/methods", async (_req, res) => {
 
       const [merchantCount, depositCount, withdrawalCount] = await Promise.all([
         prisma.merchantMethod.count({ where: { methodId: method.id, enabled: true } }),
-        countPaymentsByMethod(code, PaymentType.DEPOSIT, undefined, method.id),
-        countPaymentsByMethod(code, PaymentType.WITHDRAWAL, undefined, method.id),
+        countPaymentsByMethod(code, "DEPOSIT", undefined, method.id),
+        countPaymentsByMethod(code, "WITHDRAWAL", undefined, method.id),
       ]);
 
       stats[method.id] = {
@@ -211,6 +256,40 @@ superAdminRouter.post("/methods/:id", async (req, res, next) => {
         enabled: enabled === "on" || enabled === true,
       },
     });
+
+    // banks[<bankId>][minDeposit|maxDeposit|minWithdrawal|maxWithdrawal] => amounts in currency units
+    const banksPayload = (req.body && (req.body as any).banks) || {};
+    const updates: Array<Promise<any>> = [];
+
+    if (banksPayload && typeof banksPayload === "object") {
+      for (const [bankId, v] of Object.entries(banksPayload)) {
+        const vals = (v || {}) as Record<string, unknown>;
+
+        const minDepositCents = parseAmountToCents(vals.minDeposit);
+        const maxDepositCents = parseAmountToCents(vals.maxDeposit);
+        const minWithdrawalCents = parseAmountToCents(vals.minWithdrawal);
+        const maxWithdrawalCents = parseAmountToCents(vals.maxWithdrawal);
+
+        // Update BankAccount with the four limits (null clears the value)
+        updates.push(
+          prisma.bankAccount.update({
+            where: { id: String(bankId) },
+            data: {
+              // @ts-ignore – tolerate missing fields in older generated clients
+              minDepositCents: minDepositCents,
+              // @ts-ignore
+              maxDepositCents: maxDepositCents,
+              // @ts-ignore
+              minWithdrawalCents: minWithdrawalCents,
+              // @ts-ignore
+              maxWithdrawalCents: maxWithdrawalCents,
+            } as any,
+          })
+        );
+      }
+    }
+
+    if (updates.length) await Promise.allSettled(updates);
 
     res.redirect("/superadmin/methods");
   } catch (err) {

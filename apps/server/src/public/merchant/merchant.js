@@ -758,14 +758,14 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 })();
 
 /* ─────────────────────────────────────────────────────────────────────────────
-   IDR v4 tiny patch:
+   IDR v4 patch (Merchant Portal only):
    - Intercepts /public/deposit/intent responses.
-   - If provider === FAZZ, populate the modal with VA fields returned by Fazz.
-   - Adds provider instructions (steps) under the fields.
-   This runs only in the merchant portal and does not modify the shared widget.
+   - Extracts FAZZ VA details from either intent.va or deep instructions.meta.fetched…
+   - Rewrites the "Transfer details" modal rows accordingly.
+   NOTE: This does not change the shared checkout widget file.
 ────────────────────────────────────────────────────────────────────────────── */
 (() => {
-  let lastFazz = null;
+  let lastIntentPayload = null;
 
   const origFetch = window.fetch;
   window.fetch = async (input, init) => {
@@ -775,48 +775,141 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       try {
         const clone = res.clone();
         const json = await clone.json();
-        if (json && json.ok && (json.provider === 'FAZZ' || /fazz/i.test(json.provider || ''))) {
-          lastFazz = json;
-          // Defer so the modal has time to render
-          setTimeout(applyFazzModalPatch, 0);
+        if (json) {
+          lastIntentPayload = json;
+          setTimeout(applyFazzModalPatch, 0); // after modal mounts
         }
       } catch {}
     }
     return res;
   };
 
+  function extractFazzVA(intent) {
+    const obj = intent || {};
+
+    // Common server shape: top-level fields (if you forward them)
+    const vaTop = obj.va || null;
+    const instrTop = obj.instructions || null;
+
+    // Robust deep FAZZ path from your shell logs
+    const fetched = instrTop?.meta?.fetched?.payment?.data?.attributes || null;
+    const pmInstr = fetched?.paymentMethod?.instructions || null;
+
+    const bankCode =
+      vaTop?.bankCode ||
+      instrTop?.bankCode ||
+      pmInstr?.bankShortCode ||
+      null;
+
+    const accountNo =
+      vaTop?.accountNo ||
+      pmInstr?.accountNo ||
+      null;
+
+    const accountName =
+      vaTop?.accountName ||
+      pmInstr?.displayName ||
+      null;
+
+    const steps = Array.isArray(instrTop?.steps)
+      ? instrTop.steps
+      : [];
+
+    const method =
+      (instrTop?.method && String(instrTop.method).toUpperCase()) || null;
+
+    const expiresAt = fetched?.expiredAt || null;
+
+    // If we couldn't find any meaningful VA data, return null
+    if (!bankCode && !accountNo && !accountName) return null;
+    return { bankCode, accountNo, accountName, method, steps, expiresAt };
+  }
+
+  function kvRow(label, value, copyable = true) {
+    const row = document.createElement('div');
+    row.className = 'payx-kv';
+    const l = document.createElement('div'); l.className = 'payx-kv-label'; l.textContent = label;
+    const v = document.createElement('div'); v.className = 'payx-kv-value'; v.textContent = String(value ?? '-');
+    row.appendChild(l); row.appendChild(v);
+    if (copyable) {
+      const btn = document.createElement('button');
+      btn.className = 'payx-copy'; btn.textContent = 'Copy';
+      btn.addEventListener('click', () => navigator.clipboard && navigator.clipboard.writeText(String(value ?? '')));
+      row.appendChild(btn);
+    }
+    return row;
+  }
+
+  function trySetExistingRow(modal, label, value) {
+    if (value == null || value === '') return false;
+    const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const candidates = Array.from(modal.querySelectorAll('.payx-kv, .row, tr, .form-line, div'));
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim();
+      if (!text) continue;
+      if (new RegExp('\\b' + esc(label) + '\\b', 'i').test(text)) {
+        // Prefer .payx-kv-value, else last child-ish
+        const valueEl =
+          el.querySelector('.payx-kv-value') ||
+          el.querySelector('code, strong, span:last-child, dd') ||
+          el.querySelector('div:last-child') ||
+          el;
+        valueEl.textContent = String(value);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function appendRows(modal, rows) {
+    // Append after the last KV row or just before the receipt field
+    const grid = modal.querySelector('.payx-kv')?.parentElement || modal;
+    const receiptAnchor = modal.querySelector('input[type="file"]')?.closest('.row, .form-line, div') || null;
+    rows.forEach((r) => {
+      if (receiptAnchor && receiptAnchor.parentElement) {
+        receiptAnchor.parentElement.insertBefore(r, receiptAnchor);
+      } else {
+        grid.appendChild(r);
+      }
+    });
+  }
+
   function applyFazzModalPatch() {
-    if (!lastFazz) return;
-    const data = lastFazz.bankDetails || {};
-    // Find the Transfer details modal
-    const modal = Array.from(document.querySelectorAll('[role="dialog"], .modal, .payx-modal'))
+    if (!lastIntentPayload) return;
+
+    // The checkout widget expects the API to return the intent directly.
+    // Some backends wrap it; support both.
+    const intent =
+      (lastIntentPayload.intent || lastIntentPayload) ?? null;
+
+    const va = extractFazzVA(intent);
+    if (!va) return;
+
+    // Find the Transfer details modal box
+    const modal = Array.from(document.querySelectorAll('.payx-overlay .payx-box, [role="dialog"], .modal'))
       .find(el => /transfer details/i.test(el.textContent || ''));
     if (!modal) return;
 
-    const setRow = (label, value) => {
-      if (value == null || value === '') return;
-      const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const row = Array.from(modal.querySelectorAll('.row, .form-line, tr, li, div'))
-        .find(el => new RegExp('\\b' + esc(label) + '\\b', 'i').test(el.textContent || ''));
-      if (!row) return;
-      const valEl =
-        row.querySelector('.value, code, strong, span:last-child, dd') ||
-        row.querySelector('div:last-child') || row;
-      valEl.textContent = String(value);
-    };
+    // 1) Try overwriting existing rows if they exist
+    const replaced = [
+      trySetExistingRow(modal, 'Bank Name', va.bankCode),
+      trySetExistingRow(modal, 'Account / PayID Value', va.accountNo),
+      trySetExistingRow(modal, 'Account Holder Name', va.accountName),
+    ].some(Boolean);
 
-    setRow('Account Holder Name', data.holderName || data.accountName);
-    setRow('Bank Name', data.bankName || data.bankCode || data.vaBank);
-    setRow('Account / PayID Value', data.accountNo || data.vaNumber);
+    // 2) If rows weren't present (P2P layout), append proper VA rows
+    if (!replaced) {
+      const rows = [];
+      if (va.method) rows.push(kvRow('VA Type', va.method, false));
+      if (va.bankCode) rows.push(kvRow('Bank Code', va.bankCode));
+      if (va.accountNo) rows.push(kvRow('Account No', va.accountNo));
+      if (va.accountName) rows.push(kvRow('Account Name', va.accountName));
+      appendRows(modal, rows);
+    }
 
-    // Add instructions (once)
+    // 3) Add steps/instructions once
     if (!modal.querySelector('[data-fazz-instructions]')) {
-      let steps = [];
-      const instr = data.instructions || lastFazz.instructions;
-      if (Array.isArray(instr)) steps = instr;
-      else if (instr && Array.isArray(instr.steps)) steps = instr.steps;
-      else if (typeof instr === 'string') steps = instr.split(/\n+/).filter(Boolean);
-
+      const steps = Array.isArray(va.steps) ? va.steps : [];
       if (steps.length) {
         const box = document.createElement('div');
         box.setAttribute('data-fazz-instructions','');
@@ -825,13 +918,8 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
         const ol = document.createElement('ol');
         ol.style.margin = '0 0 8px 16px';
         ol.style.padding = '0';
-        steps.forEach(s => {
-          const li = document.createElement('li');
-          li.textContent = s;
-          ol.appendChild(li);
-        });
+        steps.forEach(s => { const li = document.createElement('li'); li.textContent = s; ol.appendChild(li); });
         box.appendChild(ol);
-        // Insert before the receipt row if present
         const receiptRow = modal.querySelector('input[type="file"]')?.closest('.row, .form-line, div');
         (receiptRow?.parentElement || modal).insertBefore(box, receiptRow || null);
       }

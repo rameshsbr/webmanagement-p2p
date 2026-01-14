@@ -62,6 +62,101 @@
                   <a class="btn small" href="/superadmin/methods/<%= method.id %>/merchants">Assign merchants</a>
                 </td>
               </tr>
+
+              <!-- Per-bank limits for this method -->
+              <tr>
+                <td colspan="7" style="background:#fafafa; padding: 12px 16px;">
+                  <% if ((method.banks || []).length === 0) { %>
+                    <div class="muted" style="font-size: 12px;">No banks configured for this method yet.</div>
+                  <% } else { %>
+                    <div class="muted" style="font-size: 12px; margin-bottom: 6px;">
+                      Per-bank limits (amounts in currency units; leave blank to use defaults):
+                    </div>
+                    <div class="table-wrap" style="margin:0;">
+                      <table class="table" style="margin:0;">
+                        <thead>
+                          <tr>
+                            <th style="width:28%;">Bank</th>
+                            <th style="width:8%;">Currency</th>
+                            <th>Min Deposit</th>
+                            <th>Max Deposit</th>
+                            <th>Min Withdrawal</th>
+                            <th>Max Withdrawal</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <% method.banks.forEach((b) => { 
+                            const label = b.label || (b.bankName + ' • ' + String(b.accountNo || '').slice(-4));
+                            function centsToUnits(v) { return (typeof v === 'number' && !Number.isNaN(v)) ? (v / 100).toFixed(2) : '' }
+                          %>
+                            <tr>
+                              <td>
+                                <div class="mono" title="<%= b.id %>"><%= label %></div>
+                                <div class="muted" style="font-size:11px;">
+                                  <%= b.merchantName ? (b.merchantName + ' • ') : '' %><%= b.active ? 'Active' : 'Inactive' %>
+                                </div>
+                              </td>
+                              <td class="mono"><%= b.currency %></td>
+                              <td>
+                                <div class="input-with-suffix">
+                                  <input
+                                    form="<%= formId %>"
+                                    class="input"
+                                    inputmode="decimal"
+                                    placeholder="0.00"
+                                    name="banks[<%= b.id %>][minDeposit]"
+                                    value="<%= centsToUnits(b.minDepositCents) %>"
+                                  />
+                                  <span class="suffix mono"><%= b.currency %></span>
+                                </div>
+                              </td>
+                              <td>
+                                <div class="input-with-suffix">
+                                  <input
+                                    form="<%= formId %>"
+                                    class="input"
+                                    inputmode="decimal"
+                                    placeholder="0.00"
+                                    name="banks[<%= b.id %>][maxDeposit]"
+                                    value="<%= centsToUnits(b.maxDepositCents) %>"
+                                  />
+                                  <span class="suffix mono"><%= b.currency %></span>
+                                </div>
+                              </td>
+                              <td>
+                                <div class="input-with-suffix">
+                                  <input
+                                    form="<%= formId %>"
+                                    class="input"
+                                    inputmode="decimal"
+                                    placeholder="0.00"
+                                    name="banks[<%= b.id %>][minWithdrawal]"
+                                    value="<%= centsToUnits(b.minWithdrawalCents) %>"
+                                  />
+                                  <span class="suffix mono"><%= b.currency %></span>
+                                </div>
+                              </td>
+                              <td>
+                                <div class="input-with-suffix">
+                                  <input
+                                    form="<%= formId %>"
+                                    class="input"
+                                    inputmode="decimal"
+                                    placeholder="0.00"
+                                    name="banks[<%= b.id %>][maxWithdrawal]"
+                                    value="<%= centsToUnits(b.maxWithdrawalCents) %>"
+                                  />
+                                  <span class="suffix mono"><%= b.currency %></span>
+                                </div>
+                              </td>
+                            </tr>
+                          <% }) %>
+                        </tbody>
+                      </table>
+                    </div>
+                  <% } %>
+                </td>
+              </tr>
             <% }) %>
           </tbody>
         </table>
@@ -69,3 +164,12 @@
     <% } %>
   </div>
 </div>
+
+<style>
+  .input-with-suffix { position:relative; }
+  .input-with-suffix .suffix {
+    position:absolute; right:8px; top:50%; transform:translateY(-50%);
+    font-size:12px; color:#666;
+  }
+  .input-with-suffix .input { padding-right:56px; }
+</style>

@@ -17,13 +17,11 @@
     onError: null,
   };
 
-  // claims from /public/deposit/draft (merchantId, diditSubject, currency)
+  // claims from /public/deposit/draft (merchantId, diditSubject, currency, optional limits)
   let _claims = null;
 
   const _bankFormCache = {};
   let _availableMethods = [];
-  // NEW: remember per-method limits from /public/deposit/banks
-  const _methodLimits = Object.create(null); // { METHOD: {minCents,maxCents} }
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -54,13 +52,23 @@
     return e;
   }
 
-  // Legacy fallbacks (used when server didn't send limits)
-  const MIN_AMOUNT = 50;
-  const MAX_AMOUNT = 5000;
+  // ── AMOUNT LIMITS ─────────────────────────────────────────────────────────────
+  // Keep current defaults, but allow server-configured limits via _claims
+  const DEFAULT_MIN_AMOUNT = 50;
+  const DEFAULT_MAX_AMOUNT = 5000;
 
   function currencyUnit() {
     const cur = String((_claims && _claims.currency) || "AUD").trim();
     return cur ? cur.toUpperCase() : "AUD";
+  }
+
+  function getLimitNumbers() {
+    // _claims.depositMinCents / _claims.depositMaxCents may be provided by server config
+    const minCents = Number(_claims?.depositMinCents);
+    const maxCents = Number(_claims?.depositMaxCents);
+    const min = Number.isFinite(minCents) ? Math.max(0, Math.floor(minCents / 100)) : DEFAULT_MIN_AMOUNT;
+    const max = Number.isFinite(maxCents) ? Math.max(min, Math.floor(maxCents / 100)) : DEFAULT_MAX_AMOUNT;
+    return { min, max };
   }
 
   const NO_FORM_MESSAGE = "No configured form for this method and currency.";
@@ -163,7 +171,7 @@
       style:"opacity:.7; padding-top:6px; white-space:nowrap"
     }, [
       String(label),
-      required ? el("span", { style:"color:#dc2626; margin-left:2px" }, "*") : null
+      required ? el("span", { style: "color:#dc2626; margin-left:2px" }, "*") : null
     ].filter(Boolean));
     const row = el("label", { style:"display:grid; grid-template-columns: 140px 1fr; gap:8px; margin:8px 0" }, [
       lbl,
@@ -217,20 +225,15 @@
     });
   }
 
-  // UPDATED: allow dynamic limits
-  function validateAmountRange(amountCents, limits) {
-    const has = limits && Number.isFinite(limits.minCents) && Number.isFinite(limits.maxCents);
-    const minC = has ? Math.max(0, limits.minCents) : MIN_AMOUNT * 100;
-    const maxC = has ? Math.max(minC, limits.maxCents) : MAX_AMOUNT * 100;
-    if (!Number.isInteger(amountCents) || amountCents < minC || amountCents > maxC) {
-      const minStr = (minC / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      const maxStr = (maxC / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-      return `Enter an amount between ${minStr} and ${maxStr} ${currencyUnit()}.`;
+  function validateAmountRange(amountCents) {
+    const { min, max } = getLimitNumbers();
+    if (!Number.isInteger(amountCents) || amountCents < min * 100 || amountCents > max * 100) {
+      return `Enter an amount between ${min} and ${max} ${currencyUnit()}.`;
     }
     return null;
   }
-  function validateDepositInputs(amountCents, limits) { return validateAmountRange(amountCents, limits); }
-  function validateWithdrawalInputs(amountCents, limits) { return validateAmountRange(amountCents, limits); }
+  function validateDepositInputs(amountCents) { return validateAmountRange(amountCents); }
+  function validateWithdrawalInputs(amountCents) { return validateAmountRange(amountCents); }
 
   async function ensureKyc(token) {
     const st = await call("/public/kyc/status", token, { method:"GET" });
@@ -410,7 +413,7 @@
     const cacheKey = `${method}::${currency}`;
     if (_bankFormCache[cacheKey]) return _bankFormCache[cacheKey];
 
-    if (!method) return { bankId: null, depositFields: [], withdrawalFields: [], limits: null };
+    if (!method) return { bankId: null, depositFields: [], withdrawalFields: [] };
 
     const params = new URLSearchParams();
     if (method) params.set("method", method);
@@ -436,16 +439,11 @@
     const firstActive = candidates[0];
 
     if (!firstActive || !firstActive.id) {
-      const result = { bankId: null, depositFields: [], withdrawalFields: [], limits: null };
+      const result = { bankId: null, depositFields: [], withdrawalFields: [] };
       _bankFormCache[cacheKey] = result;
       console.warn(`[PayX] getBankAndFormsForMethod:no-bank`, { method, currency });
       return result;
     }
-
-    // capture limits (server now sends them)
-    const limits = firstActive.limits && Number.isFinite(firstActive.limits.minCents) && Number.isFinite(firstActive.limits.maxCents)
-      ? { minCents: Number(firstActive.limits.minCents), maxCents: Number(firstActive.limits.maxCents) }
-      : null;
 
     let cfg;
     try {
@@ -458,10 +456,9 @@
       bankId: firstActive.id,
       depositFields: Array.isArray(cfg?.deposit) ? cfg.deposit : [],
       withdrawalFields: Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [],
-      limits,
     };
     _bankFormCache[cacheKey] = result;
-    console.info(`[PayX] getBankAndFormsForMethod:success`, { method, currency, bankId: firstActive.id, limits });
+    console.info(`[PayX] getBankAndFormsForMethod:success`, { method, currency, bankId: firstActive.id });
     return result;
   }
 
@@ -487,24 +484,19 @@
       if (methods.find((m) => m.value === value)) return;
       const label = String(bank?.methodLabel || value).trim();
       methods.push({ value, label: label || value });
-      // remember limits for this method (first seen)
-      if (bank && bank.limits && !_methodLimits[value]) {
-        _methodLimits[value] = {
-          minCents: Number(bank.limits.minCents),
-          maxCents: Number(bank.limits.maxCents),
-        };
-      }
     });
     _availableMethods = methods;
-    console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length, methods, limits:_methodLimits });
+    console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length });
     return methods;
   }
 
   function buildMethodSelect(selectedMethod) {
     const opts = Array.isArray(_availableMethods) ? _availableMethods : [];
+    const { min, max } = getLimitNumbers();
     const select = el("select", {
       style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px",
-      ...(opts.length ? {} : { disabled: "disabled" })
+      ...(opts.length ? {} : { disabled: "disabled" }),
+      title: `Amount limits: ${min}–${max} ${currencyUnit()}`
     });
 
     if (!opts.length) {
@@ -525,6 +517,7 @@
     return select;
   }
 
+  // ── Helper utils for tolerant key lookups (used by FAZZ VA override) ──────────
   function normKey(k) { return String(k || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim(); }
   function findValue(extras, names) {
     const keys = Object.keys(extras || {});
@@ -648,7 +641,8 @@
 
     let nextBtn;
 
-    const amount = numberInput({ placeholder:`Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
+    const { min, max } = getLimitNumbers();
+    const amount = numberInput({ placeholder:`Amount (${currencyUnit()}, min ${min} max ${max})` });
     const draft = loadDraft("deposit", claims) || {};
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
 
@@ -666,21 +660,6 @@
     let selectedBankId = null;
     let formReady = false;
 
-    // NEW: track limits for current selection
-    let currentLimits = null;
-    function applyAmountLimits(limits) {
-      const has = limits && Number.isFinite(limits.minCents) && Number.isFinite(limits.maxCents);
-      if (has) {
-        amount.min = (limits.minCents / 100).toString();
-        amount.max = (limits.maxCents / 100).toString();
-        amount.placeholder = `Amount (${currencyUnit()}, min ${(limits.minCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} max ${(limits.maxCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})})`;
-      } else {
-        amount.removeAttribute("min");
-        amount.removeAttribute("max");
-        amount.placeholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
-      }
-    }
-
     async function refreshDynForMethod() {
       const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
       dynMount.innerHTML = "";
@@ -689,10 +668,8 @@
       configWarning.textContent = "";
       formReady = false;
       selectedBankId = null;
-      currentLimits = null;
-      applyAmountLimits(null);
 
-      const methodVal = String(method.value || "").trim().toUpperCase();
+      const methodVal = String(method.value || "").trim();
       if (!methodVal) {
         selectedBankId = null;
         dyn = buildDynamicFrom([], prev);
@@ -708,11 +685,8 @@
 
       try {
         console.info("[PayX] openDeposit:getBankForms:start", methodVal);
-        const { bankId, depositFields, limits } = await getBankAndFormsForMethod(token, methodVal);
+        const { bankId, depositFields } = await getBankAndFormsForMethod(token, methodVal);
         selectedBankId = bankId;
-        currentLimits = limits || _methodLimits[methodVal] || null;
-        applyAmountLimits(currentLimits);
-
         dyn = buildDynamicFrom(Array.isArray(depositFields) ? depositFields : [], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
@@ -725,7 +699,7 @@
           configWarning.style.display = "none";
           formReady = true;
         }
-        console.info("[PayX] openDeposit:getBankForms:done", { method: methodVal, bankId, currentLimits });
+        console.info("[PayX] openDeposit:getBankForms:done", { method: methodVal, bankId });
       } catch (e) {
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
@@ -742,7 +716,7 @@
 
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
-      let err = validateDepositInputs(amountCents, currentLimits);
+      let err = validateDepositInputs(amountCents);
       err = err || dyn.validate();
       const ready = formReady && Boolean(String(method.value || ""));
       setEnabled(nextBtn, ready && !err);
@@ -768,8 +742,11 @@
       const extras = dyn.getValues();
       const payer = inferPayerFromExtras(method.value, extras);
 
-      const firstErr = validateDepositInputs(amountCents, currentLimits);
-      if (firstErr) { status.textContent = firstErr; return; }
+      if (amountCents === null) {
+        const { min: _m1, max: _m2 } = getLimitNumbers();
+        status.textContent = `Enter an amount between ${_m1} and ${_m2} ${currencyUnit()}.`;
+        return;
+      }
 
       if (!formReady || !method.value || !selectedBankId) {
         configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
@@ -778,7 +755,7 @@
         return;
       }
 
-      const verr = dyn.validate();
+      const verr = validateDepositInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       payer.holderName = String(payer.holderName || "").trim();
@@ -825,6 +802,37 @@
     });
   }
 
+  // ── IDR v4 (FAZZ VA) display override helpers ────────────────────────────────
+  function fieldFromDisplayFields(fields, names) {
+    if (!Array.isArray(fields) || !fields.length) return undefined;
+    const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const want = names.map(norm);
+    for (const item of fields) {
+      const key = norm(item?.key || item?.label);
+      if (want.includes(key)) {
+        const val = item?.value;
+        if (val !== undefined && val !== null && String(val).trim() !== "") return val;
+      }
+    }
+    return undefined;
+  }
+
+  function firstDefined(...vals) {
+    for (const v of vals) {
+      if (v !== undefined && v !== null && String(v).trim() !== "") return v;
+    }
+    return undefined;
+  }
+
+  function looksLikeFazzVa(intent) {
+    const cur = String(intent?.currency || _claims?.currency || "").toUpperCase();
+    const provider = String(intent?.provider || intent?.bankDetails?.provider || "").toUpperCase();
+    const method = String(intent?.method || "").toUpperCase();
+    const bankName = String(intent?.bankDetails?.bankName || "").toUpperCase();
+    const anyVA = /VA/.test(method) || /VIRTUAL\s*ACCOUNT/.test(method) || /VA/.test(bankName);
+    return cur === "IDR" && (provider.includes("FAZZ") || bankName.includes("FAZZ") || anyVA);
+  }
+
   function renderDepositInstructions({ box, header, token, claims, intent, close }) {
     while (box.childNodes.length > 1) box.removeChild(box.lastChild);
     header.firstChild.textContent = "Transfer details";
@@ -839,17 +847,69 @@
     const grid = el("div");
     grid.appendChild(kv("Reference", ref));
 
+    // Prefer server-provided displayFields, but for IDR v4 FAZZ we *override*
+    // to show bankCode / accountNo / accountName if present anywhere.
     const fields = Array.isArray(details.displayFields) ? details.displayFields : [];
-    fields.forEach((it) => {
-      if (!it || it.value == null || it.value === "") return;
-      const isNote = String(it.type || "").toLowerCase() === "note" || String(it.key||"") === "instructions";
-      const row = kv(it.label || it.key || "-", it.value, !isNote);
-      if (isNote) {
-        const v = row.querySelector(".payx-kv-value");
-        if (v) v.style.whiteSpace = "pre-wrap";
+
+    const isFazzVa = looksLikeFazzVa(intent);
+    if (isFazzVa) {
+      // tolerant key lookup across multiple shapes
+      const bankCode = firstDefined(
+        details.bankCode, details.bank_code, details.bankcode,
+        fieldFromDisplayFields(fields, ["bankCode", "bank code", "bank_code"])
+      );
+      const accountNo = firstDefined(
+        details.accountNo, details.account_no, details.accountnumber, details.virtualAccount, details.virtual_account,
+        fieldFromDisplayFields(fields, ["account no", "account number", "accountNo", "virtual account", "va number", "virtual_account"])
+      );
+      const accountName = firstDefined(
+        details.accountName, details.account_name, details.accountHolder, details.account_holder,
+        fieldFromDisplayFields(fields, ["account name", "accountName", "account_name"])
+      );
+
+      // If we managed to detect at least one VA-specific field, draw ONLY these
+      // (so we no longer show the P2P-style rows).
+      if (bankCode || accountNo || accountName) {
+        if (bankCode) grid.appendChild(kv("Bank Code", bankCode));
+        if (accountNo) grid.appendChild(kv("Account No", accountNo));
+        if (accountName) grid.appendChild(kv("Account Name", accountName));
+
+        // Also render any "notes/instructions" present in displayFields
+        fields.forEach((it) => {
+          const isNote = String(it?.type || "").toLowerCase() === "note" || String(it?.key || "") === "instructions";
+          if (isNote && it.value != null && it.value !== "") {
+            const row = kv(it.label || it.key || "Note", it.value, false);
+            const v = row.querySelector(".payx-kv-value");
+            if (v) v.style.whiteSpace = "pre-wrap";
+            grid.appendChild(row);
+          }
+        });
+      } else {
+        // Fallback: show whatever displayFields were provided (legacy behavior)
+        fields.forEach((it) => {
+          if (!it || it.value == null || it.value === "") return;
+          const isNote = String(it.type || "").toLowerCase() === "note" || String(it.key||"") === "instructions";
+          const row = kv(it.label || it.key || "-", it.value, !isNote);
+          if (isNote) {
+            const v = row.querySelector(".payx-kv-value");
+            if (v) v.style.whiteSpace = "pre-wrap";
+          }
+          grid.appendChild(row);
+        });
       }
-      grid.appendChild(row);
-    });
+    } else {
+      // Non-IDR or non-FAZZ → keep existing behavior
+      fields.forEach((it) => {
+        if (!it || it.value == null || it.value === "") return;
+        const isNote = String(it.type || "").toLowerCase() === "note" || String(it.key||"") === "instructions";
+        const row = kv(it.label || it.key || "-", it.value, !isNote);
+        if (isNote) {
+          const v = row.querySelector(".payx-kv-value");
+          if (v) v.style.whiteSpace = "pre-wrap";
+        }
+        grid.appendChild(row);
+      });
+    }
 
     const receipt = el("input", { type:"file", accept:"image/*,application/pdf" });
     const status = el("div", { style:"margin-top:8px; font-size:12px; opacity:.8" });
@@ -924,7 +984,8 @@
 
     let submit;
 
-    const amount = numberInput({ placeholder:`Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})` });
+    const { min, max } = getLimitNumbers();
+    const amount = numberInput({ placeholder:`Amount (${currencyUnit()}, min ${min} max ${max})` });
     const draft = loadDraft("withdrawal", claims) || {};
     if (draft.amountCents) amount.value = (draft.amountCents / 100).toFixed(2);
 
@@ -948,24 +1009,9 @@
     let refreshSeq = 0;
     let selectedBankId = null;
 
-    // NEW: track limits for current withdrawal method
-    let currentLimits = null;
-    function applyAmountLimits(limits) {
-      const has = limits && Number.isFinite(limits.minCents) && Number.isFinite(limits.maxCents);
-      if (has) {
-        amount.min = (limits.minCents / 100).toString();
-        amount.max = (limits.maxCents / 100).toString();
-        amount.placeholder = `Amount (${currencyUnit()}, min ${(limits.minCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} max ${(limits.maxCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})})`;
-      } else {
-        amount.removeAttribute("min");
-        amount.removeAttribute("max");
-        amount.placeholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
-      }
-    }
-
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
-      let err = validateWithdrawalInputs(amountCents, currentLimits);
+      let err = validateWithdrawalInputs(amountCents);
       err = err || dyn.validate();
       const ready = formReady && Boolean(String(method.value || "")) && Boolean(selectedBankId);
       setEnabled(submit, ready && !err);
@@ -981,10 +1027,8 @@
       configWarning.textContent = "";
       formReady = false;
       selectedBankId = null;
-      currentLimits = null;
-      applyAmountLimits(null);
 
-      const methodVal = String(method.value || "").trim().toUpperCase();
+      const methodVal = String(method.value || "").trim();
       if (!methodVal) {
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
@@ -999,12 +1043,9 @@
 
       try {
         console.info("[PayX] openWithdrawal:getBankForms:start", methodVal);
-        const { bankId, withdrawalFields, limits } = await getBankAndFormsForMethod(token, methodVal);
+        const { bankId, withdrawalFields } = await getBankAndFormsForMethod(token, methodVal);
         if (seq !== refreshSeq) return;
         selectedBankId = bankId || null;
-        currentLimits = limits || _methodLimits[methodVal] || null;
-        applyAmountLimits(currentLimits);
-
         dyn = buildDynamicFrom(Array.isArray(withdrawalFields) ? withdrawalFields : [], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
@@ -1017,7 +1058,7 @@
           configWarning.style.display = "none";
           formReady = true;
         }
-        console.info("[PayX] openWithdrawal:getBankForms:done", { method: methodVal, bankId, currentLimits });
+        console.info("[PayX] openWithdrawal:getBankForms:done", { method: methodVal, bankId });
       } catch (err) {
         if (seq !== refreshSeq) return;
         selectedBankId = null;
@@ -1042,8 +1083,11 @@
       const extras = dyn.getValues();
       const destination = inferPayerFromExtras(method.value, extras);
 
-      const firstErr = validateWithdrawalInputs(amountCents, currentLimits);
-      if (firstErr) { status.textContent = firstErr; return; }
+      if (amountCents === null) {
+        const { min: _m1, max: _m2 } = getLimitNumbers();
+        status.textContent = `Enter an amount between ${_m1} and ${_m2} ${currencyUnit()}.`;
+        return;
+      }
 
       if (!formReady || !method.value || !selectedBankId) {
         configWarning.textContent = NO_FORM_MESSAGE;
@@ -1052,7 +1096,7 @@
         return;
       }
 
-      const verr = dyn.validate();
+      const verr = validateWithdrawalInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       destination.holderName = String(destination.holderName || "").trim();
@@ -1135,7 +1179,7 @@
       try {
         const r = await fetch("/public/deposit/draft", { headers: { authorization:`Bearer ${cfg.token}` } });
         const j = await r.json();
-        if (j && j.ok && j.claims) _claims = j.claims;
+        if (j && j.ok && j.claims) _claims = j.claims; // may include depositMinCents, depositMaxCents
       } catch {}
 
       try { await fetchAvailableMethods(cfg.token); } catch { _availableMethods = []; }

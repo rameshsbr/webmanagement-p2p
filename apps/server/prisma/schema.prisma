@@ -129,6 +129,11 @@ model BankAccount {
   iban         String?
   instructions String?
 
+  depositMinAmountCents   Int?
+  depositMaxAmountCents   Int?
+  withdrawMinAmountCents  Int?
+  withdrawMaxAmountCents  Int?
+
   // Phase-2 fields
   method String  @default("OSKO") // OSKO | PAYID | FPX | DUITNOW | etc.
   label  String? // friendly name for UI

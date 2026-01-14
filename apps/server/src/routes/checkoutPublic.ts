@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-explicit-any */
 import crypto from "node:crypto";
 import { Router } from "express";
 import { z } from "zod";
@@ -29,8 +30,7 @@ type VerifiedKey = { merchantId: string; keyId: string; scopes: string[] };
 
 function readApiKeyHeader(req: any): { prefix: string; secret: string } | null {
   const raw = String(req.get("authorization") || req.get("x-api-key") || "");
-  the:
-  {
+  the: {
     /* eslint-disable no-labels */
   }
   const m = raw.match(/(?:Bearer\s+)?([A-Za-z0-9_-]+)\.([A-Za-z0-9_-]{20,})/);
@@ -75,8 +75,8 @@ const upload = multer({
 });
 
 // ───────────────────────────────────────────────
-const MIN_CENTS = 50 * 100;
-const MAX_CENTS = 5000 * 100;
+const FALLBACK_MIN_CENTS = 50 * 100;
+const FALLBACK_MAX_CENTS = 5000 * 100;
 
 function rejectForClientStatus(res: any, status: ClientStatus) {
   const code = status === "BLOCKED" ? "CLIENT_BLOCKED" : "CLIENT_DEACTIVATED";
@@ -127,6 +127,13 @@ const payerPayId = z
     }
   });
 
+// NEW: tolerant payer for IDR VA (Fazz)
+const payerIdr = z.object({
+  holderName: z.string().min(2),
+  accountNo: z.string().min(1).optional(),
+  bankName: z.string().min(1).optional(),
+});
+
 function nowIso() { return new Date().toISOString(); }
 
 function rejectInactiveClient(res: any, status: ClientStatus, action: "deposit" | "withdrawal") {
@@ -166,13 +173,12 @@ const CORE_LABELS: Record<CoreKey, string> = {
 };
 
 // Fallback default order for core keys
-// NOTE: instructions intentionally very high so it always renders last.
 const CORE_DEFAULT_ORDER: Record<CoreKey, number> = {
   holderName: 10,
   bankName: 20,
   accountNo: 30,
   iban: 40,
-  instructions: 9999, // <- keep at the bottom
+  instructions: 9999,
 };
 
 function computeDisplayFields(bank: any) {
@@ -180,19 +186,16 @@ function computeDisplayFields(bank: any) {
   const core = f.core || {};
   const extraArr = Array.isArray(f.extra) ? f.extra : [];
 
-  // Helper: visible?
   const isVisible = (k: string) => {
     if (typeof core?.[k]?.visible === "boolean") return !!core[k].visible;
-    return k === "iban" ? false : true; // default visibility
+    return k === "iban" ? false : true;
   };
 
-  // Helper: label (override if present)
   const coreLabel = (k: CoreKey) => {
     const raw = (core?.[k]?.label ?? "").trim?.() || "";
     return raw || CORE_LABELS[k];
   };
 
-  // Helper: order
   const coreOrder = (k: CoreKey) => {
     const n = Number(core?.[k]?.order);
     return Number.isFinite(n) ? n : (CORE_DEFAULT_ORDER[k] ?? 1000);
@@ -212,8 +215,6 @@ function computeDisplayFields(bank: any) {
     });
   });
 
-  // Ensure extras always come AFTER core fields visually.
-  // We offset extras by +1000 so they never interleave ahead of core.
   const EXTRAS_OFFSET = 1000;
 
   const extras = extraArr
@@ -226,7 +227,6 @@ function computeDisplayFields(bank: any) {
       order: Number(x.order ?? 0) + EXTRAS_OFFSET,
     }));
 
-  // sort all by order number
   const all = visibleCore.concat(extras).sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
 
   return { core: visibleCore, extra: extras, all };
@@ -471,6 +471,7 @@ checkoutPublicRouter.post(
 
 // ───────────────────────────────────────────────
 // 2a) Public: list active bank rails for method (merchant + global)
+//     (now also returns method-level limits so FE can set min/max)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { merchantId, currency, diditSubject } = req.checkout;
@@ -478,8 +479,10 @@ checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLim
   if (clientStatus !== "ACTIVE") {
     return rejectInactiveClient(res, clientStatus, "deposit");
   }
-  const { codes: allowedMethods } = await getAllowedMethodsForMerchant(merchantId);
+
+  const { codes: allowedMethods, map: allowedMethodMap } = await getAllowedMethodsForMerchant(merchantId);
   if (!allowedMethods.size) return res.json({ ok: true, banks: [] });
+
   const requestedCurrency = normalizeCurrencyCode((req.query.currency as string) || currency || "");
   const requestedMethod = String(req.query.method || "").trim().toUpperCase();
 
@@ -507,12 +510,19 @@ checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLim
   const banks = rows.map((b) => {
     const method = String(b.method || "").trim().toUpperCase();
     const methodLabel = (b.label || method || "").toString();
+    const cfg = allowedMethodMap.get(method) as any | undefined;
+    const minCents = Number.isFinite(cfg?.minDepositCents) ? Number(cfg.minDepositCents) :
+                     Number.isFinite(cfg?.minCents) ? Number(cfg.minCents) : FALLBACK_MIN_CENTS;
+    const maxCents = Number.isFinite(cfg?.maxDepositCents) ? Number(cfg.maxDepositCents) :
+                     Number.isFinite(cfg?.maxCents) ? Number(cfg.maxCents) : FALLBACK_MAX_CENTS;
+
     return {
       id: b.id,
       method,
       methodLabel: methodLabel || method,
       currency: normalizeCurrencyCode(b.currency) || requestedCurrency,
       active: !!b.active,
+      limits: { minCents, maxCents },
     };
   });
 
@@ -533,16 +543,18 @@ checkoutPublicRouter.get("/public/forms", checkoutAuth, applyMerchantLimits, asy
 // ───────────────────────────────────────────────
 // 2b) Public: deposit intent (create or reuse) + optional bank selection
 //             (validation now uses forms for the selected bank)
+//             (and IDR v4 displayFields now use Fazz VA values)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency, externalId, email } = req.checkout;
+  const { merchantId, diditSubject, currency } = req.checkout;
 
   const { map: allowedMethodMap, codes: allowedMethodCodes } = await getAllowedMethodsForMerchant(merchantId);
 
   const intentSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
-    payer: z.union([payerOsko, payerPayId]),
+    // AU: OSKO/PAYID | IDR: tolerant IDR VA (Fazz)
+    payer: z.union([payerOsko, payerPayId, payerIdr]),
     bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
   });
@@ -559,10 +571,16 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   if (!allowedMethodCodes.has(base.method)) {
     return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
   }
-  const selectedMethod = allowedMethodMap.get(base.method);
+  const selectedMethod: any = allowedMethodMap.get(base.method);
 
-  if (base.amountCents < MIN_CENTS || base.amountCents > MAX_CENTS) {
-    return res.status(400).json({ ok: false, error: "Amount out of range" });
+  // Pull min/max from method config; safe fallbacks
+  const minCents = Number.isFinite(selectedMethod?.minDepositCents) ? Number(selectedMethod.minDepositCents) :
+                   Number.isFinite(selectedMethod?.minCents) ? Number(selectedMethod.minCents) : FALLBACK_MIN_CENTS;
+  const maxCents = Number.isFinite(selectedMethod?.maxDepositCents) ? Number(selectedMethod.maxDepositCents) :
+                   Number.isFinite(selectedMethod?.maxCents) ? Number(selectedMethod.maxCents) : FALLBACK_MAX_CENTS;
+
+  if (base.amountCents < minCents || base.amountCents > maxCents) {
+    return res.status(400).json({ ok: false, error: "Amount out of range", limits: { minCents, maxCents } });
   }
 
   // Find or create user; enforce KYC gate
@@ -581,36 +599,6 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
   const clientStatus = normalizeClientStatus(mapping?.status);
   if (clientStatus !== "ACTIVE") {
     return rejectInactiveClient(res, clientStatus, "deposit");
-  }
-  if (!user.verifiedAt) {
-    return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
-  }
-
-  // ───────────────────────────────────────────────
-  // NEW: soft-block deposit if name != KYC fullName
-  // ───────────────────────────────────────────────
-  const payerNameRaw = ((base.payer as any).holderName || "").trim();
-
-  const nameMatch = evaluateNameMatch(
-    payerNameRaw,
-    (user as any).firstName,
-    (user as any).lastName,
-    (user as any).fullName,
-  );
-
-  if (!nameMatch.allow) {
-    return res.status(400).json({
-      ok: false,
-      error: "NAME_MISMATCH",
-      message: "Account holder name must match the verified KYC name.",
-      details: {
-        kycFullName: (user as any).fullName,
-        kycFirstName: (user as any).firstName,
-        kycLastName: (user as any).lastName,
-        payerName: payerNameRaw,
-        nameMatchScore: nameMatch.score,
-      },
-    });
   }
 
   const chosenBank = await loadMerchantBank(merchantId, base.bankAccountId);
@@ -633,11 +621,29 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
       .json({ ok: false, error: v.error, field: v.field || undefined });
   const sanitizedExtras = v.values || {};
 
-  const display = computeDisplayFields(chosenBank);
+  // KYC required BEFORE showing instructions
+  if (!user.verifiedAt) {
+    let url: string | null = null;
+    try {
+      const didit = await import("../services/didit.js");
+      if (typeof (didit as any).createLowCodeLink === "function") {
+        const out = await (didit as any).createLowCodeLink({ subject: diditSubject, merchantId });
+        url = out?.url || null;
+        if (url && out?.sessionId) {
+          await prisma.kycVerification.create({
+            data: { userId: user.id, provider: "didit", status: "pending", externalSessionId: out.sessionId },
+          });
+        }
+      }
+    } catch {}
+    return res.status(403).json({ ok: false, error: "KYC_REQUIRED", url: url || "/public/kyc/done" });
+  }
 
+  const display = computeDisplayFields(chosenBank);
   const referenceCode = generateTransactionId();
   const uniqueReference = generateUniqueReference();
 
+  // Build intent payload (sealed, reused on /public/deposit/submit)
   const intentPayload = {
     merchantId,
     userId: user.id,
@@ -661,7 +667,110 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     return res.status(500).json({ ok: false, error: "INTENT_ENCRYPTION_FAILED" });
   }
 
-  res.json({
+  // UPDATED: robust Fazz IDR detection
+  const cur = String(currency || "").toUpperCase();
+  const isFazzIdr =
+    cur === "IDR" &&
+    /(IDR|ID\s*VA|FAZZ|VIRTUAL[\s_-]*ACCOUNT)/i.test(base.method);
+
+  if (isFazzIdr) {
+    if (cur !== "IDR") {
+      return res.status(400).json({ ok: false, error: "CURRENCY_MISMATCH" });
+    }
+
+    // Dynamic vs Static from method label
+    const isDynamic = /DYNAMIC/i.test(base.method);
+    const methodCode = isDynamic ? "VIRTUAL_BANK_ACCOUNT_DYNAMIC" : "VIRTUAL_BANK_ACCOUNT_STATIC";
+
+    // Map bank name to Fazz bank codes (defaults to BCA)
+    const bankNameRaw = String((base.payer as any)?.bankName || chosenBank?.bankName || "").trim().toUpperCase();
+    const BANK_MAP: Record<string, string> = {
+      "BCA": "BCA", "BANK CENTRAL ASIA": "BCA",
+      "BNI": "BNI", "BANK NEGARA INDONESIA": "BNI",
+      "BRI": "BRI", "BANK RAKYAT INDONESIA": "BRI",
+      "MANDIRI": "MANDIRI", "BANK MANDIRI": "MANDIRI",
+      "PERMATA": "PERMATA", "BANK PERMATA": "PERMATA",
+      "CIMB": "CIMB", "CIMB NIAGA": "CIMB",
+      "DANAMON": "DANAMON",
+      "MAYBANK": "MAYBANK",
+      "SEA BANK": "SEABANK", "SEABANK": "SEABANK",
+    };
+    const bankCode = BANK_MAP[bankNameRaw] || "BCA";
+
+    try {
+      const providerMod: any = await import("../services/providers/index.js");
+      const adapter =
+        providerMod?.fazz ||
+        providerMod?.providers?.fazz ||
+        providerMod?.default?.fazz;
+
+      if (!adapter || typeof adapter.createDepositIntent !== "function") {
+        return res.status(503).json({ ok: false, error: "PROVIDER_UNAVAILABLE" });
+      }
+
+      const out = await adapter.createDepositIntent({
+        tid: referenceCode,
+        uid: user.publicId,
+        merchantId,
+        methodCode,
+        amountCents: base.amountCents,
+        currency: "IDR",
+        bankCode,
+        kyc: { fullName: user.fullName || (user as any).displayName || "Customer", diditSubject },
+      });
+
+      // Provider-derived values
+      const vaAccountNo = out?.va?.accountNo || null;
+      const vaAccountName = out?.va?.accountName || "Virtual Account";
+      const vaBankShort = out?.va?.bankCode || out?.instructions?.payment?.data?.attributes?.paymentMethod?.instructions?.bankShortCode || bankCode || "BCA";
+
+      // Start from bank config fields, but **override values+labels** for VA
+      const overridden = display.all.map((item) => {
+        if (item.key === "holderName") {
+          return { ...item, label: "Account Holder Name", value: vaAccountName };
+        }
+        if (item.key === "bankName") {
+          return { ...item, label: "Bank Name", value: vaBankShort };
+        }
+        if (item.key === "accountNo") {
+          return { ...item, label: "Virtual Account Number", value: vaAccountNo };
+        }
+        return item;
+      });
+
+      const bankDetails = {
+        holderName: vaAccountName,
+        bankName: vaBankShort,
+        accountNo: vaAccountNo,
+        iban: null,
+        instructions: out.instructions || chosenBank?.instructions || null,
+        method: chosenBank?.method || base.method,
+        label: chosenBank?.label || null,
+        fields: chosenBank?.fields || null,
+        displayFields: overridden, // <-- critical fix
+      };
+
+      return res.json({
+        ok: true,
+        referenceCode,
+        uniqueReference,
+        currency,
+        amountCents: base.amountCents,
+        intentToken,
+        bankDetails,
+        provider: "FAZZ",
+        providerDetails: { va: out?.va ?? null },
+        expiresAt: out.expiresAt || null,
+        limits: { minCents, maxCents },
+      });
+    } catch (err) {
+      console.error("[deposit-intent:fazz] failed", err);
+      return res.status(502).json({ ok: false, error: "PROVIDER_ERROR" });
+    }
+  }
+
+  // AU / other rails (existing behavior)
+  return res.json({
     ok: true,
     referenceCode,
     uniqueReference,
@@ -676,9 +785,10 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
       instructions: chosenBank?.instructions || null,
       method: chosenBank?.method || null,
       label: chosenBank?.label || null,
-      fields: chosenBank?.fields || null,       // raw config
-      displayFields: display.all,             // convenient ordered list
+      fields: chosenBank?.fields || null,
+      displayFields: display.all,
     },
+    limits: { minCents, maxCents },
   });
 });
 
@@ -806,7 +916,7 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
 // 4) Public: create withdrawal (still merchant-level forms)
 // ───────────────────────────────────────────────
 checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
-  const { merchantId, diditSubject, currency, availableBalanceCents, externalId, email } = req.checkout;
+  const { merchantId, diditSubject, currency, availableBalanceCents } = req.checkout;
   const { map: allowedMethodMap, codes: allowedMethodCodes } = await getAllowedMethodsForMerchant(merchantId);
 
   const withdrawalSchema = z.object({
@@ -829,10 +939,16 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   if (!allowedMethodCodes.has(body.method)) {
     return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
   }
-  const selectedMethod = allowedMethodMap.get(body.method);
+  const selectedMethod = allowedMethodMap.get(body.method) as any;
 
-  if (body.amountCents < MIN_CENTS || body.amountCents > MAX_CENTS) {
-    return res.status(400).json({ ok: false, error: "Amount out of range" });
+  // Per-method limits if present (fallback to global constants)
+  const minCents = Number.isFinite(selectedMethod?.minWithdrawalCents) ? Number(selectedMethod.minWithdrawalCents) :
+                   Number.isFinite(selectedMethod?.minCents) ? Number(selectedMethod.minCents) : FALLBACK_MIN_CENTS;
+  const maxCents = Number.isFinite(selectedMethod?.maxWithdrawalCents) ? Number(selectedMethod.maxWithdrawalCents) :
+                   Number.isFinite(selectedMethod?.maxCents) ? Number(selectedMethod.maxCents) : FALLBACK_MAX_CENTS;
+
+  if (body.amountCents < minCents || body.amountCents > maxCents) {
+    return res.status(400).json({ ok: false, error: "Amount out of range", limits: { minCents, maxCents } });
   }
   if (typeof availableBalanceCents === "number" && body.amountCents > availableBalanceCents) {
     return res.status(400).json({ ok: false, error: "INSUFFICIENT_BALANCE" });

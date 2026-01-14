@@ -653,14 +653,14 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     return () => {
       if (window.PayX) return Promise.resolve(window.PayX);
       if (!pending) {
+        const script = document.createElement('script');
+        script.src = '/public/checkout/checkout-widget.js';
+        script.async = true;
         pending = new Promise((resolve, reject) => {
-          const script = document.createElement('script');
-          script.src = '/public/checkout/checkout-widget.js';
-          script.async = true;
           script.onload = () => window.PayX ? resolve(window.PayX) : reject(new Error('Checkout widget unavailable'));
           script.onerror = () => reject(new Error('Failed to load checkout widget'));
-          document.head.appendChild(script);
         });
+        document.head.appendChild(script);
       }
       return pending;
     };
@@ -755,4 +755,90 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     const href = (a.getAttribute('href') || '').replace(/\/+$/, '');
     if (href && href === here) a.classList.add('active');
   });
+})();
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   IDR v4 tiny patch:
+   - Intercepts /public/deposit/intent responses.
+   - If provider === FAZZ, populate the modal with VA fields returned by Fazz.
+   - Adds provider instructions (steps) under the fields.
+   This runs only in the merchant portal and does not modify the shared widget.
+────────────────────────────────────────────────────────────────────────────── */
+(() => {
+  let lastFazz = null;
+
+  const origFetch = window.fetch;
+  window.fetch = async (input, init) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const res = await origFetch(input, init);
+    if (/\/public\/deposit\/intent\b/.test(url)) {
+      try {
+        const clone = res.clone();
+        const json = await clone.json();
+        if (json && json.ok && (json.provider === 'FAZZ' || /fazz/i.test(json.provider || ''))) {
+          lastFazz = json;
+          // Defer so the modal has time to render
+          setTimeout(applyFazzModalPatch, 0);
+        }
+      } catch {}
+    }
+    return res;
+  };
+
+  function applyFazzModalPatch() {
+    if (!lastFazz) return;
+    const data = lastFazz.bankDetails || {};
+    // Find the Transfer details modal
+    const modal = Array.from(document.querySelectorAll('[role="dialog"], .modal, .payx-modal'))
+      .find(el => /transfer details/i.test(el.textContent || ''));
+    if (!modal) return;
+
+    const setRow = (label, value) => {
+      if (value == null || value === '') return;
+      const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const row = Array.from(modal.querySelectorAll('.row, .form-line, tr, li, div'))
+        .find(el => new RegExp('\\b' + esc(label) + '\\b', 'i').test(el.textContent || ''));
+      if (!row) return;
+      const valEl =
+        row.querySelector('.value, code, strong, span:last-child, dd') ||
+        row.querySelector('div:last-child') || row;
+      valEl.textContent = String(value);
+    };
+
+    setRow('Account Holder Name', data.holderName || data.accountName);
+    setRow('Bank Name', data.bankName || data.bankCode || data.vaBank);
+    setRow('Account / PayID Value', data.accountNo || data.vaNumber);
+
+    // Add instructions (once)
+    if (!modal.querySelector('[data-fazz-instructions]')) {
+      let steps = [];
+      const instr = data.instructions || lastFazz.instructions;
+      if (Array.isArray(instr)) steps = instr;
+      else if (instr && Array.isArray(instr.steps)) steps = instr.steps;
+      else if (typeof instr === 'string') steps = instr.split(/\n+/).filter(Boolean);
+
+      if (steps.length) {
+        const box = document.createElement('div');
+        box.setAttribute('data-fazz-instructions','');
+        box.style.marginTop = '8px';
+        box.innerHTML = '<div class="muted" style="margin:6px 0 4px 0;">Instructions</div>';
+        const ol = document.createElement('ol');
+        ol.style.margin = '0 0 8px 16px';
+        ol.style.padding = '0';
+        steps.forEach(s => {
+          const li = document.createElement('li');
+          li.textContent = s;
+          ol.appendChild(li);
+        });
+        box.appendChild(ol);
+        // Insert before the receipt row if present
+        const receiptRow = modal.querySelector('input[type="file"]')?.closest('.row, .form-line, div');
+        (receiptRow?.parentElement || modal).insertBefore(box, receiptRow || null);
+      }
+    }
+  }
+
+  // Re-apply whenever DOM mutates (modal mounts)
+  const mo = new MutationObserver(() => applyFazzModalPatch());
+  mo.observe(document.documentElement, { childList: true, subtree: true });
 })();

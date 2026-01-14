@@ -22,6 +22,8 @@
 
   const _bankFormCache = {};
   let _availableMethods = [];
+  // NEW: remember per-method limits from /public/deposit/banks
+  const _methodLimits = Object.create(null); // { METHOD: {minCents,maxCents} }
 
   function ensureStyles() {
     if (document.querySelector('link[data-payx-style="1"]')) return;
@@ -52,6 +54,7 @@
     return e;
   }
 
+  // Legacy fallbacks (used when server didn't send limits)
   const MIN_AMOUNT = 50;
   const MAX_AMOUNT = 5000;
 
@@ -214,14 +217,20 @@
     });
   }
 
-  function validateAmountRange(amountCents) {
-    if (!Number.isInteger(amountCents) || amountCents < MIN_AMOUNT * 100 || amountCents > MAX_AMOUNT * 100) {
-      return `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
+  // UPDATED: allow dynamic limits
+  function validateAmountRange(amountCents, limits) {
+    const has = limits && Number.isFinite(limits.minCents) && Number.isFinite(limits.maxCents);
+    const minC = has ? Math.max(0, limits.minCents) : MIN_AMOUNT * 100;
+    const maxC = has ? Math.max(minC, limits.maxCents) : MAX_AMOUNT * 100;
+    if (!Number.isInteger(amountCents) || amountCents < minC || amountCents > maxC) {
+      const minStr = (minC / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      const maxStr = (maxC / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      return `Enter an amount between ${minStr} and ${maxStr} ${currencyUnit()}.`;
     }
     return null;
   }
-  function validateDepositInputs(amountCents) { return validateAmountRange(amountCents); }
-  function validateWithdrawalInputs(amountCents) { return validateAmountRange(amountCents); }
+  function validateDepositInputs(amountCents, limits) { return validateAmountRange(amountCents, limits); }
+  function validateWithdrawalInputs(amountCents, limits) { return validateAmountRange(amountCents, limits); }
 
   async function ensureKyc(token) {
     const st = await call("/public/kyc/status", token, { method:"GET" });
@@ -401,7 +410,7 @@
     const cacheKey = `${method}::${currency}`;
     if (_bankFormCache[cacheKey]) return _bankFormCache[cacheKey];
 
-    if (!method) return { bankId: null, depositFields: [], withdrawalFields: [] };
+    if (!method) return { bankId: null, depositFields: [], withdrawalFields: [], limits: null };
 
     const params = new URLSearchParams();
     if (method) params.set("method", method);
@@ -427,11 +436,16 @@
     const firstActive = candidates[0];
 
     if (!firstActive || !firstActive.id) {
-      const result = { bankId: null, depositFields: [], withdrawalFields: [] };
+      const result = { bankId: null, depositFields: [], withdrawalFields: [], limits: null };
       _bankFormCache[cacheKey] = result;
       console.warn(`[PayX] getBankAndFormsForMethod:no-bank`, { method, currency });
       return result;
     }
+
+    // capture limits (server now sends them)
+    const limits = firstActive.limits && Number.isFinite(firstActive.limits.minCents) && Number.isFinite(firstActive.limits.maxCents)
+      ? { minCents: Number(firstActive.limits.minCents), maxCents: Number(firstActive.limits.maxCents) }
+      : null;
 
     let cfg;
     try {
@@ -444,9 +458,10 @@
       bankId: firstActive.id,
       depositFields: Array.isArray(cfg?.deposit) ? cfg.deposit : [],
       withdrawalFields: Array.isArray(cfg?.withdrawal) ? cfg.withdrawal : [],
+      limits,
     };
     _bankFormCache[cacheKey] = result;
-    console.info(`[PayX] getBankAndFormsForMethod:success`, { method, currency, bankId: firstActive.id });
+    console.info(`[PayX] getBankAndFormsForMethod:success`, { method, currency, bankId: firstActive.id, limits });
     return result;
   }
 
@@ -472,9 +487,16 @@
       if (methods.find((m) => m.value === value)) return;
       const label = String(bank?.methodLabel || value).trim();
       methods.push({ value, label: label || value });
+      // remember limits for this method (first seen)
+      if (bank && bank.limits && !_methodLimits[value]) {
+        _methodLimits[value] = {
+          minCents: Number(bank.limits.minCents),
+          maxCents: Number(bank.limits.maxCents),
+        };
+      }
     });
     _availableMethods = methods;
-    console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length });
+    console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length, methods, limits:_methodLimits });
     return methods;
   }
 
@@ -644,6 +666,21 @@
     let selectedBankId = null;
     let formReady = false;
 
+    // NEW: track limits for current selection
+    let currentLimits = null;
+    function applyAmountLimits(limits) {
+      const has = limits && Number.isFinite(limits.minCents) && Number.isFinite(limits.maxCents);
+      if (has) {
+        amount.min = (limits.minCents / 100).toString();
+        amount.max = (limits.maxCents / 100).toString();
+        amount.placeholder = `Amount (${currencyUnit()}, min ${(limits.minCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} max ${(limits.maxCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})})`;
+      } else {
+        amount.removeAttribute("min");
+        amount.removeAttribute("max");
+        amount.placeholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
+      }
+    }
+
     async function refreshDynForMethod() {
       const prev = typeof dyn.getValues === "function" ? dyn.getValues() : (draft.extras || {});
       dynMount.innerHTML = "";
@@ -652,8 +689,10 @@
       configWarning.textContent = "";
       formReady = false;
       selectedBankId = null;
+      currentLimits = null;
+      applyAmountLimits(null);
 
-      const methodVal = String(method.value || "").trim();
+      const methodVal = String(method.value || "").trim().toUpperCase();
       if (!methodVal) {
         selectedBankId = null;
         dyn = buildDynamicFrom([], prev);
@@ -669,8 +708,11 @@
 
       try {
         console.info("[PayX] openDeposit:getBankForms:start", methodVal);
-        const { bankId, depositFields } = await getBankAndFormsForMethod(token, methodVal);
+        const { bankId, depositFields, limits } = await getBankAndFormsForMethod(token, methodVal);
         selectedBankId = bankId;
+        currentLimits = limits || _methodLimits[methodVal] || null;
+        applyAmountLimits(currentLimits);
+
         dyn = buildDynamicFrom(Array.isArray(depositFields) ? depositFields : [], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
@@ -683,7 +725,7 @@
           configWarning.style.display = "none";
           formReady = true;
         }
-        console.info("[PayX] openDeposit:getBankForms:done", { method: methodVal, bankId });
+        console.info("[PayX] openDeposit:getBankForms:done", { method: methodVal, bankId, currentLimits });
       } catch (e) {
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
@@ -700,7 +742,7 @@
 
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
-      let err = validateDepositInputs(amountCents);
+      let err = validateDepositInputs(amountCents, currentLimits);
       err = err || dyn.validate();
       const ready = formReady && Boolean(String(method.value || ""));
       setEnabled(nextBtn, ready && !err);
@@ -726,10 +768,8 @@
       const extras = dyn.getValues();
       const payer = inferPayerFromExtras(method.value, extras);
 
-      if (amountCents === null) {
-        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
-        return;
-      }
+      const firstErr = validateDepositInputs(amountCents, currentLimits);
+      if (firstErr) { status.textContent = firstErr; return; }
 
       if (!formReady || !method.value || !selectedBankId) {
         configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
@@ -738,7 +778,7 @@
         return;
       }
 
-      const verr = validateDepositInputs(amountCents) || dyn.validate();
+      const verr = dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       payer.holderName = String(payer.holderName || "").trim();
@@ -908,9 +948,24 @@
     let refreshSeq = 0;
     let selectedBankId = null;
 
+    // NEW: track limits for current withdrawal method
+    let currentLimits = null;
+    function applyAmountLimits(limits) {
+      const has = limits && Number.isFinite(limits.minCents) && Number.isFinite(limits.maxCents);
+      if (has) {
+        amount.min = (limits.minCents / 100).toString();
+        amount.max = (limits.maxCents / 100).toString();
+        amount.placeholder = `Amount (${currencyUnit()}, min ${(limits.minCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})} max ${(limits.maxCents/100).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})})`;
+      } else {
+        amount.removeAttribute("min");
+        amount.removeAttribute("max");
+        amount.placeholder = `Amount (${currencyUnit()}, min ${MIN_AMOUNT} max ${MAX_AMOUNT})`;
+      }
+    }
+
     function updateValidity() {
       const amountCents = normalizeAmountInput(amount.value);
-      let err = validateWithdrawalInputs(amountCents);
+      let err = validateWithdrawalInputs(amountCents, currentLimits);
       err = err || dyn.validate();
       const ready = formReady && Boolean(String(method.value || "")) && Boolean(selectedBankId);
       setEnabled(submit, ready && !err);
@@ -926,8 +981,10 @@
       configWarning.textContent = "";
       formReady = false;
       selectedBankId = null;
+      currentLimits = null;
+      applyAmountLimits(null);
 
-      const methodVal = String(method.value || "").trim();
+      const methodVal = String(method.value || "").trim().toUpperCase();
       if (!methodVal) {
         dyn = buildDynamicFrom([], prev);
         dynMount.innerHTML = "";
@@ -942,9 +999,12 @@
 
       try {
         console.info("[PayX] openWithdrawal:getBankForms:start", methodVal);
-        const { bankId, withdrawalFields } = await getBankAndFormsForMethod(token, methodVal);
+        const { bankId, withdrawalFields, limits } = await getBankAndFormsForMethod(token, methodVal);
         if (seq !== refreshSeq) return;
         selectedBankId = bankId || null;
+        currentLimits = limits || _methodLimits[methodVal] || null;
+        applyAmountLimits(currentLimits);
+
         dyn = buildDynamicFrom(Array.isArray(withdrawalFields) ? withdrawalFields : [], prev);
         dynMount.innerHTML = "";
         dynMount.appendChild(dyn.wrap);
@@ -957,7 +1017,7 @@
           configWarning.style.display = "none";
           formReady = true;
         }
-        console.info("[PayX] openWithdrawal:getBankForms:done", { method: methodVal, bankId });
+        console.info("[PayX] openWithdrawal:getBankForms:done", { method: methodVal, bankId, currentLimits });
       } catch (err) {
         if (seq !== refreshSeq) return;
         selectedBankId = null;
@@ -982,10 +1042,8 @@
       const extras = dyn.getValues();
       const destination = inferPayerFromExtras(method.value, extras);
 
-      if (amountCents === null) {
-        status.textContent = `Enter an amount between ${MIN_AMOUNT} and ${MAX_AMOUNT} ${currencyUnit()}.`;
-        return;
-      }
+      const firstErr = validateWithdrawalInputs(amountCents, currentLimits);
+      if (firstErr) { status.textContent = firstErr; return; }
 
       if (!formReady || !method.value || !selectedBankId) {
         configWarning.textContent = NO_FORM_MESSAGE;
@@ -994,7 +1052,7 @@
         return;
       }
 
-      const verr = validateWithdrawalInputs(amountCents) || dyn.validate();
+      const verr = dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
       destination.holderName = String(destination.holderName || "").trim();
@@ -1094,6 +1152,3 @@
     }
   };
 })();
-
-
-

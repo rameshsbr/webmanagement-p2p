@@ -25,6 +25,13 @@
       .trim()
       .replace(/\b\w/g, c => c.toUpperCase());
   }
+  // Treat these as "money-in-cents" columns, but show/edit as currency units in the UI
+  const CENT_COLS = new Set([
+    'depositMinAmountCents',
+    'depositMaxAmountCents',
+    'withdrawMinAmountCents',
+    'withdrawMaxAmountCents'
+  ]);
 %>
 
 <style>
@@ -349,7 +356,12 @@
              const key = col.name;
              const defLabel = titleize(key);
              const vis = coreVisible(key);
-             const val = bank ? bank[key] : '';
+             const rawVal = bank ? bank[key] : '';
+             const isCent = CENT_COLS.has(key);
+             const val = (rawVal === null || typeof rawVal === 'undefined') ? '' : rawVal;
+             const displayVal = isCent
+               ? (val === '' ? '' : (Number(val) / 100).toFixed(2))
+               : val;
              const orderVal = (core[key] && typeof core[key].order === 'number') ? core[key].order : (100 + i);
         %>
           <div class="stack col-6 core-block draggable" data-core-block="<%- key %>">
@@ -377,15 +389,21 @@
             <div class="control-row">
               <% if (col.input === 'checkbox') { %>
                 <label class="ios-toggle-switch">
-                  <input type="checkbox" name="<%- key %>" <%= val ? 'checked' : '' %> />
+                  <input type="checkbox" name="<%- key %>" <%= rawVal ? 'checked' : '' %> />
                   <span class="slider"></span>
                 </label>
               <% } else if (col.input === 'number') { %>
-                <input name="<%- key %>" type="number" class="w-md grow" value="<%- (val ?? '') %>" />
+                <input
+                  name="<%- key %>"
+                  type="number"
+                  class="w-md grow"
+                  <%= CENT_COLS.has(key) ? 'step="0.01" min="0"' : '' %>
+                  value="<%- (displayVal ?? '') %>"
+                />
               <% } else if (col.input === 'date') { %>
-                <input name="<%- key %>" type="date" class="w-md grow" value="<%- val ? new Date(val).toISOString().slice(0,10) : '' %>" />
+                <input name="<%- key %>" type="date" class="w-md grow" value="<%- rawVal ? new Date(rawVal).toISOString().slice(0,10) : '' %>" />
               <% } else { %>
-                <input name="<%- key %>" class="w-md grow" value="<%- (val ?? '') %>" />
+                <input name="<%- key %>" class="w-md grow" value="<%- (rawVal ?? '') %>" />
               <% } %>
             </div>
             <input type="hidden" name="core_label_<%- key %>" value="<%- coreLabel(key, defLabel) %>">
@@ -597,7 +615,6 @@
       return items
         .map(el => {
           const r = el.getBoundingClientRect();
-          // use position relative to container to reduce jitter
           const cx = (r.left - crect.left) + r.width/2;
           const cy = (r.top  - crect.top ) + r.height/2;
           return { el, key: cy * 10000 + cx };

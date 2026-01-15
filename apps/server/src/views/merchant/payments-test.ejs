@@ -17,12 +17,10 @@
         <option value="idr-v4">IDR v4</option>
       </select>
     </label>
+    <div data-test-message style="margin-top:2px; text-align:center; font-size:14px; opacity:.85; display:none;"></div>
   </div>
 
-  <!-- Message area -->
-  <div data-test-message style="margin-top:2px; text-align:center; font-size:14px; opacity:.85; display:none;"></div>
-
-  <!-- P2P section: keep your existing test buttons/flow -->
+  <!-- P2P (unchanged; the shared widget handles its own overlay) -->
   <div data-test-section="p2p" style="display:block;">
     <div class="row" style="justify-content:center; gap:16px; margin-top:4px;">
       <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
@@ -30,11 +28,292 @@
     </div>
   </div>
 
-  <!-- IDR v4 section: buttons only (modal opens inside page just like P2P) -->
-  <div data-test-section="idr-v4" style="display:none;">
+  <!-- IDR v4: buttons only. We render a custom overlay on click. -->
+  <section class="card" style="margin-top:12px" data-test-section="idr-v4">
+    <div class="card__header">
+      <h3 style="margin:0;">IDR v4</h3>
+    </div>
     <div class="row" style="justify-content:center; gap:16px; margin-top:4px;">
       <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
       <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
     </div>
-  </div>
+    <div class="muted" style="text-align:center; font-size:12px; margin-top:6px;">
+      Limits: 10,000 — 100,000,000 IDR.
+    </div>
+  </section>
 </div>
+
+<!-- Bootstrap data for IDR v4 -->
+<script type="application/json" id="idr-v4-methods"><%- JSON.stringify((testCheckout && testCheckout.idrVaMethods) || []) %></script>
+<script type="application/json" id="idr-v4-banks"><%- JSON.stringify((testCheckout && testCheckout.idrBanksByMethod) || {}) %></script>
+
+<script>
+/* =============================================================================
+   IDR v4 overlay (local-only). We *intercept clicks* when method=IDR v4
+   and render our own modal so we don't see the P2P form.
+   - Deposit: amount (IDR, min 10k / max 100,000,000) → method → bank → call
+              /merchant/payments/idr-v4/deposit → show FAZZ VA details.
+   - Withdrawal: amount → name / acct no / bank → Validate (>=60%) → Submit.
+============================================================================= */
+(() => {
+  const root = document.querySelector('[data-test-payments]');
+  if (!root) return;
+
+  const METHOD_MIN = 10_000;
+  const METHOD_MAX = 100_000_000;
+
+  const getMode = () => (root.querySelector('[data-test-method]')?.value || '').toLowerCase();
+  const setMessage = (text, variant = 'info') => {
+    const el = root.querySelector('[data-test-message]');
+    if (!el) return;
+    el.textContent = text || '';
+    el.style.display = text ? '' : 'none';
+    el.style.color = variant === 'error' ? 'var(--danger, #b91c1c)' : '';
+    el.style.opacity = text ? '.9' : '.85';
+  };
+
+  // Toggle sections (P2P vs IDR v4)
+  const p2p = root.querySelector('[data-test-section="p2p"]');
+  const idrv4 = root.querySelector('[data-test-section="idr-v4"]');
+  const showSection = (mode) => {
+    if (mode === 'idr-v4') {
+      p2p.style.display = 'none';
+      idrv4.style.display = '';
+      setMessage('IDR v4 selected.');
+    } else {
+      p2p.style.display = '';
+      idrv4.style.display = 'none';
+      setMessage('');
+    }
+  };
+  showSection(getMode());
+  root.querySelector('[data-test-method]')?.addEventListener('change', () => showSection(getMode()));
+
+  // Helpers
+  const readJson = (id, fallback) => {
+    try { const el = document.getElementById(id); return el ? JSON.parse(el.textContent || 'null') ?? fallback : fallback; }
+    catch { return fallback; }
+  };
+  const METHODS = readJson('idr-v4-methods', []);              // ["VIRTUAL_BANK_ACCOUNT_DYNAMIC", ...]
+  const BANKS_BY_METHOD = readJson('idr-v4-banks', {});        // { METHOD_CODE: [{id,label}], ... }
+  const money = (s) => { const v = Number(String(s || '').replace(/,/g,'').trim()); return Number.isFinite(v) && v > 0 ? v : null; };
+  const h = (tag, attrs={}, kids=[]) => { const el = document.createElement(tag);
+    for (const [k,v] of Object.entries(attrs)) { if (k==='class') el.className=v; else if (k==='style') el.style.cssText=v; else if (k==='html') el.innerHTML=v; else el.setAttribute(k,v); }
+    [].concat(kids).forEach(c => el.appendChild(typeof c==='string'?document.createTextNode(c):c)); return el; };
+  const copyBtn = (text) => { const b = h('button', {class:'btn small', type:'button', style:'padding:2px 8px;'} ,'Copy'); b.addEventListener('click',()=>navigator.clipboard?.writeText(String(text||''))); return b; };
+
+  // Modal
+  function openModal(builder) {
+    const overlay = h('div', { class: 'payx-overlay', style: `
+      position: fixed; inset: 0; background: rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:9999;`
+    });
+    const box = h('div', { class: 'payx-box', style: `
+      background: var(--card-bg, #fff); color: inherit; border-radius: 10px; min-width: 380px; max-width: 640px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.2); padding: 16px;`
+    });
+    const close = () => overlay.remove();
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    box.appendChild(h('div', { style:'display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;' }, [
+      h('div', { class:'muted', style:'font-weight:600;' }, 'IDR v4'),
+      h('button', { class:'btn small', type:'button' }, 'Close')
+    ]));
+    box.querySelector('button')?.addEventListener('click', close);
+    const body = h('div');
+    box.appendChild(body);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+    builder(body, close);
+  }
+
+  // Deposit flow
+  function openIdrDeposit() {
+    openModal((body, close) => {
+      const form = h('form', { style:'display:grid; gap:10px;' });
+      const amount = h('input', { class:'input', inputmode:'decimal', placeholder:'Amount (IDR, 10,000 – 100,000,000)' });
+      const method = h('select', { class:'input' }, METHODS.map(m => h('option', { value:m }, m)));
+      const bank = h('select', { class:'input' });
+
+      function refreshBanks() {
+        const m = (method.value || '').toUpperCase();
+        bank.innerHTML = '';
+        const rows = Array.isArray(BANKS_BY_METHOD[m]) ? BANKS_BY_METHOD[m] : [];
+        rows.forEach(r => bank.appendChild(h('option', { value:r.id }, r.label)));
+      }
+      method.addEventListener('change', refreshBanks);
+      refreshBanks();
+
+      const msg = h('div', { class:'muted', style:'font-size:12px;' });
+      const actions = h('div', { style:'display:flex; gap:8px; justify-content:flex-end;' }, [
+        h('button', { class:'btn', type:'button' }, 'Cancel'),
+        h('button', { class:'btn primary', type:'submit' }, 'Create VA')
+      ]);
+      actions.firstChild.addEventListener('click', close);
+
+      const row = (label, el) => h('label', { class:'form-line', style:'display:grid; grid-template-columns: 160px 1fr; gap:8px; align-items:center;' },
+        [ h('span', { class:'muted' }, label), el ]);
+
+      form.append(
+        row('Amount (IDR)', amount),
+        row('Method', method),
+        row('Bank (Virtual Account)', bank),
+        h('div', { class:'muted', style:'font-size:12px; margin-top:-6px;' }, 'Only banks linked to the selected method are shown.'),
+        actions,
+        msg
+      );
+      body.appendChild(form);
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        msg.textContent = '';
+        let val = money(amount.value);
+        if (!val) return msg.textContent = 'Enter a valid amount.';
+        if (val < METHOD_MIN || val > METHOD_MAX) {
+          return msg.textContent = `Amount must be between ${METHOD_MIN.toLocaleString('en-US')} and ${METHOD_MAX.toLocaleString('en-US')} IDR.`;
+        }
+        const payload = {
+          amount: val,
+          method: String(method.value || '').toUpperCase(),
+          bankAccountId: String(bank.value || ''),
+        };
+        if (!payload.method || !payload.bankAccountId) {
+          msg.textContent = 'Choose a method and bank.'; return;
+        }
+
+        actions.lastChild.disabled = true;
+        try {
+          const res = await fetch('/merchant/payments/idr-v4/deposit', {
+            method:'POST',
+            headers:{ 'Content-Type':'application/json' },
+            credentials:'same-origin',
+            body: JSON.stringify(payload),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to create VA');
+
+          // Show FAZZ transfer details
+          const t = data.transfer || {};
+          body.innerHTML = '';
+          body.appendChild(h('div', { class:'muted', style:'margin-bottom:6px;' }, 'Transfer details'));
+          const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr auto; gap:6px;' }, [
+            h('div', { class:'muted' }, 'Reference'), h('div', { class:'mono' }, t.reference || '-'), copyBtn(t.reference || ''),
+            h('div', { class:'muted' }, 'Bank'),      h('div', {}, t.bankName || '-'), h('div'),
+            h('div', { class:'muted' }, 'Virtual Account'), h('div', { class:'mono' }, t.accountNo || '-'), copyBtn(t.accountNo || ''),
+            h('div', { class:'muted' }, 'Amount'),    h('div', { class:'mono' }, 'IDR ' + val.toLocaleString('en-US')), h('div'),
+            t.expiresAt ? h('div', { class:'muted' }, 'Expires') : null,
+            t.expiresAt ? h('div', {}, new Date(t.expiresAt).toLocaleString()) : null,
+            t.expiresAt ? h('div') : null,
+          ].filter(Boolean));
+          body.appendChild(grid);
+          body.appendChild(h('div', { class:'muted', style:'margin-top:10px;' }, 'Make the transfer and include the reference.'));
+          body.appendChild(h('div', { style:'display:flex; justify-content:flex-end; margin-top:12px;' },
+            [ h('button', { class:'btn', type:'button' }, 'Done') ]))
+            .querySelector('button').addEventListener('click', close);
+        } catch (err) {
+          msg.textContent = (err && err.message) || 'Unable to create VA.';
+        } finally {
+          actions.lastChild.disabled = false;
+        }
+      });
+    });
+  }
+
+  // Withdrawal flow
+  function openIdrWithdrawal() {
+    openModal((body, close) => {
+      const form = h('form', { style:'display:grid; gap:10px;' });
+      const amount     = h('input', { class:'input', inputmode:'decimal', placeholder:'Amount (IDR)' });
+      const holderName = h('input', { class:'input', placeholder:'Account holder name' });
+      const accountNo  = h('input', { class:'input', placeholder:'Account number' });
+      const bankName   = h('input', { class:'input', placeholder:'Bank name' });
+
+      const row = (label, el) => h('label', { class:'form-line', style:'display:grid; grid-template-columns: 180px 1fr; gap:8px; align-items:center;' },
+        [ h('span', { class:'muted' }, label), el ]);
+
+      const validateBtn = h('button', { class:'btn', type:'button' }, 'Validate');
+      const validateMsg = h('span', { class:'muted' });
+      const submitBtn   = h('button', { class:'btn primary', type:'submit', disabled:'disabled' }, 'Submit withdraw');
+      const actions = h('div', { style:'display:flex; gap:8px; justify-content:flex-end;' }, [
+        h('button', { class:'btn', type:'button' }, 'Cancel'),
+        submitBtn
+      ]);
+      actions.firstChild.addEventListener('click', close);
+
+      form.append(
+        row('Amount (IDR)', amount),
+        row('Account holder name', holderName),
+        row('Account number', accountNo),
+        row('Bank name', bankName),
+        h('div', { style:'display:flex; gap:8px; align-items:center;' }, [validateBtn, validateMsg]),
+        actions
+      );
+      body.appendChild(form);
+
+      function busy(el, on){ el.disabled=!!on; el.classList.toggle('is-busy', !!on); }
+
+      validateBtn.addEventListener('click', async () => {
+        const amt = money(amount.value);
+        const n = (holderName.value||'').trim(), a = (accountNo.value||'').trim(), b = (bankName.value||'').trim();
+        if (!amt || !n || !a || !b) { validateMsg.textContent = 'Fill all fields first.'; return; }
+        busy(validateBtn, true); validateMsg.textContent = 'Validating...';
+        try {
+          const res = await fetch('/merchant-api/withdraw/validate', {
+            method:'POST',
+            headers:{ 'Content-Type':'application/json' },
+            credentials:'same-origin',
+            body: JSON.stringify({ holderName:n, accountNo:a, bankName:b, currency:'IDR' }),
+          });
+          const data = await res.json().catch(()=>({}));
+          if (!res.ok) throw new Error(data?.error || 'Validation failed');
+          const score = Number(data?.matchScore ?? 0);
+          if (score >= 0.6) { validateMsg.textContent = `Validated ✓ (match ${(score*100).toFixed(0)}%)`; submitBtn.disabled = false; }
+          else { validateMsg.textContent = `Name mismatch (match ${(score*100).toFixed(0)}%). Please correct.`; submitBtn.disabled = true; }
+        } catch (err) {
+          validateMsg.textContent = (err && err.message) || 'Validation error'; submitBtn.disabled = true;
+        } finally {
+          busy(validateBtn, false);
+        }
+      });
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const amt = money(amount.value);
+        if (!amt) { alert('Enter a valid amount'); return; }
+        busy(submitBtn, true);
+        try {
+          const res = await fetch('/merchant-api/withdrawals', {
+            method:'POST',
+            headers:{ 'Content-Type':'application/json' },
+            credentials:'same-origin',
+            body: JSON.stringify({
+              currency:'IDR',
+              amount: amt,
+              holderName:(holderName.value||'').trim(),
+              accountNo:(accountNo.value||'').trim(),
+              bankName:(bankName.value||'').trim(),
+            }),
+          });
+          const data = await res.json().catch(()=>({}));
+          if (!res.ok) throw new Error(data?.error || 'Failed to create withdrawal');
+          alert('Withdrawal submitted.');
+          close();
+        } catch (err) {
+          alert((err && err.message) || 'Unable to submit withdrawal');
+        } finally { busy(submitBtn, false); }
+      });
+    });
+  }
+
+  // INTERCEPT CLICKS for IDR v4 so the P2P widget doesn't open.
+  root.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-test-action]');
+    if (!btn) return;
+    if (getMode() !== 'idr-v4') return;          // let P2P flow as-is
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
+    const kind = (btn.getAttribute('data-test-action') || '').toLowerCase();
+    if (kind === 'deposit') openIdrDeposit();
+    else if (kind === 'withdrawal') openIdrWithdrawal();
+  }, true);
+})();
+</script>

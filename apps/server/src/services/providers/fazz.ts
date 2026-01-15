@@ -96,6 +96,26 @@ function dynamicVaNumber() {
   return "988" + tail;
 }
 
+/* ─── Platform status mapping (ADDED) ───────────────────────────────────────── */
+
+export type PlatformPaymentStatus = "PENDING" | "APPROVED" | "REJECTED";
+
+export function mapFazzPaymentStatusToPlatform(s: string): PlatformPaymentStatus {
+  const v = String(s || "").toLowerCase();
+  if (v === "completed") return "APPROVED";
+  if (v === "failed" || v === "cancelled") return "REJECTED";
+  // paid, pending, processing, anything else → PENDING
+  return "PENDING";
+}
+
+export function mapFazzDisbursementStatusToPlatform(s: string): PlatformPaymentStatus {
+  const v = String(s || "").toLowerCase();
+  if (v === "completed") return "APPROVED";
+  if (v === "failed" || v === "cancelled" || v === "rejected") return "REJECTED";
+  // processing, pending, queued, etc. → PENDING
+  return "PENDING";
+}
+
 /* ---------------- REAL helpers ---------------- */
 
 function ensureRealReady() {
@@ -446,7 +466,8 @@ async function realGetDepositStatus(providerPaymentId: string) {
     });
   } catch {}
 
-  return { status, raw: json };
+  // ADDED: platformStatus
+  return { status, platformStatus: mapFazzPaymentStatusToPlatform(status), raw: json };
 }
 
 async function realValidateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
@@ -581,7 +602,8 @@ async function realGetDisbursementStatus(providerPayoutId: string) {
     });
   } catch {}
 
-  return { status, raw: json };
+  // ADDED: platformStatus
+  return { status, platformStatus: mapFazzDisbursementStatusToPlatform(status), raw: json };
 }
 
 /* ---------------- Balance (new) ---------------- */
@@ -653,13 +675,21 @@ export const fazzAdapter: ProviderAdapter = {
         select: { status: true, rawLatestJson: true },
       });
       if (pp && pp.status) {
-        return { status: pp.status, raw: pp.rawLatestJson ?? { source: "db", providerPaymentId, status: pp.status } };
+        return {
+          status: pp.status,
+          platformStatus: mapFazzPaymentStatusToPlatform(pp.status),
+          raw: pp.rawLatestJson ?? { source: "db", providerPaymentId, status: pp.status },
+        };
       }
     } catch {}
     const h = crypto.createHash("sha256").update(providerPaymentId).digest("hex");
     const bucket = parseInt(h.slice(0, 2), 16) % 3;
     const status = bucket === 0 ? "pending" : bucket === 1 ? "paid" : "completed";
-    return { status, raw: { simulated: true, providerPaymentId, status } };
+    return {
+      status,
+      platformStatus: mapFazzPaymentStatusToPlatform(status),
+      raw: { simulated: true, providerPaymentId, status },
+    };
   },
 
   async cancelDeposit(_providerPaymentId?: string) {
@@ -698,12 +728,20 @@ export const fazzAdapter: ProviderAdapter = {
         select: { status: true, rawLatestJson: true },
       });
       if (pd && pd.status) {
-        return { status: pd.status, raw: pd.rawLatestJson ?? { source: "db", providerPayoutId, status: pd.status } };
+        return {
+          status: pd.status,
+          platformStatus: mapFazzDisbursementStatusToPlatform(pd.status),
+          raw: pd.rawLatestJson ?? { source: "db", providerPayoutId, status: pd.status },
+        };
       }
     } catch {}
     const h = crypto.createHash("sha256").update(providerPayoutId).digest("hex");
     const bucket = parseInt(h.slice(0, 2), 16) % 3;
     const status = bucket === 0 ? "processing" : bucket === 1 ? "completed" : "failed";
-    return { status, raw: { simulated: true, providerPayoutId, status } };
+    return {
+      status,
+      platformStatus: mapFazzDisbursementStatusToPlatform(status),
+      raw: { simulated: true, providerPayoutId, status },
+    };
   },
 };

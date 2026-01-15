@@ -147,7 +147,6 @@ superAdminRouter.post('/prefs/timezone', async (req: any, res) => {
     return res.status(500).json({ ok: false, error: 'Failed to save timezone' });
   }
 });
-
 // Methods management (list + analytics + CRUD)
 superAdminRouter.get("/methods", async (_req, res) => {
   const methods = await prisma.method.findMany({
@@ -155,44 +154,95 @@ superAdminRouter.get("/methods", async (_req, res) => {
     include: { merchantLinks: true },
   });
 
-  // Load all banks once, then bucket them by method code
+  // Detect which per-bank limit columns exist
+  const promotedCols = await getPromotedColumns();
+  const has = new Set(promotedCols.map((c) => c.name));
+  const useNew =
+    has.has("depositMinAmountCents") &&
+    has.has("depositMaxAmountCents") &&
+    has.has("withdrawMinAmountCents") &&
+    has.has("withdrawMaxAmountCents");
+
+  // Build a safe select for BankAccount
+  const bankSelect: any = {
+    id: true,
+    merchantId: true,
+    currency: true,
+    method: true,
+    label: true,
+    bankName: true,
+    accountNo: true,
+    active: true,
+  };
+  if (useNew) {
+    bankSelect.depositMinAmountCents = true;
+    bankSelect.depositMaxAmountCents = true;
+    bankSelect.withdrawMinAmountCents = true;
+    bankSelect.withdrawMaxAmountCents = true;
+  } else {
+    bankSelect.minDepositCents = true;
+    bankSelect.maxDepositCents = true;
+    bankSelect.minWithdrawalCents = true;
+    bankSelect.maxWithdrawalCents = true;
+  }
+
+  // Load all banks (ordered for stable UI)
   const allBanks = await prisma.bankAccount.findMany({
-    orderBy: [{ merchantId: "asc" }, { currency: "asc" }, { createdAt: "desc" }],
-    select: {
-      id: true,
-      merchantId: true,
-      currency: true,
-      method: true,
-      label: true,
-      bankName: true,
-      accountNo: true,
-      active: true,
-      // four limit columns on BankAccount:
-      // (cast as any in case your Prisma client hasn't regenerated with these columns yet)
-      // @ts-ignore
-      minDepositCents: true,
-      // @ts-ignore
-      maxDepositCents: true,
-      // @ts-ignore
-      minWithdrawalCents: true,
-      // @ts-ignore
-      maxWithdrawalCents: true,
-    } as any,
+    orderBy: [
+      { merchantId: "asc" },
+      { currency: "asc" },
+      { method: "asc" },
+      { createdAt: "desc" },
+    ] as any,
+    select: bankSelect,
   });
 
   // Resolve merchant names for nicer labels
-  const merchantIds = Array.from(new Set(allBanks.map(b => b.merchantId).filter(Boolean))) as string[];
+  const merchantIds = Array.from(
+    new Set(
+      allBanks
+        .map((b: any) => b.merchantId as string | null)
+        .filter((id): id is string => typeof id === "string" && id.length > 0)
+    )
+  );
   const merchantMap = new Map<string, string>();
   if (merchantIds.length) {
-    const merchants = await prisma.merchant.findMany({ where: { id: { in: merchantIds } }, select: { id: true, name: true } });
-    merchants.forEach(m => merchantMap.set(m.id, m.name));
+    const merchants = await prisma.merchant.findMany({
+      where: { id: { in: merchantIds } },
+      select: { id: true, name: true },
+    });
+    merchants.forEach((m) => merchantMap.set(m.id, m.name));
   }
 
+  // Bucket banks by method code; normalize field names for the view
   const byCode: Record<string, any[]> = {};
-  for (const b of allBanks) {
+  for (const b of allBanks as any[]) {
     const code = String(b.method || "").toUpperCase();
     if (!byCode[code]) byCode[code] = [];
-    byCode[code].push({ ...b, merchantName: b.merchantId ? merchantMap.get(b.merchantId) || "" : "" });
+
+    const merchantName = typeof b.merchantId === "string" ? (merchantMap.get(b.merchantId) ?? "") : "";
+
+    // Map whichever columns we have to the legacy keys the EJS template expects
+    const limits = useNew
+      ? {
+          minDepositCents: b.depositMinAmountCents ?? null,
+          maxDepositCents: b.depositMaxAmountCents ?? null,
+          minWithdrawalCents: b.withdrawMinAmountCents ?? null,
+          maxWithdrawalCents: b.withdrawMaxAmountCents ?? null,
+        }
+      : {
+          minDepositCents: b.minDepositCents ?? null,
+          maxDepositCents: b.maxDepositCents ?? null,
+          minWithdrawalCents: b.minWithdrawalCents ?? null,
+          maxWithdrawalCents: b.maxWithdrawalCents ?? null,
+        };
+
+    byCode[code].push({
+      ...b,
+      merchantName,
+      // keep the legacy names for the template:
+      ...limits,
+    });
   }
 
   // Attach banks to each method for the template
@@ -200,23 +250,17 @@ superAdminRouter.get("/methods", async (_req, res) => {
     (m as any).banks = byCode[m.code.trim().toUpperCase()] || [];
   });
 
+  // Basic stats
   const stats: Record<string, { merchants: number; deposits: number; withdrawals: number }> = {};
-
   await Promise.all(
     methods.map(async (method) => {
       const code = method.code.trim().toUpperCase();
-
       const [merchantCount, depositCount, withdrawalCount] = await Promise.all([
         prisma.merchantMethod.count({ where: { methodId: method.id, enabled: true } }),
         countPaymentsByMethod(code, "DEPOSIT", undefined, method.id),
         countPaymentsByMethod(code, "WITHDRAWAL", undefined, method.id),
       ]);
-
-      stats[method.id] = {
-        merchants: merchantCount,
-        deposits: depositCount,
-        withdrawals: withdrawalCount,
-      };
+      stats[method.id] = { merchants: merchantCount, deposits: depositCount, withdrawals: withdrawalCount };
     }),
   );
 
@@ -261,6 +305,15 @@ superAdminRouter.post("/methods/:id", async (req, res, next) => {
     const banksPayload = (req.body && (req.body as any).banks) || {};
     const updates: Array<Promise<any>> = [];
 
+    // Detect column set (new vs legacy)
+    const promotedCols = await getPromotedColumns();
+    const has = new Set(promotedCols.map((c) => c.name));
+    const useNew =
+      has.has("depositMinAmountCents") &&
+      has.has("depositMaxAmountCents") &&
+      has.has("withdrawMinAmountCents") &&
+      has.has("withdrawMaxAmountCents");
+
     if (banksPayload && typeof banksPayload === "object") {
       for (const [bankId, v] of Object.entries(banksPayload)) {
         const vals = (v || {}) as Record<string, unknown>;
@@ -270,20 +323,23 @@ superAdminRouter.post("/methods/:id", async (req, res, next) => {
         const minWithdrawalCents = parseAmountToCents(vals.minWithdrawal);
         const maxWithdrawalCents = parseAmountToCents(vals.maxWithdrawal);
 
-        // Update BankAccount with the four limits (null clears the value)
+        const data: any = {};
+        if (useNew) {
+          data.depositMinAmountCents = minDepositCents;
+          data.depositMaxAmountCents = maxDepositCents;
+          data.withdrawMinAmountCents = minWithdrawalCents;
+          data.withdrawMaxAmountCents = maxWithdrawalCents;
+        } else {
+          data.minDepositCents = minDepositCents;
+          data.maxDepositCents = maxDepositCents;
+          data.minWithdrawalCents = minWithdrawalCents;
+          data.maxWithdrawalCents = maxWithdrawalCents;
+        }
+
         updates.push(
           prisma.bankAccount.update({
             where: { id: String(bankId) },
-            data: {
-              // @ts-ignore – tolerate missing fields in older generated clients
-              minDepositCents: minDepositCents,
-              // @ts-ignore
-              maxDepositCents: maxDepositCents,
-              // @ts-ignore
-              minWithdrawalCents: minWithdrawalCents,
-              // @ts-ignore
-              maxWithdrawalCents: maxWithdrawalCents,
-            } as any,
+            data,
           })
         );
       }

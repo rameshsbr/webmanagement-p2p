@@ -930,3 +930,179 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   const mo = new MutationObserver(() => applyFazzModalPatch());
   mo.observe(document.documentElement, { childList: true, subtree: true });
 })();
+
+(() => {
+  const root = document.querySelector('[data-idrv4]');
+  if (!root) return;
+
+  // Tab switching
+  const tabs = root.querySelectorAll('[data-idrv4-tab]');
+  const views = {
+    deposit: root.querySelector('[data-idrv4-view="deposit"]'),
+    withdrawal: root.querySelector('[data-idrv4-view="withdrawal"]'),
+  };
+  tabs.forEach(btn => {
+    btn.addEventListener('click', () => {
+      const t = btn.getAttribute('data-idrv4-tab');
+      Object.values(views).forEach(v => v.style.display = 'none');
+      views[t].style.display = '';
+      tabs.forEach(b => b.classList.toggle('primary', b === btn));
+    });
+  });
+  // default
+  tabs[0]?.click();
+
+  // Banks map (method -> [{id,label}])
+  let banksByMethod = {};
+  try {
+    const el = document.getElementById('idr-v4-banks-data');
+    if (el) banksByMethod = JSON.parse(el.textContent || '{}');
+  } catch {}
+
+  // Populate banks for current method
+  const methodSel = root.querySelector('[data-idrv4-method]');
+  const bankSel = root.querySelector('[data-idrv4-bank]');
+  function refreshBanks() {
+    const m = (methodSel?.value || '').toUpperCase();
+    const rows = Array.isArray(banksByMethod[m]) ? banksByMethod[m] : [];
+    bankSel.innerHTML = '';
+    rows.forEach(r => {
+      const opt = document.createElement('option');
+      opt.value = r.id; opt.textContent = r.label;
+      bankSel.appendChild(opt);
+    });
+  }
+  methodSel?.addEventListener('change', refreshBanks);
+  refreshBanks();
+
+  // Helpers
+  const money = (s) => {
+    const v = Number(String(s || '').replace(/,/g,'').trim());
+    return Number.isFinite(v) && v > 0 ? v : null;
+  };
+  const busy = (el, on) => {
+    if (!el) return;
+    el.disabled = !!on;
+    el.classList.toggle('is-busy', !!on);
+  };
+
+  // Deposit: create VA and show details
+  const depForm = root.querySelector('[data-idrv4-deposit]');
+  const depResult = root.querySelector('[data-idrv4-result]');
+  depForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const submitBtn = depForm.querySelector('button[type="submit"]');
+    const amount = money(depForm.amount.value);
+    const method = String(depForm.method.value || '').toUpperCase();
+    const bankAccountId = String(depForm.bankAccountId.value || '');
+
+    if (!amount) return alert('Enter a valid amount');
+    if (!method) return alert('Choose a method');
+    if (!bankAccountId) return alert('Choose a bank');
+
+    busy(submitBtn, true);
+    try {
+      const res = await fetch('/merchant/payments/idr-v4/deposit', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ amount, method, bankAccountId })
+      });
+      const data = await res.json();
+      if (!res.ok || !data?.ok) throw new Error(data?.error || 'Failed to create VA');
+
+      const t = data.transfer || {};
+      depResult.style.display = '';
+      depResult.innerHTML = `
+        <div class="card" style="padding:12px;">
+          <div class="muted" style="margin-bottom:6px;">Transfer details</div>
+          <div style="display:grid;grid-template-columns:160px 1fr;gap:6px;">
+            <div class="muted">Reference</div><div class="mono">${t.reference || '-'}</div>
+            <div class="muted">Bank</div><div>${t.bankName || '-'}</div>
+            <div class="muted">Virtual Account</div><div class="mono">${t.accountNo || '-'}</div>
+            <div class="muted">Amount</div><div class="mono">IDR ${amount.toLocaleString('en-US')}</div>
+            ${t.expiresAt ? `<div class="muted">Expires</div><div>${new Date(t.expiresAt).toLocaleString()}</div>` : ''}
+          </div>
+          <div style="margin-top:10px;" class="muted">Make the transfer and include the reference.</div>
+        </div>
+      `;
+      depResult.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    } catch (err) {
+      alert(err.message || 'Unable to create VA');
+    } finally {
+      busy(submitBtn, false);
+    }
+  });
+
+  // Withdrawal: validate then submit through existing merchant API
+  const wForm = root.querySelector('[data-idrv4-withdraw]');
+  const validateBtn = root.querySelector('[data-idrv4-validate]');
+  const submitW = root.querySelector('[data-idrv4-submit]');
+  const msg = root.querySelector('[data-idrv4-validate-msg]');
+
+  validateBtn?.addEventListener('click', async () => {
+    const amount = money(wForm.amount.value);
+    const holderName = (wForm.holderName.value || '').trim();
+    const accountNo = (wForm.accountNo.value || '').trim();
+    const bankName = (wForm.bankName.value || '').trim();
+    if (!amount || !holderName || !accountNo || !bankName) {
+      msg.textContent = 'Fill all fields first';
+      return;
+    }
+    busy(validateBtn, true);
+    msg.textContent = 'Validating...';
+    try {
+      const res = await fetch('/merchant-api/withdraw/validate', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({ holderName, accountNo, bankName, currency: 'IDR' })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Validation failed');
+
+      const score = Number(data?.matchScore ?? 0);
+      if (score >= 0.6) {
+        msg.textContent = `Validated ✓ (match ${(score*100).toFixed(0)}%)`;
+        submitW.disabled = false;
+      } else {
+        msg.textContent = `Name mismatch (match ${(score*100).toFixed(0)}%). Please correct.`;
+        submitW.disabled = true;
+      }
+    } catch (err) {
+      msg.textContent = err.message || 'Validation error';
+      submitW.disabled = true;
+    } finally {
+      busy(validateBtn, false);
+    }
+  });
+
+  wForm?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const amount = money(wForm.amount.value);
+    const holderName = (wForm.holderName.value || '').trim();
+    const accountNo = (wForm.accountNo.value || '').trim();
+    const bankName = (wForm.bankName.value || '').trim();
+    if (!amount) return alert('Enter a valid amount');
+
+    busy(submitW, true);
+    try {
+      const res = await fetch('/merchant-api/withdrawals', {
+        method: 'POST',
+        headers: { 'Content-Type':'application/json' },
+        body: JSON.stringify({
+          currency: 'IDR',
+          amount, holderName, accountNo, bankName
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error || 'Failed to create withdrawal');
+      alert('Withdrawal submitted.');
+      wForm.reset();
+      submitW.disabled = true;
+      msg.textContent = '';
+    } catch (err) {
+      alert(err.message || 'Unable to submit withdrawal');
+    } finally {
+      busy(submitW, false);
+    }
+  });
+})();

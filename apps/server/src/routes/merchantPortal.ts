@@ -882,9 +882,31 @@ router.get("/payments/test", async (req: any, res) => {
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
   const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
 
+  const idrVaMethods = ['VIRTUAL_BANK_ACCOUNT_DYNAMIC', 'VIRTUAL_BANK_ACCOUNT_STATIC'] as const;
+
+  const idrBanksRaw = await prisma.bankAccount.findMany({
+    where: {
+      merchantId,                     // <- fixed
+      currency: "IDR",
+      method: { in: idrVaMethods as any },
+      active: true,
+    },
+    orderBy: [{ method: "asc" }, { bankName: "asc" }, { createdAt: "desc" }],
+    select: { id: true, method: true, bankName: true, accountNo: true, label: true },
+  });
+
+  const idrBanksByMethod: Record<string, { id: string; label: string }[]> = {};
+  for (const b of idrBanksRaw) {
+    const k = (b.method || "").toUpperCase();
+    const label = b.label || `${b.bankName} • ${String(b.accountNo || "").slice(-4)}`;
+    (idrBanksByMethod[k] ||= []).push({ id: b.id, label });
+  }
+
   res.render("merchant/payments-test", {
     title: "Test Payments",
     testCheckout: { subject, token },
+    idrVaMethods,                     // <- top-level
+    idrBanksByMethod,                 // <- top-level
   });
 });
 
@@ -928,6 +950,79 @@ router.post("/payments/test/session", async (req: any, res) => {
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
   });
 });
+
+// Create FAZZ VA for IDR v4 (amount + chosen method + chosen bank)
+router.post("/payments/idr-v4/deposit", async (req: any, res) => {
+  try {
+    const merchantId = req.merchant?.sub as string;
+    if (!merchantId) return res.status(401).json({ ok: false, error: "unauthorized" });
+
+    const amount = Number(String(req.body?.amount ?? "").replace(/,/g, ""));
+    const method = String(req.body?.method || "").trim().toUpperCase();
+    const bankAccountId = String(req.body?.bankAccountId || "").trim();
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ ok: false, error: "bad_amount" });
+    }
+    if (!method || !bankAccountId) {
+      return res.status(400).json({ ok: false, error: "bad_request" });
+    }
+
+    // Ensure the selected bank belongs to this merchant and matches method + IDR
+    const bank = await prisma.bankAccount.findFirst({
+      where: { id: bankAccountId, merchantId, currency: "IDR", method, active: true },
+      select: { id: true, bankName: true },
+    });
+    if (!bank) return res.status(400).json({ ok: false, error: "bank_not_found" });
+
+    // Prisma requires referenceCode + uniqueReference
+    const referenceCode = refs.generateTransactionId();
+    const uniqueReference = refs.generateUniqueReference();
+
+    // Create a PENDING payment request and attach the bank/method
+    const pr = await prisma.paymentRequest.create({
+      data: {
+        merchantId,
+        type: "DEPOSIT",
+        currency: "IDR",
+        amountCents: Math.round(amount * 100),
+        status: "PENDING",
+        bankAccountId: bank.id,
+        referenceCode,
+        uniqueReference,
+        detailsJson: { method },
+      },
+      select: { id: true, referenceCode: true, amountCents: true },
+    });
+
+    // Hand off to FAZZ provider to create the VA/intent.
+    const provider = await import("../services/providers/fazz.js");
+    const intent = typeof (provider as any).createDepositIntent === "function"
+      ? await (provider as any).createDepositIntent({
+          merchantId,
+          paymentId: pr.id,
+          amountCents: pr.amountCents,
+          currency: "IDR",
+          method,
+          bankAccountId: bank.id,
+        })
+      : null;
+
+    // Normalize what the UI needs
+    const transfer = {
+      reference: pr.referenceCode,
+      accountNo: intent?.virtualAccount?.accountNo || intent?.vaAccountNo || "",
+      bankName: intent?.virtualAccount?.bankName || bank.bankName || "",
+      expiresAt: intent?.expiresAt || null,
+    };
+
+    return res.json({ ok: true, paymentId: pr.id, transfer });
+  } catch (err) {
+    console.error("[idr-v4 deposit] failed", err);
+    return res.status(500).json({ ok: false, error: "server_error" });
+  }
+});
+
 
 router.get("/methods", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;

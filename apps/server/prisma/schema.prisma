@@ -158,6 +158,10 @@ model Method {
   enabled   Boolean  @default(true) @map("active")
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+  depositMinAmountCents  BigInt? @db.BigInt
+  depositMaxAmountCents  BigInt? @db.BigInt
+  withdrawMinAmountCents BigInt? @db.BigInt
+  withdrawMaxAmountCents BigInt? @db.BigInt
 
   merchantLinks   MerchantMethod[]
   paymentRequests PaymentRequest[]

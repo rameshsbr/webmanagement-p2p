@@ -6,7 +6,7 @@ import { z } from "zod";
 import { stringify } from "csv-stringify";
 import ExcelJS from "exceljs";
 import crypto from "node:crypto";
-import { seal } from "../services/secretBox.js";
+import { open, seal } from "../services/secretBox.js";
 import jwt from "jsonwebtoken";
 import speakeasy from "speakeasy";
 import QRCode from "qrcode";
@@ -28,6 +28,8 @@ import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 import { ipFromReq, uaFromReq } from "../services/audit.js";
 import { formatClientStatusLabel, getClientStatusBySubject } from "../services/merchantClient.js";
 import { listMerchantMethods } from "../services/methods.js";
+import { adapters } from "../services/providers/index.js";
+import { IDRV4_BANKS } from "../services/providers/fazz/idr-v4-banks.js";
 
 const router = Router();
 
@@ -79,6 +81,40 @@ function normalizeTestSubject(input: any, merchantId: string): string {
   const tail = merchantId.replace(/[^A-Za-z0-9]/g, "").slice(-6) || merchantId.slice(-6) || "demo";
   const generated = `merchant-${tail}-test`;
   return generated.slice(0, 64);
+}
+
+// IDR v4 helpers (isolated to the test overlay + meta/validation endpoints).
+async function resolveIdrV4ApiKey(merchantId: string): Promise<string | null> {
+  const key = await prisma.merchantApiKey.findFirst({
+    where: { merchantId, active: true },
+    orderBy: { createdAt: "desc" },
+    select: { prefix: true, secretEnc: true },
+  });
+  if (!key) return null;
+  try {
+    const secret = open(key.secretEnc);
+    return `${key.prefix}.${secret}`;
+  } catch {
+    return null;
+  }
+}
+
+async function resolveVerifiedKycName(diditSubject: string): Promise<string | null> {
+  const user = await prisma.user.findUnique({
+    where: { diditSubject },
+    select: {
+      fullName: true,
+      firstName: true,
+      lastName: true,
+      verifiedAt: true,
+      kyc: { where: { status: "approved" }, select: { id: true }, take: 1 },
+    },
+  });
+  if (!user) return null;
+  const hasApproval = !!user.verifiedAt || (user.kyc && user.kyc.length > 0);
+  if (!hasApproval) return null;
+  const full = user.fullName || [user.firstName, user.lastName].filter(Boolean).join(" ");
+  return full?.trim() ? full.trim() : null;
 }
 
 function buildMerchantMethodFilter(code: string, methodId?: string): Prisma.PaymentRequestWhereInput {
@@ -881,32 +917,14 @@ router.get("/payments/test", async (req: any, res) => {
   const subject = deriveDiditSubject(merchantId, externalId);
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
   const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
-
-  const idrVaMethods = ['VIRTUAL_BANK_ACCOUNT_DYNAMIC', 'VIRTUAL_BANK_ACCOUNT_STATIC'] as const;
-
-  const idrBanksRaw = await prisma.bankAccount.findMany({
-    where: {
-      merchantId,                     // <- fixed
-      currency: "IDR",
-      method: { in: idrVaMethods as any },
-      active: true,
-    },
-    orderBy: [{ method: "asc" }, { bankName: "asc" }, { createdAt: "desc" }],
-    select: { id: true, method: true, bankName: true, accountNo: true, label: true },
-  });
-
-  const idrBanksByMethod: Record<string, { id: string; label: string }[]> = {};
-  for (const b of idrBanksRaw) {
-    const k = (b.method || "").toUpperCase();
-    const label = b.label || `${b.bankName} • ${String(b.accountNo || "").slice(-4)}`;
-    (idrBanksByMethod[k] ||= []).push({ id: b.id, label });
-  }
+  const [idrV4ApiKey, verifiedKycName] = await Promise.all([
+    resolveIdrV4ApiKey(merchantId),
+    resolveVerifiedKycName(subject),
+  ]);
 
   res.render("merchant/payments-test", {
     title: "Test Payments",
-    testCheckout: { subject, token },
-    idrVaMethods,                     // <- top-level
-    idrBanksByMethod,                 // <- top-level
+    testCheckout: { subject, token, idrV4ApiKey, verifiedKycName },
   });
 });
 
@@ -949,6 +967,82 @@ router.post("/payments/test/session", async (req: any, res) => {
     clientStatus: formatClientStatusLabel(clientStatus),
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
   });
+});
+
+// ─────────────────────────────────────────────────────────────
+// IDR v4 helpers (merchant portal only; isolated from P2P flows)
+// ─────────────────────────────────────────────────────────────
+router.get("/idrv4/meta", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  const schema = z.object({
+    method: z
+      .enum(["VIRTUAL_BANK_ACCOUNT_DYNAMIC", "VIRTUAL_BANK_ACCOUNT_STATIC"])
+      .optional(),
+  });
+  const query = schema.parse(req.query || {});
+  const methodCode = query.method || "VIRTUAL_BANK_ACCOUNT_DYNAMIC";
+
+  const [depositMethod, withdrawalMethod] = await Promise.all([
+    prisma.method.findUnique({
+      where: { code: methodCode },
+      select: {
+        depositMinAmountCents: true,
+        depositMaxAmountCents: true,
+        withdrawMinAmountCents: true,
+        withdrawMaxAmountCents: true,
+      },
+    }),
+    prisma.method.findUnique({
+      where: { code: "FAZZ_SEND" },
+      select: {
+        withdrawMinAmountCents: true,
+        withdrawMaxAmountCents: true,
+      },
+    }),
+  ]);
+
+  const toNumber = (value: unknown): number | null => {
+    if (value == null) return null;
+    const num = typeof value === "bigint" ? Number(value) : Number(value);
+    return Number.isFinite(num) ? num : null;
+  };
+
+  return res.json({
+    ok: true,
+    banks: IDRV4_BANKS[methodCode],
+    limits: {
+      minDeposit: toNumber(depositMethod?.depositMinAmountCents ?? null),
+      maxDeposit: toNumber(depositMethod?.depositMaxAmountCents ?? null),
+      minWithdrawal: toNumber(withdrawalMethod?.withdrawMinAmountCents ?? depositMethod?.withdrawMinAmountCents ?? null),
+      maxWithdrawal: toNumber(withdrawalMethod?.withdrawMaxAmountCents ?? depositMethod?.withdrawMaxAmountCents ?? null),
+    },
+  });
+});
+
+router.post("/idrv4/validate", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+  const schema = z.object({
+    bankCode: z.string().min(2),
+    accountNo: z.string().min(3),
+    name: z.string().optional(),
+  });
+  const body = schema.parse(req.body || {});
+
+  try {
+    const out = await adapters.fazz.validateBankAccount({
+      bankCode: body.bankCode,
+      accountNo: body.accountNo,
+      name: body.name,
+    });
+    return res.json({ ok: !!out.ok, holder: out.holder || "" });
+  } catch (err: any) {
+    console.error("[merchant idrv4 validate] failed", err);
+    return res.status(500).json({ ok: false, error: "Validation failed" });
+  }
 });
 
 // Create FAZZ VA for IDR v4 (amount + chosen method + chosen bank)

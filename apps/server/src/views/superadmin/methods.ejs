@@ -1,10 +1,21 @@
 <% layout('superadmin/layout') -%>
 
+<%
+  const IDR_V4_METHODS = new Set([
+    'VIRTUAL_BANK_ACCOUNT_DYNAMIC',
+    'VIRTUAL_BANK_ACCOUNT_STATIC',
+    'FAZZ_SEND'
+  ]);
+  function centsToUnits(v) {
+    return (typeof v === 'number' && !Number.isNaN(v)) ? (v / 100).toFixed(2) : '';
+  }
+%>
+
 <div class="page methods-page">
   <div class="page__header">
     <div>
       <h1>Methods</h1>
-      <p class="muted">Manage payment methods, assignments, and usage.</p>
+      <p class="muted">Manage payment methods, assignments, usage, and limits.</p>
     </div>
   </div>
 
@@ -30,47 +41,93 @@
     <% if (!methods.length) { %>
       <p class="muted" style="margin: 12px 0;">No methods available yet.</p>
     <% } else { %>
-      <div class="table-wrap">
-        <table class="table methods-table">
-          <thead>
-            <tr>
-              <th>Method</th>
-              <th>Code</th>
-              <th>Enabled</th>
-              <th>Merchants</th>
-              <th>Deposits</th>
-              <th>Withdrawals</th>
-              <th>Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            <% methods.forEach((method) => { const stat = stats[method.id] || { merchants: 0, deposits: 0, withdrawals: 0 }; const formId = `method-form-${method.id}`; %>
-              <form id="<%= formId %>" method="post" action="/superadmin/methods/<%= method.id %>" data-methods-form="row"></form>
-              <tr>
-                <td>
-                  <input class="input" form="<%= formId %>" name="name" value="<%= method.name %>" />
-                </td>
-                <td class="mono"><%= method.code %></td>
-                <td class="enabled-cell">
-                  <input form="<%= formId %>" type="checkbox" name="enabled" <%= method.enabled ? 'checked' : '' %> />
-                </td>
-                <td class="number-cell"><%= stat.merchants %></td>
-                <td class="number-cell"><%= stat.deposits %></td>
-                <td class="number-cell"><%= stat.withdrawals %></td>
-                <td class="actions-cell">
-                  <button class="btn small" type="submit" form="<%= formId %>">Save</button>
-                  <a class="btn small" href="/superadmin/methods/<%= method.id %>/merchants">Assign merchants</a>
-                </td>
-              </tr>
+      <div class="methods-grid">
+        <% methods.forEach((method) => {
+          const stat = stats[method.id] || { merchants: 0, deposits: 0, withdrawals: 0 };
+          const formId = `method-form-${method.id}`;
+          const modalId = `limits-modal-${method.id}`;
+          const methodCode = String(method.code || '').trim().toUpperCase();
+          const groupLabel = IDR_V4_METHODS.has(methodCode) ? 'IDR v4' : 'P2P';
+          const hasIdr = Number(method.minorUnits) === 1;
+        %>
+          <div class="method-card">
+            <form id="<%= formId %>" method="post" action="/superadmin/methods/<%= method.id %>" data-methods-form="row"></form>
+            <div class="method-card__header">
+              <div class="method-card__title">
+                <input class="input method-name" form="<%= formId %>" name="name" value="<%= method.name %>" />
+                <div class="method-meta">
+                  <span class="mono">Code: <%= method.code %></span>
+                  <span class="pill pill--subtle"><%= groupLabel %></span>
+                  <span class="muted"><%= method.currencyHint %></span>
+                </div>
+              </div>
+              <label class="toggle">
+                <input form="<%= formId %>" type="checkbox" name="enabled" <%= method.enabled ? 'checked' : '' %> />
+                <span>Enabled</span>
+              </label>
+            </div>
 
-              <!-- Per-bank limits for this method -->
-              <tr>
-                <td colspan="7" style="background:#fafafa; padding: 12px 16px;">
-                  <% if ((method.banks || []).length === 0) { %>
-                    <div class="muted" style="font-size: 12px;">No banks configured for this method yet.</div>
+            <div class="method-card__badges">
+              <span class="badge">Merchants <strong><%= stat.merchants %></strong></span>
+              <span class="badge">Deposits <strong><%= stat.deposits %></strong></span>
+              <span class="badge">Withdrawals <strong><%= stat.withdrawals %></strong></span>
+            </div>
+
+            <div class="method-card__actions">
+              <a class="btn small" href="/superadmin/methods/<%= method.id %>/merchants">Assign merchants</a>
+              <button class="btn small" type="submit" form="<%= formId %>">Save</button>
+              <button class="btn small btn-outline" type="button" data-modal-open="<%= modalId %>">LIMITS</button>
+            </div>
+          </div>
+
+          <div class="modal" id="<%= modalId %>" data-modal>
+            <div class="modal__backdrop" data-modal-close="<%= modalId %>"></div>
+            <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="<%= modalId %>-title">
+              <div class="modal__header">
+                <div>
+                  <h2 id="<%= modalId %>-title">Limits – <%= method.name %></h2>
+                  <p class="muted">Global defaults for deposits and withdrawals.</p>
+                </div>
+                <button type="button" class="btn small" data-modal-close="<%= modalId %>">Close</button>
+              </div>
+
+              <form method="post" action="/superadmin/methods/<%= method.id %>/limits" class="limits-form" data-limits-form data-idr="<%= hasIdr ? 'true' : 'false' %>">
+                <div class="limits-grid">
+                  <div class="form-field">
+                    <label>Min Deposit</label>
+                    <input class="input" inputmode="decimal" name="minDeposit" placeholder="0.00" value="<%= method.displayMinDeposit %>" />
+                  </div>
+                  <div class="form-field">
+                    <label>Max Deposit</label>
+                    <input class="input" inputmode="decimal" name="maxDeposit" placeholder="0.00" value="<%= method.displayMaxDeposit %>" />
+                  </div>
+                  <div class="form-field">
+                    <label>Min Withdrawal</label>
+                    <input class="input" inputmode="decimal" name="minWithdrawal" placeholder="0.00" value="<%= method.displayMinWithdrawal %>" />
+                  </div>
+                  <div class="form-field">
+                    <label>Max Withdrawal</label>
+                    <input class="input" inputmode="decimal" name="maxWithdrawal" placeholder="0.00" value="<%= method.displayMaxWithdrawal %>" />
+                  </div>
+                </div>
+
+                <p class="muted" style="margin: 4px 0 0;">
+                  <% if (hasIdr) { %>
+                    IDR limits must be between 10,000 and 100,000,000.
                   <% } else { %>
-                    <div class="muted" style="font-size: 12px; margin-bottom: 6px;">
-                      Per-bank limits (amounts in currency units; leave blank to use defaults):
+                    Leave blank to use defaults.
+                  <% } %>
+                </p>
+
+                <div class="limits-error" aria-live="polite"></div>
+
+                <details class="limits-advanced">
+                  <summary>Advanced per-bank overrides</summary>
+                  <% if ((method.banks || []).length === 0) { %>
+                    <div class="muted" style="font-size: 12px; margin-top: 8px;">No banks configured for this method yet.</div>
+                  <% } else { %>
+                    <div class="muted" style="font-size: 12px; margin: 8px 0;">
+                      Amounts in currency units; leave blank to use defaults.
                     </div>
                     <div class="table-wrap" style="margin:0;">
                       <table class="table" style="margin:0;">
@@ -85,9 +142,8 @@
                           </tr>
                         </thead>
                         <tbody>
-                          <% method.banks.forEach((b) => { 
+                          <% method.banks.forEach((b) => {
                             const label = b.label || (b.bankName + ' • ' + String(b.accountNo || '').slice(-4));
-                            function centsToUnits(v) { return (typeof v === 'number' && !Number.isNaN(v)) ? (v / 100).toFixed(2) : '' }
                           %>
                             <tr>
                               <td>
@@ -100,7 +156,6 @@
                               <td>
                                 <div class="input-with-suffix">
                                   <input
-                                    form="<%= formId %>"
                                     class="input"
                                     inputmode="decimal"
                                     placeholder="0.00"
@@ -113,7 +168,6 @@
                               <td>
                                 <div class="input-with-suffix">
                                   <input
-                                    form="<%= formId %>"
                                     class="input"
                                     inputmode="decimal"
                                     placeholder="0.00"
@@ -126,7 +180,6 @@
                               <td>
                                 <div class="input-with-suffix">
                                   <input
-                                    form="<%= formId %>"
                                     class="input"
                                     inputmode="decimal"
                                     placeholder="0.00"
@@ -139,7 +192,6 @@
                               <td>
                                 <div class="input-with-suffix">
                                   <input
-                                    form="<%= formId %>"
                                     class="input"
                                     inputmode="decimal"
                                     placeholder="0.00"
@@ -155,17 +207,153 @@
                       </table>
                     </div>
                   <% } %>
-                </td>
-              </tr>
-            <% }) %>
-          </tbody>
-        </table>
+                </details>
+
+                <div class="modal__actions">
+                  <button class="btn primary" type="submit">Save limits</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        <% }) %>
       </div>
     <% } %>
   </div>
 </div>
 
 <style>
+  .methods-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 16px;
+    margin-top: 16px;
+  }
+  .method-card {
+    border: 1px solid #e6e6e6;
+    border-radius: 12px;
+    padding: 16px;
+    background: #fff;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+  .method-card__header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+  }
+  .method-card__title {
+    flex: 1;
+  }
+  .method-name {
+    font-size: 18px;
+    font-weight: 600;
+  }
+  .method-meta {
+    margin-top: 6px;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    font-size: 12px;
+    color: #666;
+  }
+  .pill {
+    padding: 2px 8px;
+    border-radius: 999px;
+    background: #f0f4ff;
+    color: #3b5bcc;
+    font-weight: 600;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .pill--subtle {
+    background: #f6f6f6;
+    color: #4b4b4b;
+  }
+  .toggle {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    font-size: 12px;
+    color: #444;
+  }
+  .method-card__badges {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+  .badge {
+    background: #f7f7f7;
+    border-radius: 8px;
+    padding: 6px 10px;
+    font-size: 12px;
+    color: #333;
+  }
+  .method-card__actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .btn-outline {
+    border: 1px solid #d0d0d0;
+    background: #fff;
+  }
+  .modal {
+    position: fixed;
+    inset: 0;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    z-index: 50;
+  }
+  .modal.is-visible {
+    display: flex;
+  }
+  .modal__backdrop {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.4);
+  }
+  .modal__content {
+    position: relative;
+    background: #fff;
+    border-radius: 12px;
+    padding: 20px;
+    width: min(900px, 92vw);
+    max-height: 90vh;
+    overflow: auto;
+  }
+  .modal__header {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: flex-start;
+    margin-bottom: 16px;
+  }
+  .limits-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 12px;
+  }
+  .limits-advanced {
+    margin-top: 16px;
+    padding-top: 8px;
+    border-top: 1px solid #eee;
+  }
+  .limits-error {
+    color: #b00020;
+    font-size: 12px;
+    margin-top: 8px;
+    min-height: 16px;
+  }
+  .modal__actions {
+    margin-top: 16px;
+    display: flex;
+    justify-content: flex-end;
+  }
   .input-with-suffix { position:relative; }
   .input-with-suffix .suffix {
     position:absolute; right:8px; top:50%; transform:translateY(-50%);
@@ -173,3 +361,82 @@
   }
   .input-with-suffix .input { padding-right:56px; }
 </style>
+
+<script>
+  (function () {
+    const idrMin = 10000;
+    const idrMax = 100000000;
+
+    function openModal(modal) {
+      if (!modal) return;
+      modal.classList.add('is-visible');
+    }
+
+    function closeModal(modal) {
+      if (!modal) return;
+      modal.classList.remove('is-visible');
+    }
+
+    document.querySelectorAll('[data-modal-open]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.getAttribute('data-modal-open');
+        openModal(document.getElementById(targetId));
+      });
+    });
+
+    document.querySelectorAll('[data-modal-close]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const targetId = btn.getAttribute('data-modal-close');
+        closeModal(document.getElementById(targetId));
+      });
+    });
+
+    document.querySelectorAll('[data-modal]').forEach((modal) => {
+      modal.addEventListener('click', (event) => {
+        if (event.target === modal) {
+          closeModal(modal);
+        }
+      });
+    });
+
+    document.querySelectorAll('[data-limits-form]').forEach((form) => {
+      form.addEventListener('submit', (event) => {
+        const isIdr = form.getAttribute('data-idr') === 'true';
+        const errorEl = form.querySelector('.limits-error');
+        if (errorEl) errorEl.textContent = '';
+        if (!isIdr) return;
+
+        const fields = ['minDeposit', 'maxDeposit', 'minWithdrawal', 'maxWithdrawal'];
+        const values = {};
+        let hasError = false;
+
+        fields.forEach((name) => {
+          const input = form.querySelector(`[name="${name}"]`);
+          if (!input) return;
+          const raw = String(input.value || '').replace(/,/g, '').trim();
+          if (!raw) return;
+          const num = Number(raw);
+          if (!Number.isFinite(num)) return;
+          values[name] = num;
+          if (num < idrMin || num > idrMax) {
+            hasError = true;
+          }
+        });
+
+        if (values.minDeposit && values.maxDeposit && values.minDeposit > values.maxDeposit) {
+          hasError = true;
+        }
+        if (values.minWithdrawal && values.maxWithdrawal && values.minWithdrawal > values.maxWithdrawal) {
+          hasError = true;
+        }
+
+        if (hasError) {
+          event.preventDefault();
+          if (errorEl) {
+            errorEl.textContent = 'For IDR, limits must be between 10,000 and 100,000,000, and min cannot exceed max.';
+          }
+        }
+      });
+    });
+  })();
+</script>

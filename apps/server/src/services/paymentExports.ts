@@ -37,6 +37,7 @@ export interface PaymentExportItem {
   } | null;
   receiptFile?: { path?: string | null; original?: string | null } | null;
   processedByAdmin?: { displayName?: string | null; email?: string | null } | null;
+  displayStatus?: { label: string } | null;
   _receipts?: Array<{ id: string; path: string }>;
   _receiptCount?: number;
   _extrasList?: Array<{ label: string; value: unknown }>;
@@ -214,7 +215,7 @@ function formatColumnValue(item: PaymentExportItem, key: string, context: Paymen
     case "amount":
       return formatAmount(item.amountCents, context.scope === "superadmin" ? item.currency : undefined);
     case "status":
-      return item.status || "-";
+      return item.displayStatus?.label || item.status || "-";
     case "bank": {
       const showBank = paymentType === "DEPOSIT" || (item.bankAccount && item.status !== "REJECTED");
       if (!showBank || !item.bankAccount) return "-";
@@ -513,4 +514,3 @@ function buildContentStream(lines: string[]): string {
 function escapePdfText(text: string): string {
   return text.replace(/[\\()]/g, (match) => `\\${match}`).replace(/\r?\n/g, " ");
 }
-

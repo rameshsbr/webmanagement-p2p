@@ -50,7 +50,7 @@
             <tr>
               <td class="mono"><%= x.referenceCode %></td>
               <td><%= x.type %></td>
-              <td><%= x.status %></td>
+              <td><%= x.displayStatus ? x.displayStatus.label : x.status %></td>
               <td><%= formatAmount(x.amountCents) %></td>
               <td><%= x.currency %></td>
               <td><%- renderDateTime(x.createdAt) %></td>

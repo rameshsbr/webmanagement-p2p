@@ -59,6 +59,13 @@ function normalizeNameForBank(name: string, bankCode: string) {
   const raw = (name || "").trim();
   return raw.slice(0, limit);
 }
+function suffixNoFromTid(tid: string) {
+  const digits = String(tid || "").replace(/\D/g, "");
+  return digits.slice(-8).padStart(8, "0");
+}
+function oneHourFromNowIso() {
+  return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+}
 
 const ZERO_DECIMAL = new Set(["IDR", "JPY", "KRW"]);
 function minorUnit(currency: string) {
@@ -213,6 +220,34 @@ function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
     raw: json,
   };
 }
+function parsePaymentMethodResp(json: any, fallbackName: string, bankCode: string) {
+  const providerPaymentMethodId =
+    pick<string>(json, ["data.id"]) ||
+    pick<string>(json, ["id"]) ||
+    makeFakeId("pm");
+
+  const accountNo =
+    pick<string>(json, [
+      "data.attributes.virtual_bank_account.account_no",
+      "data.attributes.virtualBankAccount.accountNo",
+      "data.attributes.instructions.accountNo",
+      "data.attributes.instructions.account_no",
+    ]) || undefined;
+
+  const accountName =
+    pick<string>(json, [
+      "data.attributes.virtual_bank_account.account_name",
+      "data.attributes.virtualBankAccount.accountName",
+      "data.attributes.instructions.displayName",
+      "data.attributes.instructions.display_name",
+    ]) || fallbackName;
+
+  return {
+    providerPaymentMethodId: String(providerPaymentMethodId),
+    va: { bankCode, accountNo, accountName },
+    raw: json,
+  };
+}
 async function fetchPaymentDetails(paymentId: string) {
   const url = `${API_BASE}/payments/${encodeURIComponent(paymentId)}`;
   const res = await fetchWithRetry(() =>
@@ -242,6 +277,23 @@ async function fetchPaymentDetails(paymentId: string) {
     paymentMethodId: paymentMethodId ? String(paymentMethodId) : parsed.paymentMethodId,
     va: parsed.va,
   };
+}
+async function fetchPaymentMethodDetails(paymentMethodId: string) {
+  const url = `${API_BASE}/payment_methods/${encodeURIComponent(paymentMethodId)}`;
+  const res = await fetchWithRetry(() =>
+    fetch(url, {
+      method: "GET",
+      headers: { Authorization: basicAuthHeader(), Accept: "application/vnd.api+json" },
+    })
+  );
+  let json: any = null, text = "";
+  try { json = await res.clone().json(); } catch { text = await res.text(); }
+  if (!res.ok) {
+    console.error("[FAZZ_PM_GET_FAILED] GET /payment_methods/:id", JSON.stringify({ status: res.status, url, body: json ?? text }, null, 2));
+    return null;
+  }
+  const parsed = parsePaymentMethodResp(json, "", "");
+  return { json, va: parsed.va };
 }
 async function fetchPaymentMethodsForPayment(paymentId: string) {
   const url = `${API_BASE}/payment_methods?paymentId=${encodeURIComponent(paymentId)}`;
@@ -357,30 +409,156 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
 
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
   const displayName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
+  const suffixNo = suffixNoFromTid(input.tid);
+  const expiredAt = oneHourFromNowIso();
+  const description = "FUND TRANSFER";
 
-  const payload = {
-    data: {
-      type: "payments",
-      attributes: {
-        amount: Number(input.amountCents),
-        currency: input.currency,
-        referenceId: input.tid,
-        paymentMethodType: "virtual_bank_account",
-        paymentMethodOptions: {
-          bankShortCode: input.bankCode,
-          displayName,
-          mode: isDynamic ? "DYNAMIC" : "STATIC",
-        },
-        metadata: {
-          uid: input.uid,
-          merchantId: input.merchantId,
-          methodCode: input.methodCode,
-        },
+  const userId = !isDynamic
+    ? (await prisma.user.findUnique({ where: { publicId: input.uid }, select: { id: true } }))?.id
+    : null;
+
+  let storedPaymentMethod:
+    | { providerPaymentMethodId: string; accountNo?: string | null; accountName?: string | null; displayName?: string | null }
+    | null = null;
+
+  if (!isDynamic) {
+    if (!userId) {
+      throw new Error("User not found for static VA");
+    }
+    storedPaymentMethod = await prisma.providerPaymentMethod.findFirst({
+      where: {
+        provider: "FAZZ",
+        type: "virtual_bank_account",
+        merchantId: input.merchantId,
+        userId,
+        bankCode: input.bankCode,
+        active: true,
       },
-    },
+      select: { providerPaymentMethodId: true, accountNo: true, accountName: true, displayName: true },
+    });
+  }
+
+  const buildPaymentPayload = (paymentMethodId?: string, useRelationships = false) => {
+    const attributes: any = {
+      amount: Number(input.amountCents),
+      currency: input.currency,
+      referenceId: input.tid,
+      paymentMethodType: "virtual_bank_account",
+      expiredAt,
+      description,
+      paymentMethodOptions: {
+        bankShortCode: input.bankCode,
+        displayName,
+        mode: isDynamic ? "DYNAMIC" : "STATIC",
+        suffixNo,
+      },
+      metadata: {
+        uid: input.uid,
+        merchantId: input.merchantId,
+        methodCode: input.methodCode,
+      },
+    };
+
+    const payload: any = { data: { type: "payments", attributes } };
+    if (paymentMethodId) {
+      if (useRelationships) {
+        payload.data.relationships = {
+          payment_method: {
+            data: { type: "payment_methods", id: paymentMethodId },
+          },
+        };
+      } else {
+        attributes.paymentMethod = { id: paymentMethodId };
+      }
+    }
+    return payload;
   };
 
-  const res = await fazzPost(`/payments`, payload, input.tid);
+  const ensurePaymentMethod = async () => {
+    if (storedPaymentMethod?.providerPaymentMethodId) return storedPaymentMethod;
+    if (isDynamic) return null;
+    if (!userId) return null;
+
+    const createPayload = {
+      data: {
+        type: "payment_methods",
+        attributes: {
+          bankShortCode: input.bankCode,
+          referenceId: input.tid,
+          displayName,
+          suffixNo,
+        },
+      },
+    };
+    const createRes = await fazzPost(`/payment_methods/virtual_bank_accounts`, createPayload, input.tid);
+    if (!createRes.ok) {
+      const msg = renderProviderError(createRes, `HTTP ${createRes.status}`);
+      throw new Error(`Fazz createPaymentMethod failed: ${msg}`);
+    }
+
+    const createJson = createRes.json ?? {};
+    const parsed = parsePaymentMethodResp(createJson, displayName, input.bankCode);
+    let accountNo = parsed.va.accountNo;
+    let accountName = parsed.va.accountName || displayName;
+
+    if (parsed.providerPaymentMethodId && (!accountNo || !accountName)) {
+      const details = await fetchPaymentMethodDetails(parsed.providerPaymentMethodId);
+      if (details) {
+        accountNo = accountNo || details.va.accountNo || undefined;
+        accountName = accountName || details.va.accountName || displayName;
+        (createJson as any).__fetchedPaymentMethod = details.json;
+      }
+    }
+
+    let record = null;
+    try {
+      record = await prisma.providerPaymentMethod.create({
+        data: {
+          provider: "FAZZ",
+          type: "virtual_bank_account",
+          merchantId: input.merchantId,
+          userId,
+          bankCode: input.bankCode,
+          providerPaymentMethodId: parsed.providerPaymentMethodId,
+          accountNo: accountNo ?? null,
+          accountName: accountName ?? null,
+          displayName,
+          active: true,
+          metaJson: createJson,
+        },
+      });
+    } catch {
+      record = await prisma.providerPaymentMethod.findFirst({
+        where: { provider: "FAZZ", providerPaymentMethodId: parsed.providerPaymentMethodId },
+        select: { providerPaymentMethodId: true, accountNo: true, accountName: true, displayName: true },
+      });
+    }
+
+    storedPaymentMethod = record
+      ? {
+          providerPaymentMethodId: record.providerPaymentMethodId,
+          accountNo: record.accountNo,
+          accountName: record.accountName,
+          displayName: record.displayName,
+        }
+      : {
+          providerPaymentMethodId: parsed.providerPaymentMethodId,
+          accountNo,
+          accountName,
+        };
+
+    return storedPaymentMethod;
+  };
+
+  const staticMethod = await ensurePaymentMethod();
+  const paymentMethodId = staticMethod?.providerPaymentMethodId;
+
+  const payload = buildPaymentPayload(paymentMethodId, Boolean(paymentMethodId));
+  let res = await fazzPost(`/payments`, payload, input.tid);
+  if (!res.ok && paymentMethodId && res.status === 400) {
+    const fallbackPayload = buildPaymentPayload(paymentMethodId, false);
+    res = await fazzPost(`/payments`, fallbackPayload, input.tid);
+  }
   if (!res.ok) {
     const msg = renderProviderError(res, `HTTP ${res.status}`);
     throw new Error(`Fazz createDepositIntent failed: ${msg}`);
@@ -390,34 +568,34 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   const parsed = parseCreateResp(json, displayName, input.bankCode);
 
   // Backfill PM id + VA if missing
-  let paymentMethodId = parsed.paymentMethodId;
+  let resolvedPaymentMethodId = parsed.paymentMethodId || paymentMethodId;
   let vaAccountNo = parsed.va.accountNo;
-  let vaAccountName = parsed.va.accountName;
+  let vaAccountName = parsed.va.accountName || staticMethod?.accountName || staticMethod?.displayName;
 
-  if (!paymentMethodId || !vaAccountNo) {
+  if (!resolvedPaymentMethodId || !vaAccountNo) {
     const details = await fetchPaymentDetails(parsed.providerPaymentId);
     if (details) {
-      paymentMethodId = paymentMethodId || details.paymentMethodId || undefined;
+      resolvedPaymentMethodId = resolvedPaymentMethodId || details.paymentMethodId || undefined;
       vaAccountNo = vaAccountNo || details.va.accountNo || undefined;
       vaAccountName = vaAccountName || details.va.accountName || displayName;
       (json as any).__fetchedPayment = details.json;
     }
   }
-  if (!paymentMethodId) {
+  if (!resolvedPaymentMethodId) {
     const { id: fromList, raw } = await fetchPaymentMethodsForPayment(parsed.providerPaymentId);
-    if (fromList) paymentMethodId = fromList;
+    if (fromList) resolvedPaymentMethodId = fromList;
     (json as any).__fetchedPaymentMethods = raw;
   }
 
-  const accountNo = vaAccountNo || dynamicVaNumber();
+  const accountNo = vaAccountNo || staticMethod?.accountNo || dynamicVaNumber();
 
   const meta: any = {};
-  if (paymentMethodId) meta.paymentMethodId = paymentMethodId;
+  if (resolvedPaymentMethodId) meta.paymentMethodId = resolvedPaymentMethodId;
   const fetched: any = {};
   if ((json as any).__fetchedPayment) fetched.payment = (json as any).__fetchedPayment;
   if ((json as any).__fetchedPaymentMethods) fetched.paymentMethods = (json as any).__fetchedPaymentMethods;
   if (Object.keys(fetched).length) meta.fetched = fetched;
-  if (paymentMethodId) (json as any).__paymentMethodId = paymentMethodId;
+  if (resolvedPaymentMethodId) (json as any).__paymentMethodId = resolvedPaymentMethodId;
 
   return {
     providerPaymentId: String(parsed.providerPaymentId),

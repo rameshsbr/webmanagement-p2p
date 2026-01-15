@@ -101,6 +101,7 @@
         <% const processedAt = r.processedAt || r.updatedAt || null; %>
         <% const hasProcessed = processedAt && !(r.status === 'PENDING' || r.status === 'SUBMITTED'); %>
         <% const showBankAccount = r.bankAccount && (r.type !== 'WITHDRAWAL' || r.status !== 'REJECTED'); %>
+        <% const displayStatus = r.displayStatus || null; %>
         <tr>
           <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
           <td data-col="userId"><span class="mono"><%= r.user?.publicId || '-' %></span></td>
@@ -108,10 +109,14 @@
           <td data-col="currency"><%= r.currency %></td>
           <td data-col="amount"><%= formatAmount(r.amountCents) %></td>
           <td data-col="status">
-            <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
-            <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
-            <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
-            <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+            <% if (displayStatus) { %>
+              <span class="badge <%= displayStatus.variant || '' %>"><%= displayStatus.label %></span>
+            <% } else { %>
+              <% if (r.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
+              <% if (r.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
+              <% if (r.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
+              <% if (r.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+            <% } %>
           </td>
           <td data-col="bank">
             <% if (showBankAccount) { %>
@@ -173,4 +178,3 @@
     <a href="?<%= sp.toString() %>">Next &rarr;</a>
   <% } else { %><span>Next</span><% } %>
 </div>
-

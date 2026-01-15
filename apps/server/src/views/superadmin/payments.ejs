@@ -276,6 +276,7 @@
         <% const showBankAccount = type === 'DEPOSIT' ? true : (p.bankAccount && p.status !== 'REJECTED'); %>
         <% const extrasList = Array.isArray(p._extrasList) ? p._extrasList : []; %>
         <% const extrasLookup = (p._extrasLookup && typeof p._extrasLookup === 'object') ? p._extrasLookup : {}; %>
+        <% const displayStatus = p.displayStatus || null; %>
         <% const hasAnyExtraLabel = function(){
              var args = Array.prototype.slice.call(arguments);
              return args.some(function(label){
@@ -293,10 +294,14 @@
           <td data-col="currency"><%= p.currency %></td>
           <td data-col="amount"><%= formatAmount(p.amountCents, p.currency) %></td>
           <td data-col="status">
-            <% if (p.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
-            <% if (p.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
-            <% if (p.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
-            <% if (p.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+            <% if (displayStatus) { %>
+              <span class="badge <%= displayStatus.variant || '' %>"><%= displayStatus.label %></span>
+            <% } else { %>
+              <% if (p.status==='APPROVED') { %><span class="badge success">Approved</span><% } %>
+              <% if (p.status==='REJECTED') { %><span class="badge danger">Rejected</span><% } %>
+              <% if (p.status==='PENDING')  { %><span class="badge warn">Pending</span><% } %>
+              <% if (p.status==='SUBMITTED'){ %><span class="badge">Submitted</span><% } %>
+            <% } %>
           </td>
           <td data-col="bank">
             <% if (showBankAccount && p.bankAccount) { %>

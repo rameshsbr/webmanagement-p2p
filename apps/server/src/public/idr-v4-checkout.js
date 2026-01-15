@@ -134,6 +134,23 @@
     return Math.round(num);
   }
 
+  function bankLabel(code) {
+    const map = {
+      BCA: "BCA",
+      BRI: "BRI",
+      BNI: "BNI",
+      MANDIRI: "Mandiri",
+      CIMB_NIAGA: "CIMB Niaga",
+      DANAMON: "Danamon",
+      PERMATA: "Permata",
+      HANA: "Hana",
+      SAHABAT_SAMPOERNA: "Bank Sahabat Sampoerna",
+      BSI: "Bank Syariah Indonesia",
+    };
+    const key = String(code || "").toUpperCase();
+    return map[key] || key;
+  }
+
   function openModal(title, builder) {
     ensureStyles();
     const overlay = el("div", {
@@ -173,11 +190,10 @@
     const methodCode = (opts.method || "VIRTUAL_BANK_ACCOUNT_DYNAMIC").toUpperCase();
     openModal("IDR v4 Deposit", async (body, close) => {
       const form = el("form", { style: "display:grid; gap:10px;" });
-      const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR cents)" });
+      const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR, min 10,000 max 100,000,000)" });
       const fullName = el("input", { class: "input", placeholder: "Full name" });
       const bank = el("select", { class: "input" });
       const warning = el("div", { class: "muted", style: "font-size:12px; color:#b91c1c; display:none;" });
-      const hint = el("div", { class: "muted", style: "font-size:12px;" }, "Full name must match verified KYC name (if available)." );
       const actions = el("div", { style: "display:flex; gap:8px; justify-content:flex-end;" }, [
         el("button", { class: "btn", type: "button" }, "Cancel"),
         el("button", { class: "btn primary", type: "submit" }, "Create VA"),
@@ -193,7 +209,6 @@
         row("Amount (IDR)", amount),
         row("Full name", fullName),
         row("Bank (VA)", bank),
-        hint,
         warning,
         actions,
       );
@@ -218,7 +233,7 @@
         const banks = Array.isArray(meta?.banks) ? meta.banks : [];
         limits = meta?.limits || limits;
         bank.innerHTML = "";
-        banks.forEach((code) => bank.appendChild(el("option", { value: code }, code)));
+        banks.forEach((code) => bank.appendChild(el("option", { value: code }, bankLabel(code))));
       } catch (err) {
         warning.style.display = "";
         warning.textContent = (err && err.message) || "Unable to load bank list.";
@@ -256,7 +271,7 @@
           body.appendChild(el("div", { class: "muted", style: "margin-bottom:6px;" }, "Transfer details"));
           body.appendChild(el("div", { style: "display:grid; grid-template-columns: 160px 1fr; gap:6px;" }, [
             el("div", { class: "muted" }, "Reference"), el("div", { class: "mono" }, intent?.referenceCode || "-"),
-            el("div", { class: "muted" }, "Bank"), el("div", {}, va.bankCode || "-"),
+            el("div", { class: "muted" }, "Bank"), el("div", {}, bankLabel(va.bankCode || "")),
             el("div", { class: "muted" }, "Account No"), el("div", { class: "mono" }, va.accountNo || "-"),
             el("div", { class: "muted" }, "Account Name"), el("div", {}, va.accountName || "-"),
             el("div", { class: "muted" }, "Amount"), el("div", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`),
@@ -299,12 +314,13 @@
   async function openWithdrawal() {
     openModal("IDR v4 Withdrawal", async (body, close) => {
       const form = el("form", { style: "display:grid; gap:10px;" });
-      const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR cents)" });
-      const bank = el("input", { class: "input", placeholder: "Bank code (e.g., BCA)" });
+      const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR, min 10,000 max 100,000,000)" });
+      const bank = el("select", { class: "input" });
       const holderName = el("input", { class: "input", placeholder: "Account holder name" });
       const accountNo = el("input", { class: "input", placeholder: "Account number" });
       const validateBtn = el("button", { class: "btn", type: "button" }, "Validate");
       const validateMsg = el("span", { class: "muted" });
+      const holderLabel = el("div", { class: "muted", style: "font-size:12px; display:none;" });
       const submitBtn = el("button", { class: "btn primary", type: "submit", disabled: "disabled" }, "Submit withdraw");
       const warning = el("div", { class: "muted", style: "font-size:12px; color:#b91c1c; display:none;" });
 
@@ -321,10 +337,11 @@
 
       form.append(
         row("Amount (IDR)", amount),
-        row("Bank code", bank),
+        row("Bank", bank),
         row("Account holder name", holderName),
         row("Account number", accountNo),
         el("div", { style: "display:flex; gap:8px; align-items:center;" }, [validateBtn, validateMsg]),
+        holderLabel,
         warning,
         actions,
       );
@@ -353,8 +370,25 @@
         // ignore
       }
 
+      try {
+        const resp = await fetch(`${_cfg.apiBase}/withdraw/config`, {
+          method: "GET",
+          headers: authHeaders(),
+        });
+        const data = await resp.json().catch(() => ({}));
+        const banks = Array.isArray(data?.banks) ? data.banks : [];
+        bank.innerHTML = "";
+        banks.forEach((row) => {
+          bank.appendChild(el("option", { value: row.code }, row.name || row.code));
+        });
+      } catch (err) {
+        warning.style.display = "";
+        warning.textContent = (err && err.message) || "Unable to load bank list.";
+      }
+
       validateBtn.addEventListener("click", async () => {
         warning.style.display = "none";
+        holderLabel.style.display = "none";
         const amt = parseAmount(amount.value);
         if (!amt) { warning.textContent = "Enter a valid amount."; warning.style.display = ""; return; }
         if (typeof limits.minWithdrawal === "number" && amt < limits.minWithdrawal) {
@@ -383,11 +417,13 @@
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok || !data?.ok) throw new Error(data?.error || "Validation failed");
           const score = nameScore(name, data?.holder || "");
+          holderLabel.textContent = data?.holder ? `Account holder: ${data.holder}` : "";
+          holderLabel.style.display = data?.holder ? "" : "none";
           if (score >= 0.6) {
-            validateMsg.textContent = `Validated ✓ (match ${(score * 100).toFixed(0)}%)`;
+            validateMsg.textContent = "Validated ✓";
             submitBtn.disabled = false;
           } else {
-            validateMsg.textContent = `Name mismatch (match ${(score * 100).toFixed(0)}%).`;
+            validateMsg.textContent = "Name mismatch.";
             submitBtn.disabled = true;
           }
         } catch (err) {

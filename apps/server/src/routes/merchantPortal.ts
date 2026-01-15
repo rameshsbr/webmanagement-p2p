@@ -917,14 +917,22 @@ router.get("/payments/test", async (req: any, res) => {
   const subject = deriveDiditSubject(merchantId, externalId);
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
   const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
-  const [idrV4ApiKey, verifiedKycName] = await Promise.all([
+  const [idrV4ApiKey, verifiedKycName, user] = await Promise.all([
     resolveIdrV4ApiKey(merchantId),
     resolveVerifiedKycName(subject),
+    prisma.user.findUnique({
+      where: { diditSubject: subject },
+      select: { fullName: true, firstName: true, lastName: true },
+    }),
   ]);
+  const prefillName = verifiedKycName
+    || user?.fullName
+    || [user?.firstName, user?.lastName].filter(Boolean).join(" ")
+    || null;
 
   res.render("merchant/payments-test", {
     title: "Test Payments",
-    testCheckout: { subject, token, idrV4ApiKey, verifiedKycName },
+    testCheckout: { subject, token, idrV4ApiKey, verifiedKycName, prefillName },
   });
 });
 

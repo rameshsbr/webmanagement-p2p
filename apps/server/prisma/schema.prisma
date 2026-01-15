@@ -4,8 +4,8 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider          = "postgresql"
+  url               = env("DATABASE_URL")
   shadowDatabaseUrl = env("SHADOW_DATABASE_URL")
 }
 
@@ -52,7 +52,8 @@ model Merchant {
   merchantUsers MerchantUser[]
 
   // NEW: configured payment methods
-  methods MerchantMethod[]
+  methods               MerchantMethod[]
+  ProviderPaymentMethod ProviderPaymentMethod[]
 }
 
 model MerchantApiKey {
@@ -101,8 +102,9 @@ model User {
   updatedAt              DateTime                @updatedAt
 
   // NEW: back-reference for PayerBlocklist.user
-  blocklistEntries PayerBlocklist[]
-  merchantClients  MerchantClient[]
+  blocklistEntries      PayerBlocklist[]
+  merchantClients       MerchantClient[]
+  ProviderPaymentMethod ProviderPaymentMethod[]
 }
 
 model KycVerification {
@@ -129,10 +131,10 @@ model BankAccount {
   iban         String?
   instructions String?
 
-  depositMinAmountCents   Int?
-  depositMaxAmountCents   Int?
-  withdrawMinAmountCents  Int?
-  withdrawMaxAmountCents  Int?
+  depositMinAmountCents  Int?
+  depositMaxAmountCents  Int?
+  withdrawMinAmountCents Int?
+  withdrawMaxAmountCents Int?
 
   // Phase-2 fields
   method String  @default("OSKO") // OSKO | PAYID | FPX | DUITNOW | etc.
@@ -152,16 +154,16 @@ model BankAccount {
 }
 
 model Method {
-  id        String   @id @default(cuid())
-  code      String   @unique
-  name      String
-  enabled   Boolean  @default(true) @map("active")
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  depositMinAmountCents  BigInt? @db.BigInt
-  depositMaxAmountCents  BigInt? @db.BigInt
-  withdrawMinAmountCents BigInt? @db.BigInt
-  withdrawMaxAmountCents BigInt? @db.BigInt
+  id                     String   @id @default(cuid())
+  code                   String   @unique
+  name                   String
+  enabled                Boolean  @default(true) @map("active")
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+  depositMinAmountCents  BigInt?  @db.BigInt
+  depositMaxAmountCents  BigInt?  @db.BigInt
+  withdrawMinAmountCents BigInt?  @db.BigInt
+  withdrawMaxAmountCents BigInt?  @db.BigInt
 
   merchantLinks   MerchantMethod[]
   paymentRequests PaymentRequest[]
@@ -175,7 +177,7 @@ model MerchantMethod {
   method   Method @relation(fields: [methodId], references: [id])
   methodId String
 
-  enabled Boolean @default(true)
+  enabled           Boolean @default(true)
   depositEnabled    Boolean @default(true)
   withdrawalEnabled Boolean @default(true)
 
@@ -577,7 +579,7 @@ model ProviderPayment {
   paymentRequest   PaymentRequest @relation(fields: [paymentRequestId], references: [id])
 
   provider          String // 'FAZZ'
-  providerPaymentId String @unique   // Fazz payment id
+  providerPaymentId String    @unique // Fazz payment id
   methodType        String // 'virtual_bank_account'
   bankCode          String?
   accountNumber     String?
@@ -597,7 +599,7 @@ model ProviderDisbursement {
   paymentRequest   PaymentRequest? @relation(fields: [paymentRequestId], references: [id])
 
   provider         String // 'FAZZ'
-  providerPayoutId String  @unique
+  providerPayoutId String   @unique
   bankCode         String
   accountNumber    String
   accountHolder    String

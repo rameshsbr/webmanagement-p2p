@@ -627,22 +627,22 @@ model ProviderWebhookLog {
 }
 
 model ProviderPaymentMethod {
-  id                      String   @id @default(cuid())
-  provider                String // 'FAZZ'
-  type                    String // 'virtual_bank_account'
-  merchantId              String
-  merchant                Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  userId                  String
-  user                    User     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  bankCode                String
-  providerPaymentMethodId String   @unique
-  accountNo               String?
-  accountName             String?
-  displayName             String?
-  active                  Boolean  @default(true)
-  metaJson                Json?
-  createdAt               DateTime @default(now())
-  updatedAt               DateTime @updatedAt
+  id                       String   @id @default(cuid())
+  provider                 String // 'FAZZ'
+  type                     String // 'virtual_bank_account'
+  merchantId               String
+  merchant                 Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  userId                   String
+  user                     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  bankCode                 String
+  providerPaymentMethodId  String   @unique
+  accountNo                String?
+  accountName              String?
+  displayName              String?
+  active                   Boolean  @default(true)
+  metaJson                 Json?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
   @@index([provider, type, merchantId, userId, bankCode])
 }

@@ -301,6 +301,27 @@ superAdminRouter.post("/methods/:id", async (req, res, next) => {
       },
     });
 
+    res.redirect("/superadmin/methods");
+  } catch (err) {
+    next(err);
+  }
+});
+
+superAdminRouter.post("/methods/:id/limits", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { minDeposit, maxDeposit, minWithdrawal, maxWithdrawal } = req.body || {};
+
+    await prisma.method.update({
+      where: { id },
+      data: {
+        depositMinAmountCents: parseAmountToCents(minDeposit),
+        depositMaxAmountCents: parseAmountToCents(maxDeposit),
+        withdrawMinAmountCents: parseAmountToCents(minWithdrawal),
+        withdrawMaxAmountCents: parseAmountToCents(maxWithdrawal),
+      },
+    });
+
     // banks[<bankId>][minDeposit|maxDeposit|minWithdrawal|maxWithdrawal] => amounts in currency units
     const banksPayload = (req.body && (req.body as any).banks) || {};
     const updates: Array<Promise<any>> = [];
@@ -1787,6 +1808,10 @@ superAdminRouter.post("/merchants/:id/limits", async (req, res) => {
 // ───────────────────────────────────────────────────────────────
 // Banks CRUD (Super Admin)
 // ───────────────────────────────────────────────────────────────
+const P2P_BANK_EXCLUDED_METHODS = [
+  "VIRTUAL_BANK_ACCOUNT_DYNAMIC",
+  "VIRTUAL_BANK_ACCOUNT_STATIC",
+];
 
 // allow any future method; normalize to UPPERCASE string
 const bankSchema = z.object({
@@ -1891,10 +1916,12 @@ superAdminRouter.get("/banks", async (req: any, res: any) => {
   const qMethod = (req.query.method as string) || ""; // NEW
   const qActive = (req.query.active as string) || ""; // "", "true", "false"
 
-  const where: any = {};
+  const where: any = {
+    AND: [{ method: { notIn: P2P_BANK_EXCLUDED_METHODS } }],
+  };
   if (qMerchant) where.merchantId = qMerchant === "global" ? null : qMerchant;
   if (qCurrency) where.currency = qCurrency.toUpperCase();
-  if (qMethod) where.method = qMethod.toUpperCase();
+  if (qMethod) where.AND.push({ method: qMethod.toUpperCase() });
   if (qActive) where.active = qActive === "true";
 
   const [merchants, banksRaw, usedCounts] = await Promise.all([
@@ -2269,6 +2296,7 @@ superAdminRouter.post("/banks/:id/delete", async (req: any, res: any) => {
 // CSV export
 superAdminRouter.get("/banks.csv", async (_req: any, res: any) => {
   const rows = await prisma.bankAccount.findMany({
+    where: { method: { notIn: P2P_BANK_EXCLUDED_METHODS } },
     orderBy: [{ merchantId: "asc" }, { currency: "asc" }, { method: "asc" }],
     include: { merchant: { select: { name: true } } },
   });

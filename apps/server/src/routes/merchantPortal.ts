@@ -30,6 +30,7 @@ import { formatClientStatusLabel, getClientStatusBySubject } from "../services/m
 import { listMerchantMethods } from "../services/methods.js";
 import { adapters } from "../services/providers/index.js";
 import { IDRV4_BANKS } from "../services/providers/fazz/idr-v4-banks.js";
+import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 
 const router = Router();
 
@@ -440,6 +441,37 @@ const listQuery = z.object({
 
 const LIST_QUERY_KEYS = new Set(Object.keys((listQuery as any).shape || {}));
 
+function resolveMethodCode(row: any) {
+  return String(
+    row?.method?.code ||
+    row?.detailsJson?.method ||
+    row?.bankAccount?.method ||
+    ""
+  )
+    .trim()
+    .toUpperCase();
+}
+
+function latestProviderDisbursementStatus(rows: Array<{ status: string; updatedAt?: Date | null }> | null | undefined) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return rows.reduce((latest, row) => {
+    if (!latest) return row;
+    const prev = latest.updatedAt ? new Date(latest.updatedAt).getTime() : 0;
+    const next = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    return next >= prev ? row : latest;
+  }, null as any)?.status || null;
+}
+
+function resolveDisplayStatus(row: any) {
+  const methodCode = resolveMethodCode(row);
+  if (!isIdrV4Method(methodCode)) return null;
+  const providerStatus =
+    row?.type === "WITHDRAWAL"
+      ? latestProviderDisbursementStatus(row?.ProviderDisbursement)
+      : row?.ProviderPayment?.status;
+  return mapFazzDisplayStatus(providerStatus);
+}
+
 const MERCHANT_PAYMENT_EXPORT_COLUMNS: PaymentExportColumn[] = [
   { key: "txnId", label: "TRANSACTION ID" },
   { key: "userId", label: "USER ID" },
@@ -544,6 +576,9 @@ async function fetchPaymentsFromQuery(
         user: { select: { id: true, publicId: true, email: true, phone: true, fullName: true, firstName: true, lastName: true } },
         processedByAdmin: { select: { id: true, email: true, displayName: true } },
         bankAccount: { select: { publicId: true, bankName: true, method: true } },
+        method: { select: { code: true } },
+        ProviderPayment: { select: { status: true } },
+        ProviderDisbursement: { select: { status: true, updatedAt: true } },
         receiptFile: { select: { path: true, original: true } },
       },
       orderBy,
@@ -568,10 +603,12 @@ async function fetchPaymentsFromQuery(
       nameMatchScore: match.score,
       nameMismatchWarning: match.needsReview,
       nameHardMismatch: !match.allow,
+      displayStatus: resolveDisplayStatus(item),
     } as typeof item & {
       nameMatchScore: number;
       nameMismatchWarning: boolean;
       nameHardMismatch: boolean;
+      displayStatus: ReturnType<typeof resolveDisplayStatus>;
     };
   });
 
@@ -867,6 +904,11 @@ router.get("/", async (req: any, res) => {
         amountCents: true,
         currency: true,
         createdAt: true,
+        detailsJson: true,
+        bankAccount: { select: { method: true } },
+        method: { select: { code: true } },
+        ProviderPayment: { select: { status: true } },
+        ProviderDisbursement: { select: { status: true, updatedAt: true } },
       },
     }),
   ]);
@@ -875,6 +917,11 @@ router.get("/", async (req: any, res) => {
     where: { id: merchantId },
     select: { name: true, balanceCents: true, defaultCurrency: true },
   });
+
+  const latestWithDisplay = latest.map((row) => ({
+    ...row,
+    displayStatus: resolveDisplayStatus(row),
+  }));
 
   res.render("merchant/dashboard", {
     title: "Merchant Dashboard",
@@ -885,7 +932,7 @@ router.get("/", async (req: any, res) => {
       todayDeposits: totalsToday.find(t => t.type === "DEPOSIT")?._sum.amountCents ?? 0,
       todayWithdrawals: totalsToday.find(t => t.type === "WITHDRAWAL")?._sum.amountCents ?? 0,
     },
-    latest,
+    latest: latestWithDisplay,
   });
 });
 
@@ -1059,66 +1106,12 @@ router.post("/payments/idr-v4/deposit", async (req: any, res) => {
     const merchantId = req.merchant?.sub as string;
     if (!merchantId) return res.status(401).json({ ok: false, error: "unauthorized" });
 
-    const amount = Number(String(req.body?.amount ?? "").replace(/,/g, ""));
-    const method = String(req.body?.method || "").trim().toUpperCase();
-    const bankAccountId = String(req.body?.bankAccountId || "").trim();
-
-    if (!Number.isFinite(amount) || amount <= 0) {
-      return res.status(400).json({ ok: false, error: "bad_amount" });
-    }
-    if (!method || !bankAccountId) {
-      return res.status(400).json({ ok: false, error: "bad_request" });
-    }
-
-    // Ensure the selected bank belongs to this merchant and matches method + IDR
-    const bank = await prisma.bankAccount.findFirst({
-      where: { id: bankAccountId, merchantId, currency: "IDR", method, active: true },
-      select: { id: true, bankName: true },
-    });
-    if (!bank) return res.status(400).json({ ok: false, error: "bank_not_found" });
-
-    // Prisma requires referenceCode + uniqueReference
-    const referenceCode = refs.generateTransactionId();
-    const uniqueReference = refs.generateUniqueReference();
-
-    // Create a PENDING payment request and attach the bank/method
-    const pr = await prisma.paymentRequest.create({
-      data: {
-        merchantId,
-        type: "DEPOSIT",
-        currency: "IDR",
-        amountCents: Math.round(amount * 100),
-        status: "PENDING",
-        bankAccountId: bank.id,
-        referenceCode,
-        uniqueReference,
-        detailsJson: { method },
-      },
-      select: { id: true, referenceCode: true, amountCents: true },
+    return res.status(410).json({
+      ok: false,
+      error: "deprecated_route",
+      message: "Use /api/v1/deposit/intents for IDR v4 deposits.",
     });
 
-    // Hand off to FAZZ provider to create the VA/intent.
-    const provider = await import("../services/providers/fazz.js");
-    const intent = typeof (provider as any).createDepositIntent === "function"
-      ? await (provider as any).createDepositIntent({
-          merchantId,
-          paymentId: pr.id,
-          amountCents: pr.amountCents,
-          currency: "IDR",
-          method,
-          bankAccountId: bank.id,
-        })
-      : null;
-
-    // Normalize what the UI needs
-    const transfer = {
-      reference: pr.referenceCode,
-      accountNo: intent?.virtualAccount?.accountNo || intent?.vaAccountNo || "",
-      bankName: intent?.virtualAccount?.bankName || bank.bankName || "",
-      expiresAt: intent?.expiresAt || null,
-    };
-
-    return res.json({ ok: true, paymentId: pr.id, transfer });
   } catch (err) {
     console.error("[idr-v4 deposit] failed", err);
     return res.status(500).json({ ok: false, error: "server_error" });
@@ -1254,7 +1247,7 @@ router.get("/export/payments.csv", async (req: any, res) => {
       type: x.type,
       currency: x.currency,
       amountCents: x.amountCents,
-      status: x.status,
+      status: x.displayStatus?.label || x.status,
       bank: x.bankAccount?.bankName ?? "",
       createdAt: x.createdAt.toISOString(),
       updatedAt: x.updatedAt.toISOString(),
@@ -1287,7 +1280,7 @@ router.get("/export/payments.xlsx", async (req: any, res) => {
     type: x.type,
     currency: x.currency,
     amountCents: x.amountCents,
-    status: x.status,
+    status: x.displayStatus?.label || x.status,
     bank: x.bankAccount?.bankName ?? "",
     createdAt: x.createdAt,
     updatedAt: x.updatedAt,

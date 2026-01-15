@@ -36,6 +36,7 @@ import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/time
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 import { ensureMerchantMethod, findMethodByCode, listAllMethods } from "../services/methods.js";
+import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 
 export const superAdminRouter = Router();
 
@@ -54,6 +55,37 @@ function buildMethodFilter(code: string, methodId?: string) {
     or.unshift({ methodId });
   }
   return { OR: or } as Prisma.PaymentRequestWhereInput;
+}
+
+function resolveMethodCode(row: any) {
+  return String(
+    row?.method?.code ||
+    row?.detailsJson?.method ||
+    row?.bankAccount?.method ||
+    ""
+  )
+    .trim()
+    .toUpperCase();
+}
+
+function latestProviderDisbursementStatus(rows: Array<{ status: string; updatedAt?: Date | null }> | null | undefined) {
+  if (!Array.isArray(rows) || rows.length === 0) return null;
+  return rows.reduce((latest, row) => {
+    if (!latest) return row;
+    const prev = latest.updatedAt ? new Date(latest.updatedAt).getTime() : 0;
+    const next = row.updatedAt ? new Date(row.updatedAt).getTime() : 0;
+    return next >= prev ? row : latest;
+  }, null as any)?.status || null;
+}
+
+function resolveDisplayStatus(row: any) {
+  const methodCode = resolveMethodCode(row);
+  if (!isIdrV4Method(methodCode)) return null;
+  const providerStatus =
+    row?.type === "WITHDRAWAL"
+      ? latestProviderDisbursementStatus(row?.ProviderDisbursement)
+      : row?.ProviderPayment?.status;
+  return mapFazzDisplayStatus(providerStatus);
 }
 
 async function countPaymentsByMethod(
@@ -903,6 +935,9 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         processedByAdmin: {
           select: { id: true, email: true, displayName: true },
         },
+        method: { select: { code: true } },
+        ProviderPayment: { select: { status: true } },
+        ProviderDisbursement: { select: { status: true, updatedAt: true } },
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -1018,6 +1053,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
         nameMatchScore: match.score,
         nameMismatchWarning: match.needsReview,
         nameHardMismatch: !match.allow,
+        displayStatus: resolveDisplayStatus(x),
       };
     })
   );
@@ -1067,7 +1103,7 @@ function toCSVRows(items: any[]) {
         csvEscape(x.referenceCode || ""),
         csvEscape(x.merchant?.name || ""),
         csvEscape(x.type || ""),
-        csvEscape(x.status || ""),
+        csvEscape(x.displayStatus?.label || x.status || ""),
         csvEscape(x.currency || ""),
         csvEscape(String(x.amountCents ?? "")),
         csvEscape(x.user?.email || ""),
@@ -3450,7 +3486,7 @@ superAdminRouter.get("/deposits/export.xlsx", async (req, res) => {
     referenceCode: x.referenceCode,
     merchantName: x.merchant?.name || "",
     type: x.type,
-    status: x.status,
+    status: x.displayStatus?.label || x.status,
     currency: x.currency,
     amountCents: x.amountCents,
     userEmail: x.user?.email || "",
@@ -3488,7 +3524,7 @@ superAdminRouter.get("/withdrawals/export.xlsx", async (req, res) => {
     referenceCode: x.referenceCode,
     merchantName: x.merchant?.name || "",
     type: x.type,
-    status: x.status,
+    status: x.displayStatus?.label || x.status,
     currency: x.currency,
     amountCents: x.amountCents,
     userEmail: x.user?.email || "",

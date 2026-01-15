@@ -154,7 +154,7 @@ function toJsonSafe<T = any>(value: T): any {
 /** Provider → local mapping (deposits / payments) */
 function mapDepositStatus(provider: string): "APPROVED" | "REJECTED" | null {
   const s = String(provider || "").toLowerCase();
-  if (["paid", "success", "succeeded", "completed", "settled"].includes(s)) return "APPROVED";
+  if (["completed", "settled"].includes(s)) return "APPROVED";
   if (["failed", "cancelled", "canceled", "expired", "rejected"].includes(s)) return "REJECTED";
   return null;
 }
@@ -268,7 +268,8 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       // SEND (disbursement)
       // ───────────────────────────────────────────────────────────────
       const providerPayoutId = id;
-      const providerStatusNorm = normalizePayoutProviderStatus(status);
+      const providerStatusRaw = String(status || "");
+      const providerStatusNorm = normalizePayoutProviderStatus(providerStatusRaw);
 
       let pd = providerPayoutId
         ? await prisma.providerDisbursement.findFirst({
@@ -299,7 +300,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
 
       await prisma.providerDisbursement.update({
         where: { id: pd.id },
-        data: { status: providerStatusNorm, rawLatestJson: toJsonSafe(payload) },
+        data: { status: providerStatusRaw, rawLatestJson: toJsonSafe(payload) },
       });
 
       const local = mapWithdrawLocalStatus(providerStatusNorm);
@@ -325,7 +326,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
               payload: {
                 provider: "FAZZ",
                 providerPayoutId: providerPayoutId || null,
-                status: providerStatusNorm,
+                status: providerStatusRaw,
                 referenceCode: pr.referenceCode,
                 mappedStatus: local,
               },
@@ -335,7 +336,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       } catch {}
 
       await markLogProcessed(logId, null);
-      return res.json({ ok: true, id: providerPayoutId || null, providerStatus: providerStatusNorm, applied: Boolean(local) });
+      return res.json({ ok: true, id: providerPayoutId || null, providerStatus: providerStatusRaw, applied: Boolean(local) });
     }
 
     // ─────────────────────────────────────────────────────────────────

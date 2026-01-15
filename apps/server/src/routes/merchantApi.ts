@@ -867,10 +867,11 @@ merchantApiRouter.post(
     const { status, raw } = await adapter.getDisbursementStatus(pd.providerPayoutId);
 
     const providerNorm = normalizeProviderStatus(status);
-    // Store normalized status always
+    const providerStatusRaw = String(status || "");
+    // Store raw provider status for IDR v4
     await prisma.providerDisbursement.update({
       where: { id: pd.id },
-      data: { status: providerNorm, rawLatestJson: toJsonSafe(raw ?? {}) },
+      data: { status: providerStatusRaw, rawLatestJson: toJsonSafe(raw ?? {}) },
     });
 
     // Decide local candidate; with forceSync we also allow PENDING from "processing"

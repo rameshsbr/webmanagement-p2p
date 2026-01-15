@@ -48,7 +48,7 @@
           const modalId = `limits-modal-${method.id}`;
           const methodCode = String(method.code || '').trim().toUpperCase();
           const groupLabel = IDR_V4_METHODS.has(methodCode) ? 'IDR v4' : 'P2P';
-          const hasIdr = IDR_V4_METHODS.has(methodCode) || (method.banks || []).some((b) => String(b.currency || '').toUpperCase() === 'IDR');
+          const hasIdr = Number(method.minorUnits) === 1;
         %>
           <div class="method-card">
             <form id="<%= formId %>" method="post" action="/superadmin/methods/<%= method.id %>" data-methods-form="row"></form>
@@ -58,6 +58,7 @@
                 <div class="method-meta">
                   <span class="mono">Code: <%= method.code %></span>
                   <span class="pill pill--subtle"><%= groupLabel %></span>
+                  <span class="muted"><%= method.currencyHint %></span>
                 </div>
               </div>
               <label class="toggle">
@@ -94,19 +95,19 @@
                 <div class="limits-grid">
                   <div class="form-field">
                     <label>Min Deposit</label>
-                    <input class="input" inputmode="decimal" name="minDeposit" placeholder="0.00" value="<%= centsToUnits(method.depositMinAmountCents) %>" />
+                    <input class="input" inputmode="decimal" name="minDeposit" placeholder="0.00" value="<%= method.displayMinDeposit %>" />
                   </div>
                   <div class="form-field">
                     <label>Max Deposit</label>
-                    <input class="input" inputmode="decimal" name="maxDeposit" placeholder="0.00" value="<%= centsToUnits(method.depositMaxAmountCents) %>" />
+                    <input class="input" inputmode="decimal" name="maxDeposit" placeholder="0.00" value="<%= method.displayMaxDeposit %>" />
                   </div>
                   <div class="form-field">
                     <label>Min Withdrawal</label>
-                    <input class="input" inputmode="decimal" name="minWithdrawal" placeholder="0.00" value="<%= centsToUnits(method.withdrawMinAmountCents) %>" />
+                    <input class="input" inputmode="decimal" name="minWithdrawal" placeholder="0.00" value="<%= method.displayMinWithdrawal %>" />
                   </div>
                   <div class="form-field">
                     <label>Max Withdrawal</label>
-                    <input class="input" inputmode="decimal" name="maxWithdrawal" placeholder="0.00" value="<%= centsToUnits(method.withdrawMaxAmountCents) %>" />
+                    <input class="input" inputmode="decimal" name="maxWithdrawal" placeholder="0.00" value="<%= method.displayMaxWithdrawal %>" />
                   </div>
                 </div>
 

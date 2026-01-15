@@ -250,6 +250,28 @@ superAdminRouter.get("/methods", async (_req, res) => {
     (m as any).banks = byCode[m.code.trim().toUpperCase()] || [];
   });
 
+  methods.forEach((method) => {
+    const upperCode = method.code.trim().toUpperCase();
+    const minorUnits = methodMinorUnits(upperCode);
+    const decimals = minorUnits === 1 ? 0 : 2;
+    const currencyHint = minorUnits === 1 ? "IDR: no decimals" : "AUD: 2 decimals";
+
+    (method as any).minorUnits = minorUnits;
+    (method as any).currencyHint = currencyHint;
+    (method as any).displayMinDeposit = formatMinorToMajor(method.depositMinAmountCents, minorUnits, decimals);
+    (method as any).displayMaxDeposit = formatMinorToMajor(method.depositMaxAmountCents, minorUnits, decimals);
+    (method as any).displayMinWithdrawal = formatMinorToMajor(
+      method.withdrawMinAmountCents,
+      minorUnits,
+      decimals,
+    );
+    (method as any).displayMaxWithdrawal = formatMinorToMajor(
+      method.withdrawMaxAmountCents,
+      minorUnits,
+      decimals,
+    );
+  });
+
   // Basic stats
   const stats: Record<string, { merchants: number; deposits: number; withdrawals: number }> = {};
   await Promise.all(
@@ -298,6 +320,34 @@ superAdminRouter.post("/methods/:id", async (req, res, next) => {
       data: {
         name: String(name || "").trim(),
         enabled: enabled === "on" || enabled === true,
+      },
+    });
+
+    res.redirect("/superadmin/methods");
+  } catch (err) {
+    next(err);
+  }
+});
+
+superAdminRouter.post("/methods/:id/limits", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { minDeposit, maxDeposit, minWithdrawal, maxWithdrawal } = req.body || {};
+
+    const method = await prisma.method.findUnique({
+      where: { id },
+      select: { code: true },
+    });
+    if (!method) return res.status(404).send("Not found");
+    const minorUnits = methodMinorUnits(method.code);
+
+    await prisma.method.update({
+      where: { id },
+      data: {
+        depositMinAmountCents: parseMajorToMinor(minDeposit, minorUnits),
+        depositMaxAmountCents: parseMajorToMinor(maxDeposit, minorUnits),
+        withdrawMinAmountCents: parseMajorToMinor(minWithdrawal, minorUnits),
+        withdrawMaxAmountCents: parseMajorToMinor(maxWithdrawal, minorUnits),
       },
     });
 
@@ -706,6 +756,41 @@ function parseAmountToCents(raw: unknown): number | null {
   const value = Number(str);
   if (!Number.isFinite(value) || value <= 0) return null;
   return Math.round(value * 100);
+}
+
+function methodMinorUnits(code: string): number {
+  const upper = String(code || "").trim().toUpperCase();
+  if (
+    upper === "VIRTUAL_BANK_ACCOUNT_DYNAMIC" ||
+    upper === "VIRTUAL_BANK_ACCOUNT_STATIC" ||
+    upper === "FAZZ_SEND"
+  ) {
+    return 1;
+  }
+  if (upper === "OSKO" || upper === "PAYID") return 100;
+  return 100;
+}
+
+function parseMajorToMinor(raw: unknown, minorUnits: number): bigint | null {
+  if (raw == null) return null;
+  const str = String(raw ?? "").replace(/,/g, "").trim();
+  if (!str) return null;
+  const value = Number(str);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  const minor = Math.round(value * minorUnits);
+  return BigInt(minor);
+}
+
+function formatMinorToMajor(
+  raw: unknown,
+  minorUnits: number,
+  decimals: number,
+): string {
+  if (raw == null) return "";
+  const value = typeof raw === "bigint" ? Number(raw) : Number(raw);
+  if (!Number.isFinite(value)) return "";
+  const major = value / minorUnits;
+  return major.toFixed(decimals);
 }
 
 async function loadAccountPageData(
@@ -1787,6 +1872,7 @@ superAdminRouter.post("/merchants/:id/limits", async (req, res) => {
 // ───────────────────────────────────────────────────────────────
 // Banks CRUD (Super Admin)
 // ───────────────────────────────────────────────────────────────
+const P2P_BANK_EXCLUDED_METHOD_PREFIX = "VIRTUAL_BANK_ACCOUNT_";
 
 // allow any future method; normalize to UPPERCASE string
 const bankSchema = z.object({
@@ -1891,10 +1977,12 @@ superAdminRouter.get("/banks", async (req: any, res: any) => {
   const qMethod = (req.query.method as string) || ""; // NEW
   const qActive = (req.query.active as string) || ""; // "", "true", "false"
 
-  const where: any = {};
+  const where: any = {
+    AND: [{ NOT: { method: { startsWith: P2P_BANK_EXCLUDED_METHOD_PREFIX } } }],
+  };
   if (qMerchant) where.merchantId = qMerchant === "global" ? null : qMerchant;
   if (qCurrency) where.currency = qCurrency.toUpperCase();
-  if (qMethod) where.method = qMethod.toUpperCase();
+  if (qMethod) where.AND.push({ method: qMethod.toUpperCase() });
   if (qActive) where.active = qActive === "true";
 
   const [merchants, banksRaw, usedCounts] = await Promise.all([
@@ -2269,6 +2357,7 @@ superAdminRouter.post("/banks/:id/delete", async (req: any, res: any) => {
 // CSV export
 superAdminRouter.get("/banks.csv", async (_req: any, res: any) => {
   const rows = await prisma.bankAccount.findMany({
+    where: { NOT: { method: { startsWith: P2P_BANK_EXCLUDED_METHOD_PREFIX } } },
     orderBy: [{ merchantId: "asc" }, { currency: "asc" }, { method: "asc" }],
     include: { merchant: { select: { name: true } } },
   });

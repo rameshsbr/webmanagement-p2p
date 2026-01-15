@@ -160,6 +160,61 @@ function mapProviderToLocal(p: ProviderNorm): LocalStatus {
   return 'PENDING';
 }
 
+function idrV4BankName(code: string | null | undefined): string {
+  const map: Record<string, string> = {
+    BCA: 'BCA',
+    BRI: 'BRI',
+    BNI: 'BNI',
+    MANDIRI: 'Mandiri',
+    CIMB_NIAGA: 'CIMB Niaga',
+    DANAMON: 'Danamon',
+    PERMATA: 'Permata',
+    HANA: 'Hana',
+    SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna',
+    BSI: 'Bank Syariah Indonesia',
+  };
+  const key = String(code || '').toUpperCase();
+  return map[key] || key;
+}
+
+function normalizeIdrV4Deposit(result: any, amountCents: number) {
+  const instructions = result?.instructions || {};
+  const instrMethod =
+    instructions?.paymentMethod?.instructions ||
+    instructions?.method?.instructions ||
+    instructions?.instructions ||
+    instructions;
+  const bankCode =
+    result?.va?.bankCode ||
+    instrMethod?.bankShortCode ||
+    instrMethod?.bankCode ||
+    instructions?.bankShortCode ||
+    instructions?.bankCode ||
+    null;
+  const accountNo =
+    result?.va?.accountNo ||
+    instrMethod?.accountNo ||
+    instructions?.accountNo ||
+    null;
+  const accountName =
+    result?.va?.accountName ||
+    instrMethod?.displayName ||
+    instructions?.displayName ||
+    null;
+  const expiresAt = result?.expiresAt || result?.expiredAt || null;
+  return {
+    referenceCode: result?.referenceCode || null,
+    amountCents,
+    expiresAt,
+    va: {
+      bankCode: bankCode || null,
+      bankName: bankCode ? idrV4BankName(bankCode) : null,
+      accountNo: accountNo || null,
+      accountName: accountName || null,
+    },
+  };
+}
+
 /* ────────────────────────────────────────────────────────────────────────────
    DEPOSITS (unchanged from your latest working version)
 ──────────────────────────────────────────────────────────────────────────── */
@@ -296,7 +351,7 @@ merchantApiRouter.post(
             `🟢 New DEPOSIT intent (ID VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
           );
 
-          return {
+          const result = {
             id: pr.id,
             referenceCode,
             instructions: instructionsJson,
@@ -306,7 +361,22 @@ merchantApiRouter.post(
               accountName: deposit.va.accountName,
             },
             expiresAt: deposit.expiresAt || null,
-          };
+          } as any;
+
+          if (desiredCode === 'VIRTUAL_BANK_ACCOUNT_DYNAMIC' || desiredCode === 'VIRTUAL_BANK_ACCOUNT_STATIC') {
+            const normalized = normalizeIdrV4Deposit(result, body.amountCents);
+            result.referenceCode = normalized.referenceCode || result.referenceCode;
+            result.amountCents = normalized.amountCents;
+            result.expiresAt = normalized.expiresAt || result.expiresAt;
+            result.va = {
+              bankCode: normalized.va.bankCode || result.va?.bankCode || null,
+              bankName: normalized.va.bankName || null,
+              accountNo: normalized.va.accountNo || result.va?.accountNo || null,
+              accountName: normalized.va.accountName || result.va?.accountName || null,
+            };
+          }
+
+          return result;
         }
 
         await tgNotify(`🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`);

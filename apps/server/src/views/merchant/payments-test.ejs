@@ -33,15 +33,12 @@
   </div>
 
   <!-- IDR v4: buttons only. We render a custom overlay on click. -->
-  <section class="card" style="margin-top:12px" data-test-section="idr-v4">
-    <div class="card__header">
-      <h3 style="margin:0;">IDR v4</h3>
-    </div>
-    <div class="row" style="justify-content:center; gap:16px; margin-top:4px;">
+  <div data-test-section="idr-v4" style="display:none;">
+    <div class="row" style="justify-content:center; gap:16px; margin-top:2px;">
       <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
       <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
     </div>
-  </section>
+  </div>
 </div>
 
 <script>
@@ -134,6 +131,14 @@
     return common / Math.max(leftWords.size, rightWords.size, 1);
   };
 
+  const formatIdr = (value) => `IDR ${Number(value || 0).toLocaleString('en-US')}`;
+  const formatExpiry = (value) => {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return '';
+    return d.toLocaleString();
+  };
+
   const money = (value) => {
     const raw = String(value || '').replace(/,/g, '').trim();
     if (!raw) return null;
@@ -180,18 +185,18 @@
     return data;
   }
 
-  function openModal(builder) {
+  function openModal(title, builder) {
     const overlay = h('div', { class: 'payx-overlay', style: `
       position: fixed; inset: 0; background: rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:9999;`
     });
     const box = h('div', { class: 'payx-box', style: `
-      background: var(--card-bg, #fff); color: inherit; border-radius: 10px; min-width: 420px; max-width: 720px;
+      background: var(--card-bg, #fff); color: inherit; border-radius: 10px; min-width: 520px; width: min(720px, 94vw);
       box-shadow: 0 8px 24px rgba(0,0,0,.2); padding: 16px;`
     });
     const close = () => overlay.remove();
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
     box.appendChild(h('div', { style:'display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;' }, [
-      h('div', { class:'muted', style:'font-weight:600;' }, 'IDR v4'),
+      h('div', { class:'muted', style:'font-weight:600;' }, title),
       h('button', { class:'btn small', type:'button' }, 'Close')
     ]));
     box.querySelector('button')?.addEventListener('click', close);
@@ -206,7 +211,7 @@
     const mode = getMode();
     const methodCode = methodMap[mode] || methodMap['idr-v4-dynamic'];
 
-    openModal(async (body, close) => {
+    openModal('Deposit', async (body, close) => {
       const form = h('form', { style:'display:grid; gap:10px;' });
       const amount = h('input', { class:'input', inputmode:'numeric', placeholder:'Amount (IDR, min 10,000 max 100,000,000)' });
       const fullName = h('input', { class:'input', placeholder:'Full name', value: prefillName || verifiedKycName || '' });
@@ -295,15 +300,17 @@
         try {
           const data = await apiPost('/deposit/intents?debug=1', payload, token);
           const intent = data?.data || data;
-          const va = intent?.va || {};
+          const normalized = intent?.normalized || intent || {};
+          const va = normalized?.va || {};
           body.innerHTML = '';
           body.appendChild(h('div', { class:'muted', style:'margin-bottom:6px;' }, 'Transfer details'));
           const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr; gap:6px;' }, [
-            h('div', { class:'muted' }, 'Reference'), h('div', { class:'mono' }, intent?.referenceCode || '-'),
-            h('div', { class:'muted' }, 'Bank'), h('div', {}, bankLabel(va.bankCode || '')),
+            h('div', { class:'muted' }, 'Reference'), h('div', { class:'mono' }, normalized?.referenceCode || '-'),
+            h('div', { class:'muted' }, 'Bank'), h('div', {}, va.bankName || bankLabel(va.bankCode || '')),
             h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, va.accountNo || '-'),
             h('div', { class:'muted' }, 'Account Name'), h('div', {}, va.accountName || '-'),
-            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, `IDR ${amountCents.toLocaleString('en-US')}`),
+            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(normalized?.amountCents || amountCents)),
+            h('div', { class:'muted' }, 'Expiry'), h('div', {}, formatExpiry(normalized?.expiresAt) || '-'),
           ]);
           body.appendChild(grid);
 
@@ -347,7 +354,7 @@
   }
 
   async function openIdrWithdrawal() {
-    openModal(async (body, close) => {
+    openModal('Withdrawal', async (body, close) => {
       const form = h('form', { style:'display:grid; gap:10px;' });
       const amount = h('input', { class:'input', inputmode:'numeric', placeholder:'Amount (IDR, min 10,000 max 100,000,000)' });
       const bank = h('select', { class:'input' });

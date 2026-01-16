@@ -936,7 +936,7 @@ async function fetchPayments(q: any, type: "DEPOSIT" | "WITHDRAWAL") {
           select: { id: true, email: true, displayName: true },
         },
         method: { select: { code: true } },
-        ProviderPayment: { select: { status: true } },
+        ProviderPayment: { select: { status: true, bankCode: true, accountNumber: true, accountName: true } },
         ProviderDisbursement: { select: { status: true, updatedAt: true } },
       },
       orderBy,

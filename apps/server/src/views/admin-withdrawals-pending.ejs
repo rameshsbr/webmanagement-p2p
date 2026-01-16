@@ -82,6 +82,9 @@
         <% const methodRaw = (r.detailsJson && r.detailsJson.method) || (r.bankAccount && r.bankAccount.method) || ''; %>
         <% const method = (methodRaw || '').toUpperCase(); %>
         <% const dest = (r.detailsJson && r.detailsJson.destination) || {}; %>
+        <% const isIdrV4 = ['FAZZ_SEND','VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
+        <% const idrV4BankName = (code) => { const map = { BCA: 'BCA', BRI: 'BRI', MANDIRI: 'Mandiri', SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna' }; const key = String(code || '').toUpperCase(); return map[key] || (key || '-'); }; %>
+        <% const kycName = (r.user?.fullName || [r.user?.firstName, r.user?.lastName].filter(Boolean).join(' ')).trim() || '-'; %>
         <% const showBankAccount = r.bankAccount && r.status !== 'REJECTED'; %>
         <tr>
           <td data-col="txnId"><span class="mono"><%= r.referenceCode %></span></td>
@@ -109,16 +112,28 @@
           <td data-col="processingTime">-</td>
           <td data-col="userInfo" class="info-cell">
             <div class="info-block">
-              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
-              <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= dest.bankName || r.bankAccount?.bankName || '-' %></span></div>
-              <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= dest.holderName || '-' %> <% if (r.nameMismatchWarning) { %>
-                <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
-              <% } %></span></div>
-              <% if (method === 'OSKO') { %>
+              <% if (isIdrV4) { %>
+                <% const uniqueRefNo = (r.detailsJson && r.detailsJson.meta && r.detailsJson.meta.uniqueRefNo) || null; %>
+                <% if (uniqueRefNo) { %>
+                  <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= uniqueRefNo %></span></div>
+                <% } %>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= kycName %></span></div>
+                <div class="info-line"><span class="info-label">Account holder</span><span class="info-value"><%= dest.holderName || '-' %></span></div>
                 <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= dest.accountNo || '-' %></span></div>
-                <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= dest.bsb || '-' %></span></div>
-              <% } else if (method === 'PAYID') { %>
-                <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= dest.payIdValue || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= idrV4BankName(dest.bankCode || dest.bankName) %></span></div>
+              <% } else { %>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= dest.bankName || r.bankAccount?.bankName || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= dest.holderName || '-' %> <% if (r.nameMismatchWarning) { %>
+                  <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
+                <% } %></span></div>
+                <% if (method === 'OSKO') { %>
+                  <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= dest.accountNo || '-' %></span></div>
+                  <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= dest.bsb || '-' %></span></div>
+                <% } else if (method === 'PAYID') { %>
+                  <div class="info-line"><span class="info-label">PayID</span><span class="info-value"><%= dest.payIdValue || '-' %></span></div>
+                <% } %>
               <% } %>
             </div>
           </td>

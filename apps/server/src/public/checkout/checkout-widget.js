@@ -838,21 +838,31 @@
     header.firstChild.textContent = "Transfer details";
 
     const details = intent.bankDetails || {};
+    const instructions = intent.instructions || {};
+    const isDynamic = String(instructions?.method || "").toUpperCase() === "DYNAMIC";
+    const uniqueRefNo = instructions?.meta?.uniqueRefNo || intent?.va?.meta?.uniqueRefNo || null;
     const ref = intent.uniqueReference || intent.referenceCode;
+    const expiresAt = intent?.expiresAt || intent?.expiredAt || null;
 
     const intro = el("div", { style:"margin:4px 0 8px 0; opacity:.85" },
       "Use the details below to make your transfer. Always include the reference."
     );
 
     const grid = el("div");
-    grid.appendChild(kv("Reference", ref));
 
     // Prefer server-provided displayFields, but for IDR v4 FAZZ we *override*
     // to show bankCode / accountNo / accountName if present anywhere.
     const fields = Array.isArray(details.displayFields) ? details.displayFields : [];
 
     const isFazzVa = looksLikeFazzVa(intent);
+    if (!isFazzVa) {
+      grid.appendChild(kv("Reference", ref));
+    }
+
     if (isFazzVa) {
+      if (uniqueRefNo && isDynamic) {
+        grid.appendChild(kv("Unique Reference No", uniqueRefNo));
+      }
       // tolerant key lookup across multiple shapes
       const bankCode = firstDefined(
         details.bankCode, details.bank_code, details.bankcode,
@@ -873,6 +883,7 @@
         if (bankCode) grid.appendChild(kv("Bank Code", bankCode));
         if (accountNo) grid.appendChild(kv("Account No", accountNo));
         if (accountName) grid.appendChild(kv("Account Name", accountName));
+        if (isDynamic && expiresAt) grid.appendChild(kv("Expiry", expiresAt, false));
 
         // Also render any "notes/instructions" present in displayFields
         fields.forEach((it) => {
@@ -909,6 +920,23 @@
         }
         grid.appendChild(row);
       });
+    }
+    if (isFazzVa) {
+      const fallbackSteps = [
+        "Open your banking app.",
+        "Transfer the amount to the VA below.",
+        "Use immediate transfer if available.",
+      ];
+      const steps = Array.isArray(instructions?.steps) && instructions.steps.length
+        ? instructions.steps
+        : fallbackSteps;
+      const stepsWrap = el("div", { style: "margin-top:10px;" }, [
+        el("div", { class: "muted", style: "margin:6px 0 4px;" }, "Steps"),
+      ]);
+      const list = el("ol", { style: "margin:0 0 8px 16px; padding:0;" });
+      steps.forEach((step) => list.appendChild(el("li", {}, step)));
+      stepsWrap.appendChild(list);
+      grid.appendChild(stepsWrap);
     }
 
     const receipt = el("input", { type:"file", accept:"image/*,application/pdf" });

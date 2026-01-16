@@ -577,7 +577,7 @@ async function fetchPaymentsFromQuery(
         processedByAdmin: { select: { id: true, email: true, displayName: true } },
         bankAccount: { select: { publicId: true, bankName: true, method: true } },
         method: { select: { code: true } },
-        ProviderPayment: { select: { status: true } },
+        ProviderPayment: { select: { status: true, bankCode: true, accountNumber: true, accountName: true } },
         ProviderDisbursement: { select: { status: true, updatedAt: true } },
         receiptFile: { select: { path: true, original: true } },
       },

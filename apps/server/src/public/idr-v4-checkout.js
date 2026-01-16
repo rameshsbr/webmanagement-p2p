@@ -161,8 +161,9 @@
       class: "idr-v4-box",
       style: "width:min(720px, 92vw); background:#fff; border-radius:12px; padding:16px; box-shadow:0 10px 30px rgba(0,0,0,.2); font-family: ui-sans-serif, system-ui;",
     });
+    const headerTitle = el("div", { style: "font-weight:600" }, title);
     const header = el("div", { style: "display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;" }, [
-      el("div", { style: "font-weight:600" }, title),
+      headerTitle,
       el("button", { class: "btn", style: "border:none;background:#eee;border-radius:8px;padding:6px 10px;cursor:pointer" }, "Close"),
     ]);
     header.querySelector("button").addEventListener("click", () => {
@@ -183,12 +184,12 @@
     builder(body, () => {
       overlay.remove();
       notifyClose();
-    });
+    }, headerTitle);
   }
 
   async function openDeposit(opts = {}) {
     const methodCode = (opts.method || "VIRTUAL_BANK_ACCOUNT_DYNAMIC").toUpperCase();
-    openModal("IDR v4 Deposit", async (body, close) => {
+    openModal("IDR v4 Deposit", async (body, close, headerTitle) => {
       const form = el("form", { style: "display:grid; gap:10px;" });
       const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR, min 10,000 max 100,000,000)" });
       const fullName = el("input", { class: "input", placeholder: "Full name" });
@@ -267,15 +268,38 @@
           });
           const intent = data?.data || data;
           const va = intent?.va || {};
+          const instructions = intent?.instructions || {};
+          const meta = instructions?.meta || va?.meta || {};
+          const uniqueRefNo = meta?.uniqueRefNo || null;
+          const fallbackSteps = [
+            "Open your banking app.",
+            "Transfer the amount to the VA below.",
+            "Use immediate transfer if available.",
+          ];
+          const steps = Array.isArray(instructions?.steps) && instructions.steps.length
+            ? instructions.steps
+            : fallbackSteps;
+          const isDynamic = methodCode.toUpperCase().includes("DYNAMIC");
+          const expiresAt = intent?.expiresAt || intent?.expiredAt || null;
           body.innerHTML = "";
-          body.appendChild(el("div", { class: "muted", style: "margin-bottom:6px;" }, "Transfer details"));
-          body.appendChild(el("div", { style: "display:grid; grid-template-columns: 160px 1fr; gap:6px;" }, [
-            el("div", { class: "muted" }, "Reference"), el("div", { class: "mono" }, intent?.referenceCode || "-"),
+          if (headerTitle) headerTitle.textContent = "Transfer details";
+          body.appendChild(el("div", { class: "muted", style: "margin-bottom:8px;" }, "Use the details below to make your transfer. Always include the reference."));
+          const rows = [
+            ...(uniqueRefNo && isDynamic ? [el("div", { class: "muted" }, "Unique Reference No"), el("div", { class: "mono" }, uniqueRefNo)] : []),
             el("div", { class: "muted" }, "Bank"), el("div", {}, bankLabel(va.bankCode || "")),
             el("div", { class: "muted" }, "Account No"), el("div", { class: "mono" }, va.accountNo || "-"),
             el("div", { class: "muted" }, "Account Name"), el("div", {}, va.accountName || "-"),
             el("div", { class: "muted" }, "Amount"), el("div", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`),
-          ]));
+          ];
+          if (isDynamic && expiresAt) {
+            rows.push(el("div", { class: "muted" }, "Expiry"), el("div", {}, String(expiresAt)));
+          }
+          body.appendChild(el("div", { style: "display:grid; grid-template-columns: 160px 1fr; gap:6px;" }, rows));
+
+          body.appendChild(el("div", { class: "muted", style: "margin:12px 0 4px;" }, "Steps"));
+          const ol = el("ol", { style: "margin:0 0 8px 16px; padding:0;" });
+          steps.forEach((step) => ol.appendChild(el("li", {}, step)));
+          body.appendChild(ol);
           const statusEl = el("div", { class: "muted", style: "margin-top:10px;" }, "Awaiting payment confirmation.");
           const pollBtn = el("button", { class: "btn primary", type: "button", style: "margin-top:10px;" }, "I've paid");
           body.appendChild(statusEl);

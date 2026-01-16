@@ -98,6 +98,10 @@
         <% const payer = details.payer || {}; %>
         <% const payerBankName = payer.bankName || (r.bankAccount && r.bankAccount.bankName) || null; %>
         <% const destination = details.destination || {}; %>
+        <% const isIdrV4Deposit = r.type === 'DEPOSIT' && ['VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
+        <% const isIdrV4Withdrawal = r.type === 'WITHDRAWAL' && ['FAZZ_SEND','VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
+        <% const idrV4BankName = (code) => { const map = { BCA: 'BCA', BRI: 'BRI', MANDIRI: 'Mandiri', SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna' }; const key = String(code || '').toUpperCase(); return map[key] || (key || '-'); }; %>
+        <% const kycName = (r.user?.fullName || [r.user?.firstName, r.user?.lastName].filter(Boolean).join(' ')).trim() || '-'; %>
         <% const processedAt = r.processedAt || r.updatedAt || null; %>
         <% const hasProcessed = processedAt && !(r.status === 'PENDING' || r.status === 'SUBMITTED'); %>
         <% const showBankAccount = r.bankAccount && (r.type !== 'WITHDRAWAL' || r.status !== 'REJECTED'); %>
@@ -131,9 +135,29 @@
           <td data-col="processingTime"><%= hasProcessed ? formatDuration(r.createdAt, processedAt) : '-' %></td>
           <td data-col="userInfo" class="info-cell">
             <div class="info-block">
-              <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
-              <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
-              <% if (r.type === 'DEPOSIT') { %>
+              <% if (isIdrV4Deposit) { %>
+                <% const uniqueRefNo = (details.meta && details.meta.uniqueRefNo) || null; %>
+                <% if (uniqueRefNo) { %>
+                  <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= uniqueRefNo %></span></div>
+                <% } %>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= kycName %></span></div>
+                <div class="info-line"><span class="info-label">Account holder</span><span class="info-value"><%= r.ProviderPayment?.accountName || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= r.ProviderPayment?.accountNumber || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= idrV4BankName(r.ProviderPayment?.bankCode || details.reqBankCode) %></span></div>
+              <% } else if (isIdrV4Withdrawal) { %>
+                <% const uniqueRefNo = (details.meta && details.meta.uniqueRefNo) || null; %>
+                <% if (uniqueRefNo) { %>
+                  <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= uniqueRefNo %></span></div>
+                <% } %>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= kycName %></span></div>
+                <div class="info-line"><span class="info-label">Account holder</span><span class="info-value"><%= destination.holderName || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= destination.accountNo || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= idrV4BankName(destination.bankCode) %></span></div>
+              <% } else if (r.type === 'DEPOSIT') { %>
+                <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= r.uniqueReference %></span></div>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
                 <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= payerBankName || '-' %></span></div>
                 <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || '-' %> <% if (r.nameMismatchWarning) { %>
                   <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
@@ -148,6 +172,7 @@
                   <div class="info-line"><span class="info-label">Receipt</span><span class="info-value"><a href="<%= r.receiptFile.path %>" target="_blank" rel="noopener">View receipt</a></span></div>
                 <% } %>
               <% } else { %>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
                 <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= destination.holderName || '-' %> <% if (r.nameMismatchWarning) { %>
                   <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
                 <% } %></span></div>

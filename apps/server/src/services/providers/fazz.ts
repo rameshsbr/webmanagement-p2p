@@ -118,6 +118,34 @@ function dynamicVaNumber() {
   return "988" + tail;
 }
 
+function makeUbRefCandidate() {
+  return `UB${Math.floor(10000 + Math.random() * 90000)}`;
+}
+
+async function ensureUniqueUbRef(): Promise<string> {
+  for (let i = 0; i < 5; i++) {
+    const candidate = makeUbRefCandidate();
+    const existing = await prisma.paymentRequest.findFirst({
+      where: { detailsJson: { path: ["meta", "uniqueRefNo"], equals: candidate } },
+      select: { id: true },
+    });
+    if (!existing) return candidate;
+  }
+  const fallback = String(Date.now() % 100000).padStart(5, "0");
+  return `UB${fallback}`;
+}
+
+function extractProviderSteps(json: any): string[] | undefined {
+  const steps = pick<any>(json, [
+    "data.attributes.paymentMethod.instructions.steps",
+    "data.attributes.payment_method.instructions.steps",
+    "data.attributes.paymentMethod.virtual_bank_account.steps",
+  ]);
+  if (!Array.isArray(steps)) return undefined;
+  const cleaned = steps.map((step) => String(step || "").trim()).filter(Boolean);
+  return cleaned.length ? cleaned : undefined;
+}
+
 /* ─── Platform status mapping (ADDED) ───────────────────────────────────────── */
 
 export type PlatformPaymentStatus = "PENDING" | "APPROVED" | "REJECTED";
@@ -432,6 +460,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   ensureRealReady();
 
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
+  const uniqueRefNo = isDynamic ? await ensureUniqueUbRef() : undefined;
   const bankCode = normalizeIdrV4BankCode(input.bankCode);
   const displayName = normalizeNameForBank(input.kyc.fullName, bankCode);
   const suffixNo = suffixNoFromTid(input.tid);
@@ -439,7 +468,9 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   // - Dynamic: send expiredAt in Asia/Jakarta with +07:00, >= 61m ahead (we use 65m).
   // - Static: do NOT send expiredAt (payment method itself is reusable/unlimited).
   const expiredAtDynamic = jakartaFutureIso(65);
-  const description = "FUND TRANSFER";
+  const description = isDynamic && uniqueRefNo
+    ? `FUND TRANSFER - Unique Ref: ${uniqueRefNo}`
+    : "FUND TRANSFER";
 
   const userId = !isDynamic
     ? (await prisma.user.findUnique({ where: { publicId: input.uid }, select: { id: true } }))?.id
@@ -467,18 +498,22 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   }
 
   const buildPaymentPayload = (paymentMethodId?: string, useRelationships = false) => {
+    const paymentMethodOptions: any = {
+      bankShortCode: bankCode, // normalized
+      displayName,
+      mode: isDynamic ? "DYNAMIC" : "STATIC",
+    };
+    if (!isDynamic) {
+      paymentMethodOptions.suffixNo = suffixNo;
+    }
+
     const attributes: any = {
       amount: Number(input.amountCents),
       currency: input.currency,
       referenceId: input.tid,
       paymentMethodType: "virtual_bank_account",
       description,
-      paymentMethodOptions: {
-        bankShortCode: bankCode, // normalized
-        displayName,
-        mode: isDynamic ? "DYNAMIC" : "STATIC",
-        suffixNo,
-      },
+      paymentMethodOptions,
       metadata: {
         uid: input.uid,
         merchantId: input.merchantId,
@@ -593,7 +628,15 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   }
   if (!res.ok) {
     const msg = renderProviderError(res, `HTTP ${res.status}`);
-    throw new Error(`Fazz createDepositIntent failed: ${msg}`);
+    const err = new Error(`Fazz createDepositIntent failed: ${msg}`);
+    (err as any).providerError = {
+      status: res.status,
+      errors: res.json?.errors ?? null,
+      title: res.json?.title ?? null,
+      detail: res.json?.detail ?? null,
+      raw: res.json ?? res.text ?? null,
+    };
+    throw err;
   }
 
   const json = res.json ?? {};
@@ -619,6 +662,9 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
     (json as any).__fetchedPaymentMethods = raw;
   }
 
+  const providerSteps =
+    extractProviderSteps(json) || extractProviderSteps((json as any).__fetchedPayment);
+
   const accountNo = vaAccountNo || staticMethod?.accountNo || dynamicVaNumber();
 
   const meta: any = {};
@@ -627,20 +673,49 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   if ((json as any).__fetchedPayment) fetched.payment = (json as any).__fetchedPayment;
   if ((json as any).__fetchedPaymentMethods) fetched.paymentMethods = (json as any).__fetchedPaymentMethods;
   if (Object.keys(fetched).length) meta.fetched = fetched;
+  if (uniqueRefNo) meta.uniqueRefNo = uniqueRefNo;
   if (resolvedPaymentMethodId) (json as any).__paymentMethodId = resolvedPaymentMethodId;
+
+  if (uniqueRefNo) {
+    try {
+      const existing = await prisma.paymentRequest.findFirst({
+        where: { referenceCode: input.tid },
+        select: { id: true, detailsJson: true },
+      });
+      if (existing) {
+        const current =
+          existing.detailsJson && typeof existing.detailsJson === "object" && !Array.isArray(existing.detailsJson)
+            ? (existing.detailsJson as Record<string, any>)
+            : {};
+        const updated = {
+          ...current,
+          meta: {
+            ...(current.meta && typeof current.meta === "object" && !Array.isArray(current.meta) ? current.meta : {}),
+            uniqueRefNo,
+          },
+        };
+        await prisma.paymentRequest.update({
+          where: { id: existing.id },
+          data: { detailsJson: updated },
+        });
+      }
+    } catch {}
+  }
+
+  const defaultSteps = [
+    "Open your banking app.",
+    `Transfer ${formatAmountForDisplay(input.amountCents, input.currency)} to the VA below.`,
+    "Use immediate transfer if available.",
+  ];
 
   return {
     providerPaymentId: String(parsed.providerPaymentId),
-    expiresAt: parsed.expiresAt,
+    expiresAt: isDynamic ? parsed.expiresAt : undefined,
     instructions: {
       type: "virtual_account",
       method: isDynamic ? "DYNAMIC" : "STATIC",
       bankCode, // normalized outward
-      steps: [
-        "Open your banking app.",
-        `Transfer ${formatAmountForDisplay(input.amountCents, input.currency)} to the VA below.`,
-        "Use immediate transfer if available.",
-      ],
+      steps: providerSteps?.length ? providerSteps : defaultSteps,
       meta,
     },
     va: {
@@ -850,19 +925,21 @@ export const fazzAdapter: ProviderAdapter = {
     }
 
     const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
-    const now = Date.now();
-    const expiresMs = isDynamic ? 30 * 60_000 : 7 * 24 * 60 * 60_000;
-
+    const uniqueRefNo = isDynamic ? makeUbRefCandidate() : undefined;
     const providerPaymentId = makeFakeId("pay");
     const vaNumber = isDynamic
       ? dynamicVaNumber()
       : staticVaNumber(input.merchantId, input.uid, input.bankCode);
     const accountName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
 
+    const meta: any = {};
+    if (uniqueRefNo) meta.uniqueRefNo = uniqueRefNo;
+
     const instructions = {
       type: "virtual_account",
       method: isDynamic ? "DYNAMIC" : "STATIC",
       bankCode: input.bankCode,
+      meta,
       steps: [
         "Open your banking app.",
         `Transfer ${formatAmountForDisplay(input.amountCents, input.currency)} to the VA below.`,
@@ -871,13 +948,13 @@ export const fazzAdapter: ProviderAdapter = {
     };
 
     // Return SIM expiry in +07:00 too (for consistent display)
-    const simExpiresAt = jakartaFutureIso(isDynamic ? 30 : 7 * 24 * 60);
+    const simExpiresAt = isDynamic ? jakartaFutureIso(isDynamic ? 30 : 7 * 24 * 60) : undefined;
 
     return {
       providerPaymentId,
       expiresAt: simExpiresAt,
       instructions,
-      va: { bankCode: input.bankCode, accountNo: vaNumber, accountName },
+      va: { bankCode: input.bankCode, accountNo: vaNumber, accountName, meta },
     };
   },
 

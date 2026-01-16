@@ -276,6 +276,10 @@
         <% const showBankAccount = type === 'DEPOSIT' ? true : (p.bankAccount && p.status !== 'REJECTED'); %>
         <% const extrasList = Array.isArray(p._extrasList) ? p._extrasList : []; %>
         <% const extrasLookup = (p._extrasLookup && typeof p._extrasLookup === 'object') ? p._extrasLookup : {}; %>
+        <% const isIdrV4Deposit = type === 'DEPOSIT' && ['VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
+        <% const isIdrV4Withdrawal = type === 'WITHDRAWAL' && ['FAZZ_SEND','VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
+        <% const idrV4BankName = (code) => { const map = { BCA: 'BCA', BRI: 'BRI', MANDIRI: 'Mandiri', SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna' }; const key = String(code || '').toUpperCase(); return map[key] || (key || '-'); }; %>
+        <% const kycName = (p.user?.fullName || [p.user?.firstName, p.user?.lastName].filter(Boolean).join(' ')).trim() || '-'; %>
         <% const displayStatus = p.displayStatus || null; %>
         <% const hasAnyExtraLabel = function(){
              var args = Array.prototype.slice.call(arguments);
@@ -316,39 +320,61 @@
           <td data-col="processingTime"><%= hasProcessed ? formatDuration(p.createdAt, processedAt) : '-' %></td>
           <td data-col="userInfo" class="info-cell">
             <div class="info-block">
-              <% if (type === 'DEPOSIT' && !hasAnyExtraLabel('unique reference no', 'unique reference number')) { %>
-                <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= p.uniqueReference || '-' %></span></div>
-              <% } %>
-              <% if (!hasAnyExtraLabel('method')) { %>
+              <% if (isIdrV4Deposit) { %>
+                <% const uniqueRefNo = (p.detailsJson && p.detailsJson.meta && p.detailsJson.meta.uniqueRefNo) || null; %>
+                <% if (uniqueRefNo) { %>
+                  <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= uniqueRefNo %></span></div>
+                <% } %>
                 <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
-              <% } %>
-              <% if (!hasAnyExtraLabel('bank name')) { %>
-                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= payerBankName || '-' %></span></div>
-              <% } %>
-              <% if (!hasAnyExtraLabel('account holder name', 'account name')) { %>
-                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || payer.holder || payer.accountName || payer.name || '-' %> <% if (p.nameMismatchWarning) { %>
-                  <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
-                <% } %></span></div>
-              <% } %>
-              <% if (method === 'OSKO') { %>
-                <% if (!hasAnyExtraLabel('account number')) { %>
-                  <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || payer.accountNumber || payer.account || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= kycName %></span></div>
+                <div class="info-line"><span class="info-label">Account holder</span><span class="info-value"><%= p.ProviderPayment?.accountName || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= p.ProviderPayment?.accountNumber || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= idrV4BankName(p.ProviderPayment?.bankCode || p.detailsJson?.reqBankCode) %></span></div>
+              <% } else if (isIdrV4Withdrawal) { %>
+                <% const uniqueRefNo = (p.detailsJson && p.detailsJson.meta && p.detailsJson.meta.uniqueRefNo) || null; %>
+                <% if (uniqueRefNo) { %>
+                  <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= uniqueRefNo %></span></div>
                 <% } %>
-                <% if (!hasAnyExtraLabel('bsb', 'bsb number')) { %>
-                  <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || payer.bsbNumber || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= kycName %></span></div>
+                <div class="info-line"><span class="info-label">Account holder</span><span class="info-value"><%= payer.holderName || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || '-' %></span></div>
+                <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= idrV4BankName(payer.bankCode || payer.bankName) %></span></div>
+              <% } else { %>
+                <% if (type === 'DEPOSIT' && !hasAnyExtraLabel('unique reference no', 'unique reference number')) { %>
+                  <div class="info-line"><span class="info-label">Unique Reference No</span><span class="info-value"><%= p.uniqueReference || '-' %></span></div>
                 <% } %>
-              <% } else if (method === 'PAYID') { %>
-                <% if (!hasAnyExtraLabel('payid type')) { %>
-                  <div class="info-line"><span class="info-label">PayID type</span><span class="info-value"><%= (payer.payIdType || payer.payidType || '') ? String(payer.payIdType || payer.payidType).toUpperCase() : '-' %></span></div>
+                <% if (!hasAnyExtraLabel('method')) { %>
+                  <div class="info-line"><span class="info-label">Method</span><span class="info-value"><%= method || '-' %></span></div>
                 <% } %>
-                <% if (!hasAnyExtraLabel('payid value', 'payid')) { %>
-                  <div class="info-line"><span class="info-label">PayID value</span><span class="info-value"><%= payer.payIdValue || payer.payId || payer.payid || '-' %></span></div>
+                <% if (!hasAnyExtraLabel('bank name')) { %>
+                  <div class="info-line"><span class="info-label">Bank name</span><span class="info-value"><%= payerBankName || '-' %></span></div>
                 <% } %>
-              <% } %>
-              <% if (extrasList.length) { %>
-                <% extrasList.forEach(function(extra){ %>
-                  <div class="info-line"><span class="info-label"><%= extra.label %></span><span class="info-value"><%= formatExtraValue(extra.value) %></span></div>
-                <% }); %>
+                <% if (!hasAnyExtraLabel('account holder name', 'account name')) { %>
+                  <div class="info-line"><span class="info-label">Account holder name</span><span class="info-value"><%= payer.holderName || payer.holder || payer.accountName || payer.name || '-' %> <% if (p.nameMismatchWarning) { %>
+                    <span title="Name mismatch (60%-99% match — please verify)">⚠️</span>
+                  <% } %></span></div>
+                <% } %>
+                <% if (method === 'OSKO') { %>
+                  <% if (!hasAnyExtraLabel('account number')) { %>
+                    <div class="info-line"><span class="info-label">Account number</span><span class="info-value"><%= payer.accountNo || payer.accountNumber || payer.account || '-' %></span></div>
+                  <% } %>
+                  <% if (!hasAnyExtraLabel('bsb', 'bsb number')) { %>
+                    <div class="info-line"><span class="info-label">BSB</span><span class="info-value"><%= payer.bsb || payer.bsbNumber || '-' %></span></div>
+                  <% } %>
+                <% } else if (method === 'PAYID') { %>
+                  <% if (!hasAnyExtraLabel('payid type')) { %>
+                    <div class="info-line"><span class="info-label">PayID type</span><span class="info-value"><%= (payer.payIdType || payer.payidType || '') ? String(payer.payIdType || payer.payidType).toUpperCase() : '-' %></span></div>
+                  <% } %>
+                  <% if (!hasAnyExtraLabel('payid value', 'payid')) { %>
+                    <div class="info-line"><span class="info-label">PayID value</span><span class="info-value"><%= payer.payIdValue || payer.payId || payer.payid || '-' %></span></div>
+                  <% } %>
+                <% } %>
+                <% if (extrasList.length) { %>
+                  <% extrasList.forEach(function(extra){ %>
+                    <div class="info-line"><span class="info-label"><%= extra.label %></span><span class="info-value"><%= formatExtraValue(extra.value) %></span></div>
+                  <% }); %>
+                <% } %>
               <% } %>
             </div>
           </td>

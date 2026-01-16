@@ -12,6 +12,7 @@ type Terminal = "completed" | "failed" | "cancelled" | "expired";
 const terminalPayments = new Set<Terminal>(["completed", "failed", "cancelled", "expired"]);
 const terminalDisb = new Set<Terminal>(["completed", "failed", "cancelled"]);
 
+// Keep existing helper in case you reintroduce methodCode filtering elsewhere.
 function isIdrv4(methodCode?: string) {
   const m = String(methodCode || "").toUpperCase();
   return m.includes("VIRTUAL_BANK_ACCOUNT");
@@ -24,6 +25,12 @@ function toPlatformStatus(raw: string): PlatformPaymentStatus {
   return "PENDING";
 }
 
+/** Shared: best-effort to find the Transaction model delegate despite Prisma name clashes/renames. */
+function getTxDelegate() {
+  const p: any = prisma as any;
+  return p.transaction ?? p.transactions ?? p.Transaction ?? p.Transactions ?? null;
+}
+
 async function upsertPaymentRaw(providerPaymentId: string, rawStatus: string, rawJson: any) {
   const platformStatus = toPlatformStatus(rawStatus);
   try {
@@ -33,10 +40,13 @@ async function upsertPaymentRaw(providerPaymentId: string, rawStatus: string, ra
     });
   } catch {}
   try {
-    await prisma.transaction.updateMany({
-      where: { providerPaymentId },
-      data: { status: platformStatus, updatedAt: new Date() },
-    });
+    const tx = getTxDelegate();
+    if (tx) {
+      await tx.updateMany({
+        where: { providerPaymentId },
+        data: { status: platformStatus, updatedAt: new Date() },
+      });
+    }
   } catch {}
 }
 
@@ -49,10 +59,13 @@ async function upsertDisbRaw(providerPayoutId: string, rawStatus: string, rawJso
     });
   } catch {}
   try {
-    await prisma.transaction.updateMany({
-      where: { providerPayoutId },
-      data: { status: platformStatus, updatedAt: new Date() },
-    });
+    const tx = getTxDelegate();
+    if (tx) {
+      await tx.updateMany({
+        where: { providerPayoutId },
+        data: { status: platformStatus, updatedAt: new Date() },
+      });
+    }
   } catch {}
 }
 
@@ -87,26 +100,27 @@ export async function scheduleDisbursementPoll(providerPayoutId: string) {
 export function startFazzSweep() {
   const run = async () => {
     try {
+      // Payments: only FAZZ, non-terminal (pending/processing/paid)
       const pay = await prisma.providerPayment.findMany({
         where: {
           provider: "FAZZ",
-          OR: [{ status: { in: ["pending", "processing", "paid"] } }, { status: null }],
+          status: { in: ["pending", "processing", "paid"] },
         },
-        select: { providerPaymentId: true, status: true, methodCode: true },
+        select: { providerPaymentId: true, status: true },
         take: 200,
       });
       for (const p of pay) {
-        if (!isIdrv4(p.methodCode)) continue;
         try {
           const { status, raw } = await fazzAdapter.getDepositStatus(p.providerPaymentId);
           await upsertPaymentRaw(p.providerPaymentId, status, raw);
         } catch {}
       }
 
+      // Disbursements: only FAZZ, non-terminal (pending/processing)
       const dsb = await prisma.providerDisbursement.findMany({
         where: {
           provider: "FAZZ",
-          OR: [{ status: { in: ["pending", "processing"] } }, { status: null }],
+          status: { in: ["pending", "processing"] },
         },
         select: { providerPayoutId: true },
         take: 200,

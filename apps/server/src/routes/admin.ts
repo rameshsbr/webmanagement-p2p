@@ -16,6 +16,7 @@ import {
 } from '../services/paymentExports.js';
 import { normalizeTimezone, resolveTimezone } from '../lib/timezone.js';
 import { formatClientStatusLabel } from '../services/merchantClient.js';
+import { getDashboardMetrics } from '../services/metrics/dashboard-metrics.js';
 
 async function safeNotify(text: string) {
   try {
@@ -24,6 +25,41 @@ async function safeNotify(text: string) {
     if (typeof svc?.send === 'function') return svc.send(text);
     if (typeof svc?.sendMessage === 'function') return svc.sendMessage(text);
   } catch {}
+}
+
+const IDR_V4_METHODS = [
+  'VIRTUAL_BANK_ACCOUNT_DYNAMIC',
+  'VIRTUAL_BANK_ACCOUNT_STATIC',
+  'FAZZ_SEND',
+];
+
+function normalizeMethodCode(value?: string | null) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function buildIdrV4Where() {
+  return {
+    OR: [
+      { ProviderPayment: { provider: 'FAZZ' } },
+      { ProviderDisbursement: { some: { provider: 'FAZZ' } } },
+      ...IDR_V4_METHODS.map((code) => ({ detailsJson: { path: ['method'], equals: code } })),
+      { bankAccount: { method: { in: IDR_V4_METHODS } } },
+    ],
+  };
+}
+
+function buildManualOnlyWhere() {
+  return { NOT: buildIdrV4Where() };
+}
+
+function isIdrV4Payment(row: any) {
+  const method = normalizeMethodCode(row?.detailsJson?.method || row?.bankAccount?.method);
+  if (IDR_V4_METHODS.includes(method)) return true;
+  if (row?.ProviderPayment?.provider === 'FAZZ') return true;
+  if (Array.isArray(row?.ProviderDisbursement) && row.ProviderDisbursement.some((d: any) => d?.provider === 'FAZZ')) {
+    return true;
+  }
+  return false;
 }
 
 function adminCanViewUsers(req: Request): boolean {
@@ -304,10 +340,12 @@ type ListQuery = z.infer<typeof listQuery>;
 
 async function fetchPaymentsFromQuery(
   input: Partial<ListQuery>,
-  type: 'DEPOSIT' | 'WITHDRAWAL'
+  type: 'DEPOSIT' | 'WITHDRAWAL',
+  extraWhere?: Record<string, any>
 ) {
   const q = listQuery.parse(input);
-  const where = whereFrom(q, type);
+  const baseWhere = whereFrom(q, type);
+  const where = extraWhere ? { AND: [baseWhere, extraWhere] } : baseWhere;
   const page = Math.max(1, int(q.page, 1));
   const perPage = Math.min(150, Math.max(5, int(q.perPage, 25)));
   const orderBy = sortSpec(q.sort);
@@ -333,7 +371,8 @@ async function fetchPaymentsFromQuery(
         },
         receiptFile: { select: { id: true, path: true, mimeType: true, original: true } },
         processedByAdmin: { select: { id: true, email: true, displayName: true } },
-        ProviderPayment: { select: { bankCode: true, accountNumber: true, accountName: true } },
+        ProviderPayment: { select: { bankCode: true, accountNumber: true, accountName: true, provider: true } },
+        ProviderDisbursement: { select: { provider: true } },
       },
       orderBy,
       skip: (page - 1) * perPage,
@@ -378,10 +417,11 @@ async function fetchPaymentsFromQuery(
 async function fetchPayments(
   req: Request,
   type: 'DEPOSIT'|'WITHDRAWAL',
-  overrides?: Partial<Record<keyof ListQuery, string | undefined>>
+  overrides?: Partial<Record<keyof ListQuery, string | undefined>>,
+  extraWhere?: Record<string, any>
 ) {
   const q = { ...req.query, ...(overrides || {}) } as Partial<ListQuery>;
-  return fetchPaymentsFromQuery(q, type);
+  return fetchPaymentsFromQuery(q, type, extraWhere);
 }
 
 function parseExportFormat(raw: unknown): 'csv' | 'xlsx' | 'pdf' {
@@ -480,23 +520,31 @@ function readAmountInput(body: unknown): { cents: number | null; provided: boole
 // ───────────────────────────────────────────────────────────────────────────────
 router.get('/', async (_req, res) => {
   const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
-  const [pendingDeposits, pendingWithdrawals, totalsToday] = await Promise.all([
-    prisma.paymentRequest.count({ where: { type: 'DEPOSIT', status: { in: awaitingStatuses } } }),
-    prisma.paymentRequest.count({ where: { type: 'WITHDRAWAL', status: { in: awaitingStatuses } } }),
-    prisma.paymentRequest.groupBy({
-      by: ['type'],
-      where: { createdAt: { gte: new Date(new Date().setHours(0,0,0,0)) }, status: 'APPROVED' },
-      _sum: { amountCents: true }
-    })
+  const [metrics, pendingDeposits, pendingWithdrawals] = await Promise.all([
+    getDashboardMetrics(),
+    prisma.paymentRequest.count({
+      where: {
+        type: 'DEPOSIT',
+        status: { in: awaitingStatuses },
+        ...buildManualOnlyWhere(),
+      },
+    }),
+    prisma.paymentRequest.count({
+      where: {
+        type: 'WITHDRAWAL',
+        status: { in: awaitingStatuses },
+        ...buildManualOnlyWhere(),
+      },
+    }),
   ]);
   res.render('admin-dashboard', {
     title: 'Admin Dashboard',
     metrics: {
       pendingDeposits,
       pendingWithdrawals,
-      todayDeposits: totalsToday.find(t => t.type === 'DEPOSIT')?._sum.amountCents ?? 0,
-      todayWithdrawals: totalsToday.find(t => t.type === 'WITHDRAWAL')?._sum.amountCents ?? 0
-    }
+      todayDeposits: metrics.todayDeposits,
+      todayWithdrawals: metrics.todayWithdrawals,
+    },
   });
 });
 
@@ -508,7 +556,12 @@ router.get('/report/deposits', async (req, res) => {
 
 // DB-level filtering for PENDING so new items appear immediately
 router.get('/report/deposits/pending', async (req, res) => {
-  const { total, items, page, perPage, pages, query } = await fetchPayments(req, 'DEPOSIT', { status: 'PENDING,SUBMITTED' });
+  const { total, items, page, perPage, pages, query } = await fetchPayments(
+    req,
+    'DEPOSIT',
+    { status: 'PENDING,SUBMITTED' },
+    buildManualOnlyWhere()
+  );
   res.render('admin-deposits-pending', {
     title: 'Pending deposit requests',
     table: { total, items, page, perPage, pages },
@@ -564,17 +617,18 @@ router.get('/notifications/queue', async (req, res) => {
       { updatedAt: { gt: withdrawalsSince } },
     ],
   };
+  const manualOnly = buildManualOnlyWhere();
 
   const [deposits, withdrawals, latestDeposit, latestWithdrawal] = await Promise.all([
-    prisma.paymentRequest.count({ where: depositWhere }),
-    prisma.paymentRequest.count({ where: withdrawalWhere }),
+    prisma.paymentRequest.count({ where: { AND: [depositWhere, manualOnly] } }),
+    prisma.paymentRequest.count({ where: { AND: [withdrawalWhere, manualOnly] } }),
     prisma.paymentRequest.findFirst({
-      where: depositWhere,
+      where: { AND: [depositWhere, manualOnly] },
       orderBy: { updatedAt: 'desc' },
       select: { createdAt: true, updatedAt: true },
     }),
     prisma.paymentRequest.findFirst({
-      where: withdrawalWhere,
+      where: { AND: [withdrawalWhere, manualOnly] },
       orderBy: { updatedAt: 'desc' },
       select: { createdAt: true, updatedAt: true },
     }),
@@ -624,9 +678,18 @@ const statusChangeSchema = z.object({
 
 router.post('/deposits/:id/approve', async (req, res) => {
   const id = req.params.id;
-  const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  const pr = await prisma.paymentRequest.findUnique({
+    where: { id },
+    include: { merchant: true, bankAccount: true, ProviderPayment: true },
+  });
   if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
+  if (isIdrV4Payment(pr)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'IDR v4 (FAZZ) transactions are automated; manual actions are disabled.',
+    });
   }
 
   const parsed = approveBodySchema.safeParse(req.body ?? {});
@@ -682,9 +745,18 @@ router.post('/deposits/:id/reject', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Comment is required' });
   }
 
-  const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  const pr = await prisma.paymentRequest.findUnique({
+    where: { id },
+    include: { merchant: true, bankAccount: true, ProviderPayment: true },
+  });
   if (!pr || pr.type !== 'DEPOSIT' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
+  if (isIdrV4Payment(pr)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'IDR v4 (FAZZ) transactions are automated; manual actions are disabled.',
+    });
   }
 
   const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/deposits/pending');
@@ -716,9 +788,18 @@ router.post('/deposits/:id/status', async (req, res) => {
   }
 
   const payload = parsed.data;
-  const payment = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  const payment = await prisma.paymentRequest.findUnique({
+    where: { id },
+    include: { merchant: true, bankAccount: true, ProviderPayment: true },
+  });
   if (!payment || payment.type !== 'DEPOSIT') {
     return res.status(404).json({ ok: false, error: 'Payment not found' });
+  }
+  if (isIdrV4Payment(payment)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'IDR v4 (FAZZ) transactions are automated; manual actions are disabled.',
+    });
   }
 
   const comment = (payload.comment || '').trim();
@@ -860,7 +941,7 @@ router.get('/report/withdrawals', async (req, res) => {
 // DB-level filtering for PENDING so new items appear immediately
 router.get('/report/withdrawals/pending', async (req, res) => {
   const [{ total, items, page, perPage, pages, query }, bankRows] = await Promise.all([
-    fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' }),
+    fetchPayments(req, 'WITHDRAWAL', { status: 'PENDING,SUBMITTED' }, buildManualOnlyWhere()),
     prisma.bankAccount.findMany({
       where: { active: true },
       orderBy: [{ method: 'asc' }, { bankName: 'asc' }, { createdAt: 'desc' }],
@@ -897,9 +978,18 @@ router.post('/withdrawals/:id/approve', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Select a bank before approving' });
   }
 
-  const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  const pr = await prisma.paymentRequest.findUnique({
+    where: { id },
+    include: { merchant: true, bankAccount: true, ProviderDisbursement: true },
+  });
   if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
+  if (isIdrV4Payment(pr)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'IDR v4 (FAZZ) transactions are automated; manual actions are disabled.',
+    });
   }
 
   const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/withdrawals/pending');
@@ -952,9 +1042,18 @@ router.post('/withdrawals/:id/reject', async (req, res) => {
     return res.status(400).json({ ok: false, error: 'Comment is required' });
   }
 
-  const pr = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  const pr = await prisma.paymentRequest.findUnique({
+    where: { id },
+    include: { merchant: true, bankAccount: true, ProviderDisbursement: true },
+  });
   if (!pr || pr.type !== 'WITHDRAWAL' || !['PENDING', 'SUBMITTED'].includes(pr.status)) {
     return res.status(400).json({ ok: false, error: 'Invalid state' });
+  }
+  if (isIdrV4Payment(pr)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'IDR v4 (FAZZ) transactions are automated; manual actions are disabled.',
+    });
   }
 
   const redirectTarget = resolveReturnTo(parsed.data.returnTo, '/admin/report/withdrawals/pending');
@@ -987,9 +1086,18 @@ router.post('/withdrawals/:id/status', async (req, res) => {
   }
 
   const payload = parsed.data;
-  const payment = await prisma.paymentRequest.findUnique({ where: { id }, include: { merchant: true } });
+  const payment = await prisma.paymentRequest.findUnique({
+    where: { id },
+    include: { merchant: true, bankAccount: true, ProviderDisbursement: true },
+  });
   if (!payment || payment.type !== 'WITHDRAWAL') {
     return res.status(404).json({ ok: false, error: 'Payment not found' });
+  }
+  if (isIdrV4Payment(payment)) {
+    return res.status(400).json({
+      ok: false,
+      error: 'IDR v4 (FAZZ) transactions are automated; manual actions are disabled.',
+    });
   }
 
   const comment = (payload.comment || '').trim();

@@ -37,6 +37,8 @@ import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 import { ensureMerchantMethod, findMethodByCode, listAllMethods } from "../services/methods.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
+import { displayAmount, parseAmountInput } from "../utils/money.js";
+import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
 
 export const superAdminRouter = Router();
 
@@ -1294,13 +1296,13 @@ function slug(s: string): string {
 // Dashboard
 // ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/", async (_req, res) => {
-  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ["PENDING", "SUBMITTED"];
-  const [admins, merchants, pending, logs] = await Promise.all([
+  const [admins, merchants, logs, dashboard] = await Promise.all([
     prisma.adminUser.count(),
     prisma.merchant.count(),
-    prisma.paymentRequest.count({ where: { status: { in: awaitingStatuses } } }),
     prisma.adminAuditLog.count(),
+    getDashboardMetrics(),
   ]);
+  const pending = dashboard.pendingDeposits + dashboard.pendingWithdrawals;
   res.render("superadmin/dashboard", {
     title: "Super Admin",
     metrics: { admins, merchants, pending, logs },
@@ -3172,6 +3174,7 @@ async function renderPaymentsPage(
   res.render("superadmin/payments", {
     title: type === "DEPOSIT" ? "Deposits" : "Withdrawals",
     type,
+    displayAmount,
     ...data,
   });
 }
@@ -3254,19 +3257,19 @@ superAdminRouter.post("/payments/:id/edit-amount", async (req, res) => {
   const parsedAmount = Number(String(amountRaw ?? "").replace(/,/g, ""));
   if (!Number.isFinite(parsedAmount) || parsedAmount < 0)
     return res.status(400).send("Invalid amount");
-  const amountCents =
-    typeof req.body?.amount !== "undefined"
-      ? Math.round(parsedAmount * 100)
-      : Math.round(parsedAmount);
-  if (!Number.isFinite(amountCents)) return res.status(400).send("Invalid amount");
   const currency = String(currencyRaw || "").trim().toUpperCase();
   if (!currency || currency.length > 8)
     return res.status(400).send("Invalid currency");
+  const amountCents =
+    typeof req.body?.amount !== "undefined"
+      ? parseAmountInput(String(amountRaw ?? ""), currency)
+      : Math.round(parsedAmount);
+  if (!Number.isFinite(amountCents)) return res.status(400).send("Invalid amount");
   if (!reason) return res.status(400).send("Reason is required");
 
   const before = await prisma.paymentRequest.findUnique({
     where: { id: req.params.id },
-    select: { id: true, type: true, amountCents: true, currency: true },
+    select: { id: true, type: true, amountCents: true, currency: true, detailsJson: true, bankAccount: true },
   });
   if (!before) return res.status(404).send("Not found");
 

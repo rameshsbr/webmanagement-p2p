@@ -299,18 +299,44 @@
         actions.lastChild.disabled = true;
         try {
           const data = await apiPost('/deposit/intents?debug=1', payload, token);
-          const intent = data?.data || data;
-          const normalized = intent?.normalized || intent || {};
-          const va = normalized?.va || {};
+          const intent = data?.data?.data || data?.data || data || {};
+          const referenceCode = intent?.referenceCode || '-';
+          const expiresAt = intent?.expiresAt || null;
+          const intentId = intent?.id || intent?.data?.id || null;
+          const amountFinal = intent?.amountCents || amountCents;
+          const instructions = intent?.instructions || {};
+
+          let va = intent?.va || null;
+          if (!va || !va.accountNo) {
+            va = instructions?.paymentMethod?.virtual_bank_account || null;
+          }
+          if (!va || !va.accountNo) {
+            const fallback =
+              instructions?.meta?.fetched?.payment?.data?.attributes?.paymentMethod?.instructions || null;
+            if (fallback) {
+              va = {
+                bankCode: fallback.bankShortCode || fallback.bankCode || null,
+                accountNo: fallback.accountNo || fallback.account_no || null,
+                accountName: fallback.displayName || fallback.display_name || null,
+              };
+            }
+          }
+          va = va || {};
+
+          const bankCode = va.bankCode || null;
+          const bankName = va.bankName || (bankCode ? `${bankLabel(bankCode)} (code)` : '-');
+          const accountNo = va.accountNo || '-';
+          const accountName = va.accountName || va.displayName || '-';
+
           body.innerHTML = '';
           body.appendChild(h('div', { class:'muted', style:'margin-bottom:6px;' }, 'Transfer details'));
           const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr; gap:6px;' }, [
-            h('div', { class:'muted' }, 'Reference'), h('div', { class:'mono' }, normalized?.referenceCode || '-'),
-            h('div', { class:'muted' }, 'Bank'), h('div', {}, va.bankName || bankLabel(va.bankCode || '')),
-            h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, va.accountNo || '-'),
-            h('div', { class:'muted' }, 'Account Name'), h('div', {}, va.accountName || '-'),
-            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(normalized?.amountCents || amountCents)),
-            h('div', { class:'muted' }, 'Expiry'), h('div', {}, formatExpiry(normalized?.expiresAt) || '-'),
+            h('div', { class:'muted' }, 'Reference'), h('div', { class:'mono' }, referenceCode),
+            h('div', { class:'muted' }, 'Bank'), h('div', {}, bankName),
+            h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, accountNo),
+            h('div', { class:'muted' }, 'Account Name'), h('div', {}, accountName),
+            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal)),
+            h('div', { class:'muted' }, 'Expiry'), h('div', {}, formatExpiry(expiresAt) || '-'),
           ]);
           body.appendChild(grid);
 
@@ -329,7 +355,7 @@
             const interval = setInterval(async () => {
               attempts += 1;
               try {
-                const confirm = await apiPost('/deposit/confirm', { id: intent?.id }, token);
+                const confirm = await apiPost('/deposit/confirm', { id: intentId }, token);
                 const status = confirm?.status || confirm?.data?.status || 'PENDING';
                 statusEl.textContent = `Status: ${status}`;
                 if (status === 'APPROVED' || attempts >= 20) {
@@ -344,7 +370,7 @@
             }, 2500);
           });
         } catch (err) {
-          warning.textContent = (err && err.message) || 'Unable to create deposit.';
+          warning.textContent = (err && err.message) || 'Unable to create deposit intent.';
           warning.style.display = '';
         } finally {
           actions.lastChild.disabled = false;

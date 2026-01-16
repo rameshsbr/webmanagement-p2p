@@ -20,6 +20,13 @@ export function formatClientStatusLabel(input?: string | null): string {
   return clientStatusLabel[status];
 }
 
+/**
+ * Concurrency-safe upsert for MerchantClient.
+ * Handles P2002 races that can occur when two requests attempt to create
+ * the same (merchantId,userId) or (merchantId,externalId) simultaneously.
+ *
+ * ⚠️ Only behavior change is robustness under contention; logic & selected fields stay the same.
+ */
 export async function upsertMerchantClientMapping(params: {
   merchantId: string;
   userId: string;
@@ -28,21 +35,61 @@ export async function upsertMerchantClientMapping(params: {
 }) {
   const { merchantId, userId, externalId, email } = params;
 
+  // Helper to keep selection identical everywhere
+  const selectFields = { merchantId: true, userId: true, status: true } as const;
+
   if (externalId) {
-    return prisma.merchantClient.upsert({
-      where: { merchantId_externalId: { merchantId, externalId } },
-      create: { merchantId, userId, externalId, email: email ?? null, status: "ACTIVE" },
-      update: { userId, email: email ?? null },
-      select: { merchantId: true, userId: true, status: true },
-    });
+    try {
+      return await prisma.merchantClient.upsert({
+        where: { merchantId_externalId: { merchantId, externalId } },
+        create: { merchantId, userId, externalId, email: email ?? null, status: "ACTIVE" },
+        update: { userId, email: email ?? null },
+        select: selectFields,
+      });
+    } catch (e: any) {
+      // If a concurrent request won the race, fall back to updating.
+      if (e?.code === "P2002") {
+        try {
+          return await prisma.merchantClient.update({
+            where: { merchantId_externalId: { merchantId, externalId } },
+            data: { userId, email: email ?? null },
+            select: selectFields,
+          });
+        } catch (ue: any) {
+          // If the record still isn't found by externalId, try by (merchantId,userId)
+          if (ue?.code === "P2025") {
+            return await prisma.merchantClient.update({
+              where: { merchantId_userId: { merchantId, userId } },
+              data: { email: email ?? null },
+              select: selectFields,
+            });
+          }
+          throw ue;
+        }
+      }
+      throw e;
+    }
   }
 
-  return prisma.merchantClient.upsert({
-    where: { merchantId_userId: { merchantId, userId } },
-    create: { merchantId, userId, externalId: null, email: email ?? null, status: "ACTIVE" },
-    update: { email: email ?? null },
-    select: { merchantId: true, userId: true, status: true },
-  });
+  // No externalId path
+  try {
+    return await prisma.merchantClient.upsert({
+      where: { merchantId_userId: { merchantId, userId } },
+      create: { merchantId, userId, externalId: null, email: email ?? null, status: "ACTIVE" },
+      update: { email: email ?? null },
+      select: selectFields,
+    });
+  } catch (e: any) {
+    if (e?.code === "P2002") {
+      // Another request created it first; just update in place.
+      return await prisma.merchantClient.update({
+        where: { merchantId_userId: { merchantId, userId } },
+        data: { email: email ?? null },
+        select: selectFields,
+      });
+    }
+    throw e;
+  }
 }
 
 export async function getMerchantClientStatus(merchantId: string, userId: string): Promise<ClientStatus> {

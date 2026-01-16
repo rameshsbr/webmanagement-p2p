@@ -247,7 +247,7 @@
       const token = apiToken || '';
       if (!token) {
         warning.style.display = '';
-        warning.textContent = 'Missing API token for IDR v4. Create a key with write scopes first.';
+        warning.textContent = 'Missing API token for IDR v4. Create a key with IDR v4 scopes first.';
         actions.lastChild.disabled = true;
         return;
       }
@@ -442,7 +442,7 @@
       const token = apiToken || '';
       if (!token) {
         warning.style.display = '';
-        warning.textContent = 'Missing API token for IDR v4. Create a key with write scopes first.';
+        warning.textContent = 'Missing API token for IDR v4. Create a key with IDR v4 scopes first.';
         submitBtn.disabled = true;
         validateBtn.disabled = true;
         return;

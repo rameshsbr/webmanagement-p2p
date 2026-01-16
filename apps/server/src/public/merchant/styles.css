@@ -88,6 +88,23 @@
   color: var(--tone-success);
 }
 
+.scope-badge-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scope-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--surface) 85%, var(--tone-info));
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 @media (max-width: 640px) {
   .account-toolbar {
     flex-direction: column;

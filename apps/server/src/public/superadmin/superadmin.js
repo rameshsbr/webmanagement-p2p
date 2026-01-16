@@ -321,6 +321,126 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   });
 })();
 
+(() => {
+  const modal = document.querySelector('[data-api-key-scope-modal]');
+  if (!modal) return;
+
+  const titleEl = modal.querySelector('[data-scope-title]');
+  const errorEl = modal.querySelector('[data-scope-error]');
+  const saveBtn = modal.querySelector('[data-scope-save]');
+  const cancelBtn = modal.querySelector('[data-scope-cancel]');
+  const checkboxes = Array.from(modal.querySelectorAll('input[name="scopes"]'));
+
+  const readLabels = () => {
+    try {
+      return JSON.parse(modal.getAttribute('data-scope-labels') || '{}') || {};
+    } catch {
+      return {};
+    }
+  };
+  const scopeLabels = readLabels();
+
+  const toast = (message, variant) => {
+    if (typeof window.toast === 'function') {
+      window.toast(message, variant ? { variant } : undefined);
+    } else if (message) {
+      console.log('[toast]', message);
+    }
+  };
+
+  let activeKeyId = '';
+  let activeMerchantId = '';
+  let activeTrigger = null;
+
+  const renderBadges = (scopes) => {
+    if (!scopes.length) return '<span class="muted">—</span>';
+    return scopes
+      .map((scope) => `<span class="scope-badge">${scopeLabels[scope] || scope}</span>`)
+      .join('');
+  };
+
+  const openModal = () => {
+    modal.hidden = false;
+    requestAnimationFrame(() => modal.classList.add('is-visible'));
+    document.addEventListener('keydown', onKeyDown, true);
+  };
+
+  const closeModal = () => {
+    modal.classList.remove('is-visible');
+    document.removeEventListener('keydown', onKeyDown, true);
+    setTimeout(() => { modal.hidden = true; }, 180);
+  };
+
+  const onKeyDown = (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      closeModal();
+    }
+  };
+
+  modal.addEventListener('click', (event) => {
+    if (event.target === modal) closeModal();
+  });
+
+  cancelBtn?.addEventListener('click', closeModal);
+
+  document.querySelectorAll('[data-scope-edit]').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      activeTrigger = btn;
+      activeKeyId = btn.getAttribute('data-key-id') || '';
+      activeMerchantId = btn.getAttribute('data-merchant-id') || '';
+      const scopes = (btn.getAttribute('data-scopes') || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      checkboxes.forEach((cb) => { cb.checked = scopes.includes(cb.value); });
+      if (titleEl) {
+        const prefix = btn.getAttribute('data-key-prefix') || 'API key';
+        titleEl.textContent = `Edit scopes for ${prefix}`;
+      }
+      if (errorEl) errorEl.textContent = '';
+      openModal();
+    });
+  });
+
+  saveBtn?.addEventListener('click', async () => {
+    if (!activeKeyId || !activeMerchantId) return;
+    if (errorEl) errorEl.textContent = '';
+    const scopes = checkboxes.filter((cb) => cb.checked).map((cb) => cb.value);
+    saveBtn.disabled = true;
+    try {
+      const res = await fetch(`/superadmin/api-keys/${activeKeyId}/scopes`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+        body: JSON.stringify({ scopes, merchantId: activeMerchantId }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        const msg = data?.message || data?.error || 'Failed to update scopes.';
+        if (errorEl) errorEl.textContent = msg;
+        toast(msg, 'error');
+        return;
+      }
+      const updatedScopes = (data.apiKey?.scopes || scopes) ?? [];
+      const row = document.querySelector(`[data-api-key-row="${activeKeyId}"]`);
+      const cell = row?.querySelector('[data-scope-cell]');
+      if (cell) cell.innerHTML = renderBadges(updatedScopes);
+      if (activeTrigger) {
+        activeTrigger.setAttribute('data-scopes', updatedScopes.join(','));
+      }
+      toast('Scopes updated.');
+      closeModal();
+    } catch (err) {
+      console.warn('[superadmin scopes] update failed', err);
+      const msg = 'Failed to update scopes.';
+      if (errorEl) errorEl.textContent = msg;
+      toast(msg, 'error');
+    } finally {
+      saveBtn.disabled = false;
+    }
+  });
+})();
+
 (function () {
   const methodsPage = document.querySelector('.methods-page');
   const assignPage = document.querySelector('.methods-assign');

@@ -2,6 +2,7 @@
 import { prisma } from "../src/lib/prisma.js";
 import { randomBytes } from "node:crypto";
 import { seal } from "../src/services/secretBox.js";
+import { API_KEY_SCOPES } from "../src/services/apiKeyScopes.js";
 function randBase36(n) {
     return randomBytes(n).toString("base64url").replace(/[^a-zA-Z0-9_-]/g, "").slice(0, n);
 }
@@ -31,7 +32,7 @@ async function main() {
             prefix,
             secretEnc,
             last4,
-            scopes: ["read:payments", "write:deposit", "read:deposit", "write:withdrawal", "read:withdrawal"],
+            scopes: [API_KEY_SCOPES.P2P, API_KEY_SCOPES.IDRV4_ACCEPT, API_KEY_SCOPES.IDRV4_DISBURSE],
             active: true,
         },
     });

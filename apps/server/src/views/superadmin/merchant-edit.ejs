@@ -175,10 +175,23 @@
       </div>
     <% } %>
 
-    <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/new" class="row" style="gap:8px; flex-wrap:wrap; margin-bottom:10px">
-      <input name="label" placeholder="Label (optional)" style="min-width:200px"/>
-      <input name="scopes" placeholder="Scopes (csv, e.g. payments:read,payments:write)" style="min-width:360px; flex:1"/>
-      <button class="btn small">Create key</button>
+    <form method="post" action="/superadmin/merchants/<%= merchant.id %>/keys/new" style="display:flex; flex-direction:column; gap:8px; margin-bottom:10px">
+      <div class="row" style="gap:8px; flex-wrap:wrap">
+        <input name="label" placeholder="Label (optional)" style="min-width:200px"/>
+        <button class="btn small">Create key</button>
+      </div>
+      <% if (canEditScopes) { %>
+        <div class="scope-grid">
+          <% (apiKeyScopeOptions || []).forEach((opt) => { %>
+            <label class="chk scope-option">
+              <input type="checkbox" name="scopes" value="<%= opt.value %>" />
+              <span><%= opt.label %></span>
+            </label>
+          <% }) %>
+        </div>
+      <% } else { %>
+        <div class="muted">Scopes are read-only. Ask a Super Admin to assign scopes.</div>
+      <% } %>
     </form>
 
     <table class="table">
@@ -200,16 +213,39 @@
            const revealAllowed = allowRevealFlag && (allowRevokedReveal || !revoked);
            const lastSeen = lastRevealMap[k.id] || '';
         %>
-        <tr style="<%= revoked ? 'opacity:.6' : '' %>">
+        <tr style="<%= revoked ? 'opacity:.6' : '' %>" data-api-key-row="<%= k.id %>">
           <td class="mono">
             <code><%= prefix %>.****<%= last4 %></code>
             <% if (revoked) { %><span class="text-danger" style="margin-left:6px">(revoked)</span><% } %>
           </td>
           <td><%= k.label || '—' %></td>
-          <td class="mini"><%= Array.isArray(k.scopes) ? k.scopes.join(', ') : (k.scopes || '—') %></td>
+          <td class="mini" data-scope-cell>
+            <% const scopes = Array.isArray(k.scopes) ? k.scopes : []; %>
+            <% if (!scopes.length) { %>
+              <span class="muted">—</span>
+            <% } else { %>
+              <div class="scope-badge-group">
+                <% scopes.forEach((scope) => { %>
+                  <span class="scope-badge"><%= (apiKeyScopeLabels || {})[scope] || scope %></span>
+                <% }) %>
+              </div>
+            <% } %>
+          </td>
           <td class="mini"><%- k.lastUsedAt ? renderDateTime(k.lastUsedAt) : '—' %></td>
           <td class="mini"><%- k.createdAt ? renderDateTime(k.createdAt) : '—' %></td>
           <td class="nowrap">
+            <% if (canEditScopes) { %>
+              <button
+                type="button"
+                class="btn small"
+                data-scope-edit
+                data-key-id="<%= k.id %>"
+                data-merchant-id="<%= merchant.id %>"
+                data-key-prefix="<%= prefix %>"
+                data-scopes="<%= (Array.isArray(k.scopes) ? k.scopes.join(',') : '') %>">
+                Edit scopes
+              </button>
+            <% } %>
             <button
               type="button"
               class="btn small"
@@ -239,6 +275,36 @@
       </tbody>
     </table>
   </div>
+
+  <% if (canEditScopes) { %>
+    <div
+      class="modal-backdrop"
+      data-api-key-scope-modal
+      data-scope-labels='<%- JSON.stringify(apiKeyScopeLabels || {}) %>'
+      hidden
+    >
+      <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="scope-modal-title">
+        <div class="modal-header">
+          <h3 class="modal-title" id="scope-modal-title" data-scope-title>Edit API key scopes</h3>
+        </div>
+        <div class="modal-body">
+          <div class="scope-grid">
+            <% (apiKeyScopeOptions || []).forEach((opt) => { %>
+              <label class="chk scope-option">
+                <input type="checkbox" name="scopes" value="<%= opt.value %>" />
+                <span><%= opt.label %></span>
+              </label>
+            <% }) %>
+          </div>
+          <div class="form-error" data-scope-error role="alert"></div>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn small" data-scope-cancel>Cancel</button>
+          <button type="button" class="btn small primary" data-scope-save>Save</button>
+        </div>
+      </div>
+    </div>
+  <% } %>
 
   <div class="card">
     <div class="title">Merchant users</div>

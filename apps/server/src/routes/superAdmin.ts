@@ -35,7 +35,19 @@ import { PaymentType, Prisma, type MerchantAccountEntryType } from "@prisma/clie
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
-import { ensureMerchantMethod, findMethodByCode, listAllMethods } from "../services/methods.js";
+import {
+  API_KEY_SCOPE_LABELS,
+  API_KEY_SCOPE_OPTIONS,
+  normalizeApiKeyScopes,
+  parseApiKeyScopesInput,
+} from "../services/apiKeyScopes.js";
+import {
+  ensureMerchantMethod,
+  findMethodByCode,
+  listP2PMethods,
+  IDR_V4_METHOD_PREFIX,
+  IDR_V4_METHOD_CODES,
+} from "../services/methods.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { displayAmount, parseAmountInput } from "../utils/money.js";
 import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
@@ -1123,11 +1135,9 @@ function toCSVRows(items: any[]) {
 // ───────────────────────────────────────────────────────────────
 // Helpers for API keys (fits your current schema + secretBox)
 // ───────────────────────────────────────────────────────────────
-function parseScopes(input: any): string[] {
-  return String(input || "")
-    .split(/[,\s]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+function isSuperAdmin(req: any, res: any) {
+  const role = String(res.locals.admin?.role || req.admin?.role || "").toUpperCase();
+  return role === "SUPER" || role === "SUPERADMIN" || role === "OWNER";
 }
 function genApiTokenParts(): { prefix: string; secret: string; token: string } {
   const prefix = crypto.randomBytes(6).toString("base64url"); // short public identifier
@@ -1587,6 +1597,12 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
     }
   }
 
+  const normalizedApiKeys = apiKeys.map((key: any) => ({
+    ...key,
+    scopes: normalizeApiKeyScopes(key.scopes),
+  }));
+  const canEditScopes = isSuperAdmin(req, res);
+
   res.render("superadmin/merchant-edit", {
     title: "Edit Merchant",
     merchant,
@@ -1594,8 +1610,11 @@ superAdminRouter.get("/merchants/:id/edit", async (req, res) => {
     channels,
     saved: req.query?.saved ? true : false,
     newCreds,
-    apiKeys,
+    apiKeys: normalizedApiKeys,
     newApiKey,
+    apiKeyScopeOptions: API_KEY_SCOPE_OPTIONS,
+    apiKeyScopeLabels: API_KEY_SCOPE_LABELS,
+    canEditScopes,
     allowReveal: adminCanReveal,
     adminRevealPermission: adminPermission,
     revealPolicyEnabled: policyEnabled,
@@ -1910,7 +1929,19 @@ superAdminRouter.post("/merchants/:id/limits", async (req, res) => {
 // ───────────────────────────────────────────────────────────────
 // Banks CRUD (Super Admin)
 // ───────────────────────────────────────────────────────────────
-const P2P_BANK_EXCLUDED_METHOD_PREFIX = "VIRTUAL_BANK_ACCOUNT_";
+const P2P_BANK_EXCLUDED_METHOD_PREFIX = IDR_V4_METHOD_PREFIX;
+const P2P_BANK_EXCLUDED_METHODS = Array.from(IDR_V4_METHOD_CODES) as string[];
+
+function buildP2PBankWhere(base: Prisma.BankAccountWhereInput = {}) {
+  return {
+    ...base,
+    AND: [
+      ...(base.AND ? (Array.isArray(base.AND) ? base.AND : [base.AND]) : []),
+      { NOT: { method: { startsWith: P2P_BANK_EXCLUDED_METHOD_PREFIX } } },
+      { NOT: { method: { in: P2P_BANK_EXCLUDED_METHODS } } },
+    ],
+  };
+}
 
 // allow any future method; normalize to UPPERCASE string
 const bankSchema = z.object({
@@ -2015,9 +2046,7 @@ superAdminRouter.get("/banks", async (req: any, res: any) => {
   const qMethod = (req.query.method as string) || ""; // NEW
   const qActive = (req.query.active as string) || ""; // "", "true", "false"
 
-  const where: any = {
-    AND: [{ NOT: { method: { startsWith: P2P_BANK_EXCLUDED_METHOD_PREFIX } } }],
-  };
+  const where: any = buildP2PBankWhere();
   if (qMerchant) where.merchantId = qMerchant === "global" ? null : qMerchant;
   if (qCurrency) where.currency = qCurrency.toUpperCase();
   if (qMethod) where.AND.push({ method: qMethod.toUpperCase() });
@@ -2097,7 +2126,7 @@ superAdminRouter.get("/banks/new", async (_req: any, res: any) => {
       select: { id: true, name: true },
     }),
     getPromotedColumns(),
-    listAllMethods(),
+    listP2PMethods(),
   ]);
   res.render("superadmin/bank-edit", {
     title: "New Bank",
@@ -2121,7 +2150,7 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
         orderBy: { name: "asc" },
         select: { id: true, name: true },
       }),
-      listAllMethods(),
+      listP2PMethods(),
     ]);
     return res.status(400).render("superadmin/bank-edit", {
       title: "New Bank",
@@ -2148,24 +2177,38 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
     merchantId?: string | null;
   };
 
+  const allowedMethods = await listP2PMethods();
+  const allowedMethodSet = new Set(allowedMethods.map((m) => m.code));
+  if (!allowedMethodSet.has(data.method)) {
+    const merchants = await prisma.merchant.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+    return res.status(400).render("superadmin/bank-edit", {
+      title: "New Bank",
+      bank: req.body,
+      merchants,
+      errors: [{ message: "Method must be a P2P method for this page." }],
+      promotedCols,
+      methods: allowedMethods,
+    });
+  }
+
   const methodRecord = merchantId
     ? await ensureMerchantMethod(merchantId, data.method)
     : await findMethodByCode(data.method);
   if (!methodRecord || !methodRecord.enabled) {
-    const [merchants, methods] = await Promise.all([
-      prisma.merchant.findMany({
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      }),
-      listAllMethods(),
-    ]);
+    const merchants = await prisma.merchant.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
     return res.status(400).render("superadmin/bank-edit", {
       title: "New Bank",
       bank: req.body,
       merchants,
       errors: [{ message: "Method is not enabled or not assigned to this merchant." }],
       promotedCols,
-      methods,
+      methods: allowedMethods,
     });
   }
 
@@ -2197,7 +2240,7 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
         orderBy: { name: "asc" },
         select: { id: true, name: true },
       }),
-      listAllMethods(),
+      listP2PMethods(),
     ]);
     return res.status(500).render("superadmin/bank-edit", {
       title: "New Bank",
@@ -2220,7 +2263,7 @@ superAdminRouter.post("/banks", async (req: any, res: any) => {
         orderBy: { name: "asc" },
         select: { id: true, name: true },
       }),
-      listAllMethods(),
+      listP2PMethods(),
     ]);
     return res.status(500).render("superadmin/bank-edit", {
       title: "New Bank",
@@ -2252,7 +2295,7 @@ superAdminRouter.get("/banks/:id/edit", async (req: any, res: any) => {
       select: { id: true, name: true },
     }),
     getPromotedColumns(),
-    listAllMethods(),
+    listP2PMethods(),
   ]);
   if (!bank) return res.status(404).send("Not found");
   res.render("superadmin/bank-edit", {
@@ -2295,7 +2338,7 @@ superAdminRouter.post("/banks/:id", async (req: any, res: any) => {
         orderBy: { name: "asc" },
         select: { id: true, name: true },
       }),
-      listAllMethods(),
+      listP2PMethods(),
     ]);
     return res.status(400).render("superadmin/bank-edit", {
       title: `Edit Bank ${existing.publicId}`,
@@ -2319,24 +2362,38 @@ superAdminRouter.post("/banks/:id", async (req: any, res: any) => {
     }
   }
 
+  const allowedMethods = await listP2PMethods();
+  const allowedMethodSet = new Set(allowedMethods.map((m) => m.code));
+  if (!allowedMethodSet.has(data.method)) {
+    const merchants = await prisma.merchant.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
+    return res.status(400).render("superadmin/bank-edit", {
+      title: `Edit Bank ${existing.publicId}`,
+      bank: { ...existing, ...merged },
+      merchants,
+      errors: [{ message: "Method must be a P2P method for this page." }],
+      promotedCols,
+      methods: allowedMethods,
+    });
+  }
+
   const methodRecord = data.merchantId
     ? await ensureMerchantMethod(data.merchantId, data.method)
     : await findMethodByCode(data.method);
   if (!methodRecord || !methodRecord.enabled) {
-    const [merchants, methods] = await Promise.all([
-      prisma.merchant.findMany({
-        orderBy: { name: "asc" },
-        select: { id: true, name: true },
-      }),
-      listAllMethods(),
-    ]);
+    const merchants = await prisma.merchant.findMany({
+      orderBy: { name: "asc" },
+      select: { id: true, name: true },
+    });
     return res.status(400).render("superadmin/bank-edit", {
       title: `Edit Bank ${existing.publicId}`,
       bank: { ...existing, ...merged },
       merchants,
       errors: [{ message: "Method is not enabled or not assigned to this merchant." }],
       promotedCols,
-      methods,
+      methods: allowedMethods,
     });
   }
 
@@ -2395,7 +2452,7 @@ superAdminRouter.post("/banks/:id/delete", async (req: any, res: any) => {
 // CSV export
 superAdminRouter.get("/banks.csv", async (_req: any, res: any) => {
   const rows = await prisma.bankAccount.findMany({
-    where: { NOT: { method: { startsWith: P2P_BANK_EXCLUDED_METHOD_PREFIX } } },
+    where: buildP2PBankWhere(),
     orderBy: [{ merchantId: "asc" }, { currency: "asc" }, { method: "asc" }],
     include: { merchant: { select: { name: true } } },
   });
@@ -2743,6 +2800,100 @@ superAdminRouter.post(
 // Merchant API Keys (list / create / revoke)
 // ───────────────────────────────────────────────────────────────
 
+superAdminRouter.get("/merchants/:id/api-keys", async (req, res) => {
+  if (!isSuperAdmin(req, res)) {
+    return res.status(403).json({ ok: false, error: "forbidden" });
+  }
+  const merchantId = req.params.id;
+  const merchant = await prisma.merchant.findUnique({ where: { id: merchantId } });
+  if (!merchant) return res.status(404).json({ ok: false, error: "not_found" });
+
+  const keys = await prisma.merchantApiKey.findMany({
+    where: { merchantId },
+    orderBy: { createdAt: "desc" },
+  });
+
+  return res.json({
+    ok: true,
+    apiKeys: keys.map((key) => ({ ...key, scopes: normalizeApiKeyScopes(key.scopes) })),
+  });
+});
+
+superAdminRouter.post("/merchants/:id/api-keys", async (req, res) => {
+  if (!isSuperAdmin(req, res)) {
+    return res.status(403).json({ ok: false, error: "forbidden" });
+  }
+
+  const merchantId = req.params.id;
+  const merchant = await prisma.merchant.findUnique({
+    where: { id: merchantId },
+  });
+  if (!merchant) return res.status(404).json({ ok: false, error: "not_found" });
+
+  const parsed = parseApiKeyScopesInput(req.body?.scopes);
+  if (parsed.invalid.length) {
+    return res.status(400).json({ ok: false, error: "invalid_scopes", invalid: parsed.invalid });
+  }
+
+  const { prefix, secret, token } = genApiTokenParts();
+  const created = await prisma.merchantApiKey.create({
+    data: {
+      merchantId,
+      prefix,
+      secretEnc: seal(secret),
+      last4: secret.slice(-4),
+      scopes: parsed.scopes,
+      active: true,
+    },
+  });
+
+  await auditAdmin(req, "merchant.apiKey.create", "MERCHANT_API_KEY", created.id, {
+    merchantId,
+    prefix,
+    scopes: created.scopes,
+  });
+
+  return res.json({
+    ok: true,
+    apiKey: { ...created, scopes: normalizeApiKeyScopes(created.scopes) },
+    token,
+  });
+});
+
+superAdminRouter.patch("/api-keys/:apiKeyId/scopes", async (req, res) => {
+  if (!isSuperAdmin(req, res)) {
+    return res.status(403).json({ ok: false, error: "forbidden" });
+  }
+
+  const apiKeyId = String(req.params.apiKeyId || "");
+  const merchantId = String(req.body?.merchantId || "");
+  if (!apiKeyId || !merchantId) {
+    return res.status(400).json({ ok: false, error: "missing_params" });
+  }
+
+  const parsed = parseApiKeyScopesInput(req.body?.scopes);
+  if (parsed.invalid.length) {
+    return res.status(400).json({ ok: false, error: "invalid_scopes", invalid: parsed.invalid });
+  }
+
+  const keyRecord = await prisma.merchantApiKey.findUnique({ where: { id: apiKeyId } });
+  if (!keyRecord || keyRecord.merchantId !== merchantId) {
+    return res.status(404).json({ ok: false, error: "not_found" });
+  }
+
+  const updated = await prisma.merchantApiKey.update({
+    where: { id: apiKeyId },
+    data: { scopes: parsed.scopes },
+  });
+
+  await auditAdmin(req, "merchant.apiKey.scopes.update", "MERCHANT_API_KEY", apiKeyId, {
+    merchantId,
+    scopes: updated.scopes,
+  });
+
+  return res.json({ ok: true, apiKey: { ...updated, scopes: normalizeApiKeyScopes(updated.scopes) } });
+});
+
 // Create a new API key for a merchant (shows plaintext once via redirect param)
 superAdminRouter.post("/merchants/:id/keys/new", async (req, res) => {
   const merchantId = req.params.id;
@@ -2751,7 +2902,12 @@ superAdminRouter.post("/merchants/:id/keys/new", async (req, res) => {
   });
   if (!merchant) return res.status(404).send("Not found");
 
-  const scopes = parseScopes(req.body?.scopes);
+  const canEditScopes = isSuperAdmin(req, res);
+  const parsed = parseApiKeyScopesInput(req.body?.scopes);
+  if (parsed.invalid.length && canEditScopes) {
+    return res.status(400).send("Invalid scopes");
+  }
+  const scopes = canEditScopes ? parsed.scopes : [];
   const { prefix, secret, token } = genApiTokenParts();
 
   const created = await prisma.merchantApiKey.create({

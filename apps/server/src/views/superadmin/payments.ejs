@@ -278,6 +278,9 @@
         <% const extrasLookup = (p._extrasLookup && typeof p._extrasLookup === 'object') ? p._extrasLookup : {}; %>
         <% const isIdrV4Deposit = type === 'DEPOSIT' && ['VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
         <% const isIdrV4Withdrawal = type === 'WITHDRAWAL' && ['FAZZ_SEND','VIRTUAL_BANK_ACCOUNT_DYNAMIC','VIRTUAL_BANK_ACCOUNT_STATIC'].includes(method); %>
+        <% const isIdrV4 = isIdrV4Deposit || isIdrV4Withdrawal; %>
+        <% const editAmountValue = isIdrV4 ? displayAmount(p.amountCents, p.currency) : (p.amountCents / 100).toFixed(2); %>
+        <% const editAmountStep = isIdrV4 ? 1 : 0.01; %>
         <% const idrV4BankName = (code) => { const map = { BCA: 'BCA', BRI: 'BRI', MANDIRI: 'Mandiri', SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna' }; const key = String(code || '').toUpperCase(); return map[key] || (key || '-'); }; %>
         <% const kycName = (p.user?.fullName || [p.user?.firstName, p.user?.lastName].filter(Boolean).join(' ')).trim() || '-'; %>
         <% const displayStatus = p.displayStatus || null; %>
@@ -425,7 +428,7 @@
               </form>
 
               <form method="post" action="/superadmin/payments/<%= p.id %>/edit-amount" class="row" style="gap:6px; flex-wrap:wrap">
-                <input class="input" type="number" step="0.01" name="amount" value="<%= (p.amountCents/100).toFixed(2) %>" style="width:120px">
+                <input class="input" type="number" step="<%= editAmountStep %>" name="amount" value="<%= editAmountValue %>" style="width:120px">
                 <input class="input" name="currency" value="<%= p.currency %>" style="width:90px">
                 <input class="input" name="reason" placeholder="Reason (required) *" required>
                 <button class="btn small" type="submit">Save</button>

@@ -332,7 +332,8 @@ async function fetchPaymentsFromQuery(
           }
         },
         receiptFile: { select: { id: true, path: true, mimeType: true, original: true } },
-        processedByAdmin: { select: { id: true, email: true, displayName: true } }
+        processedByAdmin: { select: { id: true, email: true, displayName: true } },
+        ProviderPayment: { select: { bankCode: true, accountNumber: true, accountName: true } },
       },
       orderBy,
       skip: (page - 1) * perPage,

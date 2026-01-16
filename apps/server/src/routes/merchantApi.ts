@@ -202,6 +202,11 @@ function normalizeIdrV4Deposit(result: any, amountCents: number) {
     instructions?.displayName ||
     null;
   const expiresAt = result?.expiresAt || result?.expiredAt || null;
+  const uniqueRefNo =
+    result?.va?.meta?.uniqueRefNo ||
+    instructions?.meta?.uniqueRefNo ||
+    instrMethod?.meta?.uniqueRefNo ||
+    null;
   return {
     referenceCode: result?.referenceCode || null,
     amountCents,
@@ -211,6 +216,7 @@ function normalizeIdrV4Deposit(result: any, amountCents: number) {
       bankName: bankCode ? idrV4BankName(bankCode) : null,
       accountNo: accountNo || null,
       accountName: accountName || null,
+      meta: uniqueRefNo ? { uniqueRefNo } : undefined,
     },
   };
 }
@@ -373,6 +379,7 @@ merchantApiRouter.post(
               bankName: normalized.va.bankName || null,
               accountNo: normalized.va.accountNo || result.va?.accountNo || null,
               accountName: normalized.va.accountName || result.va?.accountName || null,
+              meta: normalized.va.meta || result.va?.meta || undefined,
             };
           }
 
@@ -418,6 +425,14 @@ merchantApiRouter.post(
           ...(String(req.query?.debug || '') === '1'
             ? { prisma: { code: cause?.code, message: cause?.message, meta: cause?.meta } }
             : {}),
+        });
+      }
+      if (err?.providerError) {
+        console.error("[DEPOSIT_INTENT_PROVIDER_ERROR]", err.providerError);
+        return res.status(400).json({
+          ok: false,
+          error: 'Unable to create deposit intent',
+          ...(isDebug ? { providerError: err.providerError } : {}),
         });
       }
       return res.status(400).json({ ok: false, error: 'Unable to create deposit intent' });

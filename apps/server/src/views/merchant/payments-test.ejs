@@ -134,9 +134,10 @@
   const formatIdr = (value) => `IDR ${Number(value || 0).toLocaleString('en-US')}`;
   const formatExpiry = (value) => {
     if (!value) return '';
+    if (typeof value === 'string') return value;
     const d = new Date(value);
     if (Number.isNaN(d.getTime())) return '';
-    return d.toLocaleString();
+    return d.toISOString();
   };
 
   const money = (value) => {
@@ -195,8 +196,9 @@
     });
     const close = () => overlay.remove();
     overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+    const headerTitle = h('div', { class:'muted', style:'font-weight:600;' }, title);
     box.appendChild(h('div', { style:'display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;' }, [
-      h('div', { class:'muted', style:'font-weight:600;' }, title),
+      headerTitle,
       h('button', { class:'btn small', type:'button' }, 'Close')
     ]));
     box.querySelector('button')?.addEventListener('click', close);
@@ -204,14 +206,14 @@
     box.appendChild(body);
     overlay.appendChild(box);
     document.body.appendChild(overlay);
-    builder(body, close);
+    builder(body, close, headerTitle);
   }
 
   async function openIdrDeposit() {
     const mode = getMode();
     const methodCode = methodMap[mode] || methodMap['idr-v4-dynamic'];
 
-    openModal('Deposit', async (body, close) => {
+    openModal('Deposit', async (body, close, headerTitle) => {
       const form = h('form', { style:'display:grid; gap:10px;' });
       const amount = h('input', { class:'input', inputmode:'numeric', placeholder:'Amount (IDR, min 10,000 max 100,000,000)' });
       const fullName = h('input', { class:'input', placeholder:'Full name', value: prefillName || verifiedKycName || '' });
@@ -305,6 +307,17 @@
           const intentId = intent?.id || intent?.data?.id || null;
           const amountFinal = intent?.amountCents || amountCents;
           const instructions = intent?.instructions || {};
+          const meta = instructions?.meta || intent?.va?.meta || {};
+          const uniqueRefNo = meta?.uniqueRefNo || null;
+          const isDynamic = methodCode.toUpperCase().includes('DYNAMIC');
+          const fallbackSteps = [
+            'Open your banking app.',
+            'Transfer the amount to the VA below.',
+            'Use immediate transfer if available.',
+          ];
+          const steps = Array.isArray(instructions?.steps) && instructions.steps.length
+            ? instructions.steps
+            : fallbackSteps;
 
           let va = intent?.va || null;
           if (!va || !va.accountNo) {
@@ -329,16 +342,27 @@
           const accountName = va.accountName || va.displayName || '-';
 
           body.innerHTML = '';
-          body.appendChild(h('div', { class:'muted', style:'margin-bottom:6px;' }, 'Transfer details'));
-          const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr; gap:6px;' }, [
-            h('div', { class:'muted' }, 'Reference'), h('div', { class:'mono' }, referenceCode),
+          if (headerTitle) headerTitle.textContent = 'Transfer details';
+          body.appendChild(h('div', { class:'muted', style:'margin-bottom:8px;' },
+            'Use the details below to make your transfer. Always include the reference.'
+          ));
+          const rows = [
+            ...(uniqueRefNo && isDynamic
+              ? [h('div', { class:'muted' }, 'Unique Reference No'), h('div', { class:'mono' }, uniqueRefNo)]
+              : []),
             h('div', { class:'muted' }, 'Bank'), h('div', {}, bankName),
             h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, accountNo),
             h('div', { class:'muted' }, 'Account Name'), h('div', {}, accountName),
             h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal)),
-            h('div', { class:'muted' }, 'Expiry'), h('div', {}, formatExpiry(expiresAt) || '-'),
-          ]);
+          ];
+          if (isDynamic && expiresAt) {
+            rows.push(h('div', { class:'muted' }, 'Expiry'), h('div', {}, formatExpiry(expiresAt)));
+          }
+          const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr; gap:6px;' }, rows);
           body.appendChild(grid);
+          body.appendChild(h('div', { class:'muted', style:'margin:12px 0 4px;' }, 'Steps'));
+          const list = h('ol', { style:'margin:0 0 8px 16px; padding:0;' }, steps.map(step => h('li', {}, step)));
+          body.appendChild(list);
 
           const statusEl = h('div', { class:'muted', style:'margin-top:10px;' }, 'Awaiting payment confirmation.');
           const pollBtn = h('button', { class:'btn primary', type:'button', style:'margin-top:10px;' }, "I've paid");

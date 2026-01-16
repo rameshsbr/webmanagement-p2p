@@ -811,18 +811,27 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       pmInstr?.displayName ||
       null;
 
-    const steps = Array.isArray(instrTop?.steps)
+    const fallbackSteps = [
+      "Open your banking app.",
+      "Transfer the amount to the VA below.",
+      "Use immediate transfer if available.",
+    ];
+    const steps = Array.isArray(instrTop?.steps) && instrTop.steps.length
       ? instrTop.steps
-      : [];
+      : fallbackSteps;
 
     const method =
       (instrTop?.method && String(instrTop.method).toUpperCase()) || null;
 
-    const expiresAt = fetched?.expiredAt || null;
+    const expiresAt = obj?.expiresAt || obj?.expiredAt || fetched?.expiredAt || null;
+    const uniqueRefNo =
+      instrTop?.meta?.uniqueRefNo ||
+      vaTop?.meta?.uniqueRefNo ||
+      null;
 
     // If we couldn't find any meaningful VA data, return null
     if (!bankCode && !accountNo && !accountName) return null;
-    return { bankCode, accountNo, accountName, method, steps, expiresAt };
+    return { bankCode, accountNo, accountName, method, steps, expiresAt, uniqueRefNo };
   }
 
   function kvRow(label, value, copyable = true) {
@@ -874,6 +883,22 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     });
   }
 
+  function removeRowByLabel(modal, label) {
+    const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const candidates = Array.from(modal.querySelectorAll('.payx-kv, .row, tr, .form-line, div'));
+    for (const el of candidates) {
+      const text = (el.textContent || '').trim();
+      if (!text) continue;
+      if (new RegExp('\\b' + esc(label) + '\\b', 'i').test(text)) {
+        if (el.classList.contains('payx-kv')) {
+          el.remove();
+          continue;
+        }
+        if (el.parentElement) el.parentElement.removeChild(el);
+      }
+    }
+  }
+
   function applyFazzModalPatch() {
     if (!lastIntentPayload) return;
 
@@ -891,6 +916,8 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     if (!modal) return;
 
     // 1) Try overwriting existing rows if they exist
+    removeRowByLabel(modal, 'Reference');
+
     const replaced = [
       trySetExistingRow(modal, 'Bank Name', va.bankCode),
       trySetExistingRow(modal, 'Account / PayID Value', va.accountNo),
@@ -907,22 +934,29 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       appendRows(modal, rows);
     }
 
+    if (va.uniqueRefNo && va.method === 'DYNAMIC') {
+      const updated = trySetExistingRow(modal, 'Unique Reference No', va.uniqueRefNo);
+      if (!updated) appendRows(modal, [kvRow('Unique Reference No', va.uniqueRefNo)]);
+    }
+    if (va.method === 'DYNAMIC' && va.expiresAt) {
+      const updated = trySetExistingRow(modal, 'Expiry', va.expiresAt);
+      if (!updated) appendRows(modal, [kvRow('Expiry', va.expiresAt, false)]);
+    }
+
     // 3) Add steps/instructions once
     if (!modal.querySelector('[data-fazz-instructions]')) {
       const steps = Array.isArray(va.steps) ? va.steps : [];
-      if (steps.length) {
-        const box = document.createElement('div');
-        box.setAttribute('data-fazz-instructions','');
-        box.style.marginTop = '8px';
-        box.innerHTML = '<div class="muted" style="margin:6px 0 4px 0;">Instructions</div>';
-        const ol = document.createElement('ol');
-        ol.style.margin = '0 0 8px 16px';
-        ol.style.padding = '0';
-        steps.forEach(s => { const li = document.createElement('li'); li.textContent = s; ol.appendChild(li); });
-        box.appendChild(ol);
-        const receiptRow = modal.querySelector('input[type="file"]')?.closest('.row, .form-line, div');
-        (receiptRow?.parentElement || modal).insertBefore(box, receiptRow || null);
-      }
+      const box = document.createElement('div');
+      box.setAttribute('data-fazz-instructions','');
+      box.style.marginTop = '8px';
+      box.innerHTML = '<div class="muted" style="margin:6px 0 4px 0;">Steps</div>';
+      const ol = document.createElement('ol');
+      ol.style.margin = '0 0 8px 16px';
+      ol.style.padding = '0';
+      steps.forEach(s => { const li = document.createElement('li'); li.textContent = s; ol.appendChild(li); });
+      box.appendChild(ol);
+      const receiptRow = modal.querySelector('input[type="file"]')?.closest('.row, .form-line, div');
+      (receiptRow?.parentElement || modal).insertBefore(box, receiptRow || null);
     }
   }
 

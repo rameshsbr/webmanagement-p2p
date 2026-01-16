@@ -140,28 +140,32 @@
           <td data-col="comment">-</td>
           <td data-col="admin">-</td>
           <td data-col="actions" class="actions">
-            <button
-              type="button"
-              class="btn small primary"
-              data-approve
-              data-id="<%= r.id %>"
-              data-reference="<%= r.referenceCode %>"
-              data-amount="<%= r.amountCents %>"
-              data-amount-display="<%= formatAmount(r.amountCents) %> <%= r.currency %>"
-              data-currency="<%= r.currency %>"
-              data-method="<%= method %>"
-              data-bank-id="<%= r.bankAccount?.id || '' %>"
-            >Approve</button>
-            <button
-              type="button"
-              class="btn small danger"
-              data-reject
-              data-id="<%= r.id %>"
-              data-reference="<%= r.referenceCode %>"
-              data-amount="<%= r.amountCents %>"
-              data-amount-display="<%= formatAmount(r.amountCents) %> <%= r.currency %>"
-              data-currency="<%= r.currency %>"
-            >Reject</button>
+            <% if (isIdrV4) { %>
+              <span class="badge">Auto</span>
+            <% } else { %>
+              <button
+                type="button"
+                class="btn small primary"
+                data-approve
+                data-id="<%= r.id %>"
+                data-reference="<%= r.referenceCode %>"
+                data-amount="<%= r.amountCents %>"
+                data-amount-display="<%= formatAmount(r.amountCents) %> <%= r.currency %>"
+                data-currency="<%= r.currency %>"
+                data-method="<%= method %>"
+                data-bank-id="<%= r.bankAccount?.id || '' %>"
+              >Approve</button>
+              <button
+                type="button"
+                class="btn small danger"
+                data-reject
+                data-id="<%= r.id %>"
+                data-reference="<%= r.referenceCode %>"
+                data-amount="<%= r.amountCents %>"
+                data-amount-display="<%= formatAmount(r.amountCents) %> <%= r.currency %>"
+                data-currency="<%= r.currency %>"
+              >Reject</button>
+            <% } %>
           </td>
         </tr>
       <% }) %>

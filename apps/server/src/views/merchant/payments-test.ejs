@@ -131,14 +131,8 @@
     return common / Math.max(leftWords.size, rightWords.size, 1);
   };
 
+  const formatJakartaDDMMYYYY_12h = <%- formatJakartaDDMMYYYY_12h.toString() %>;
   const formatIdr = (value) => `IDR ${Number(value || 0).toLocaleString('en-US')}`;
-  const formatExpiry = (value) => {
-    if (!value) return '';
-    if (typeof value === 'string') return value;
-    const d = new Date(value);
-    if (Number.isNaN(d.getTime())) return '';
-    return d.toISOString();
-  };
 
   const money = (value) => {
     const raw = String(value || '').replace(/,/g, '').trim();
@@ -307,17 +301,9 @@
           const intentId = intent?.id || intent?.data?.id || null;
           const amountFinal = intent?.amountCents || amountCents;
           const instructions = intent?.instructions || {};
-          const meta = instructions?.meta || intent?.va?.meta || {};
-          const uniqueRefNo = meta?.uniqueRefNo || null;
+          const uniqueRefNo = instructions?.meta?.uniqueRefNo || null;
           const isDynamic = methodCode.toUpperCase().includes('DYNAMIC');
-          const fallbackSteps = [
-            'Open your banking app.',
-            'Transfer the amount to the VA below.',
-            'Use immediate transfer if available.',
-          ];
-          const steps = Array.isArray(instructions?.steps) && instructions.steps.length
-            ? instructions.steps
-            : fallbackSteps;
+          const steps = Array.isArray(instructions?.steps) ? instructions.steps : [];
 
           let va = intent?.va || null;
           if (!va || !va.accountNo) {
@@ -343,26 +329,34 @@
 
           body.innerHTML = '';
           if (headerTitle) headerTitle.textContent = 'Transfer details';
-          body.appendChild(h('div', { class:'muted', style:'margin-bottom:8px;' },
-            'Use the details below to make your transfer. Always include the reference.'
-          ));
+          if (steps.length) {
+            body.appendChild(h('div', { class:'muted', style:'margin-bottom:4px;' }, 'Steps'));
+            const list = h('ol', { style:'margin:0 0 12px 16px; padding:0;' }, steps.map(step => h('li', {}, step)));
+            body.appendChild(list);
+          }
+          if (isDynamic) {
+            body.appendChild(h('div', { class:'muted', style:'margin:6px 0 12px;' },
+              'Use the details below to make your transfer. Always include the reference.'
+            ));
+          }
           const rows = [
-            ...(uniqueRefNo && isDynamic
-              ? [h('div', { class:'muted' }, 'Unique Reference No'), h('div', { class:'mono' }, uniqueRefNo)]
-              : []),
             h('div', { class:'muted' }, 'Bank'), h('div', {}, bankName),
             h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, accountNo),
             h('div', { class:'muted' }, 'Account Name'), h('div', {}, accountName),
             h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal)),
           ];
-          if (isDynamic && expiresAt) {
-            rows.push(h('div', { class:'muted' }, 'Expiry'), h('div', {}, formatExpiry(expiresAt)));
+          if (isDynamic) {
+            rows.push(
+              h('div', { class:'muted' }, 'Unique Reference'),
+              h('div', { class:'mono' }, uniqueRefNo || '-'),
+              h('div', { class:'muted' }, 'Expiry'),
+              h('div', {}, formatJakartaDDMMYYYY_12h(expiresAt))
+            );
+          } else {
+            rows.push(h('div', { class:'muted' }, 'Reference'), h('div', {}, 'Fund Transfer'));
           }
           const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr; gap:6px;' }, rows);
           body.appendChild(grid);
-          body.appendChild(h('div', { class:'muted', style:'margin:12px 0 4px;' }, 'Steps'));
-          const list = h('ol', { style:'margin:0 0 8px 16px; padding:0;' }, steps.map(step => h('li', {}, step)));
-          body.appendChild(list);
 
           const statusEl = h('div', { class:'muted', style:'margin-top:10px;' }, 'Awaiting payment confirmation.');
           const pollBtn = h('button', { class:'btn primary', type:'button', style:'margin-top:10px;' }, "I've paid");

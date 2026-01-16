@@ -66,6 +66,27 @@
         border-color: #111827;
         color: #fff;
       }
+      .transfer-modal .helper {
+        margin: 6px 0 12px;
+        color: #666;
+      }
+      .transfer-modal .steps ol {
+        margin: 6px 0 12px 18px;
+        padding: 0;
+      }
+      .transfer-modal .kv > div {
+        display: flex;
+        gap: 12px;
+        margin: 6px 0;
+      }
+      .transfer-modal .kv > div > span:first-child {
+        min-width: 140px;
+        color: #555;
+      }
+      .transfer-modal .footer-note {
+        margin-top: 12px;
+        color: #666;
+      }
     `;
     document.head.appendChild(style);
     _stylesInjected = true;
@@ -113,6 +134,31 @@
       .replace(/[^a-z0-9\s]/g, " ")
       .replace(/\s+/g, " ")
       .trim();
+  }
+
+  function formatJakartaDDMMYYYY_12h(iso) {
+    if (!iso) return "-";
+    const d = new Date(iso);
+    const fmt = new Intl.DateTimeFormat("en-GB", {
+      timeZone: "Asia/Jakarta",
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: true,
+    });
+    const raw = fmt.format(d);
+    const parts = raw.split(",").map((part) => part.trim());
+    const datePart = parts[0] || "";
+    const timePartRaw = parts[1] || "";
+    const dateBits = datePart.split("/");
+    const dd = dateBits[0] || "";
+    const mm = dateBits[1] || "";
+    const yyyy = dateBits[2] || "";
+    const timePart = timePartRaw.toUpperCase();
+    return `${dd}-${mm}-${yyyy}  ${timePart}`;
   }
 
   function nameScore(a, b) {
@@ -269,41 +315,43 @@
           const intent = data?.data || data;
           const va = intent?.va || {};
           const instructions = intent?.instructions || {};
-          const meta = instructions?.meta || va?.meta || {};
-          const uniqueRefNo = meta?.uniqueRefNo || null;
-          const fallbackSteps = [
-            "Open your banking app.",
-            "Transfer the amount to the VA below.",
-            "Use immediate transfer if available.",
-          ];
-          const steps = Array.isArray(instructions?.steps) && instructions.steps.length
-            ? instructions.steps
-            : fallbackSteps;
+          const uniqueRefNo = instructions?.meta?.uniqueRefNo || null;
+          const steps = Array.isArray(instructions?.steps) ? instructions.steps : [];
           const isDynamic = methodCode.toUpperCase().includes("DYNAMIC");
           const expiresAt = intent?.expiresAt || intent?.expiredAt || null;
           body.innerHTML = "";
           if (headerTitle) headerTitle.textContent = "Transfer details";
-          body.appendChild(el("div", { class: "muted", style: "margin-bottom:8px;" }, "Use the details below to make your transfer. Always include the reference."));
-          const rows = [
-            ...(uniqueRefNo && isDynamic ? [el("div", { class: "muted" }, "Unique Reference No"), el("div", { class: "mono" }, uniqueRefNo)] : []),
-            el("div", { class: "muted" }, "Bank"), el("div", {}, bankLabel(va.bankCode || "")),
-            el("div", { class: "muted" }, "Account No"), el("div", { class: "mono" }, va.accountNo || "-"),
-            el("div", { class: "muted" }, "Account Name"), el("div", {}, va.accountName || "-"),
-            el("div", { class: "muted" }, "Amount"), el("div", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`),
-          ];
-          if (isDynamic && expiresAt) {
-            rows.push(el("div", { class: "muted" }, "Expiry"), el("div", {}, String(expiresAt)));
+          const wrapper = el("div", { class: "transfer-modal" });
+          body.appendChild(wrapper);
+          if (steps.length) {
+            const stepsBlock = el("div", { class: "steps" });
+            stepsBlock.appendChild(el("div", {}, el("strong", {}, "Steps")));
+            const ol = el("ol");
+            steps.forEach((step) => ol.appendChild(el("li", {}, step)));
+            stepsBlock.appendChild(ol);
+            wrapper.appendChild(stepsBlock);
           }
-          body.appendChild(el("div", { style: "display:grid; grid-template-columns: 160px 1fr; gap:6px;" }, rows));
+          if (isDynamic) {
+            wrapper.appendChild(el("div", { class: "helper" }, "Use the details below to make your transfer. Always include the reference."));
+          }
 
-          body.appendChild(el("div", { class: "muted", style: "margin:12px 0 4px;" }, "Steps"));
-          const ol = el("ol", { style: "margin:0 0 8px 16px; padding:0;" });
-          steps.forEach((step) => ol.appendChild(el("li", {}, step)));
-          body.appendChild(ol);
-          const statusEl = el("div", { class: "muted", style: "margin-top:10px;" }, "Awaiting payment confirmation.");
+          const kv = el("div", { class: "kv" });
+          kv.appendChild(el("div", {}, [el("span", {}, "Bank"), el("span", {}, bankLabel(va.bankCode || ""))]));
+          kv.appendChild(el("div", {}, [el("span", {}, "Account No"), el("span", { class: "mono" }, va.accountNo || "-")]));
+          kv.appendChild(el("div", {}, [el("span", {}, "Account Name"), el("span", {}, va.accountName || "-")]));
+          kv.appendChild(el("div", {}, [el("span", {}, "Amount"), el("span", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`)]));
+          if (isDynamic) {
+            kv.appendChild(el("div", {}, [el("span", {}, "Unique Reference"), el("span", { class: "mono" }, uniqueRefNo || "-")]));
+            kv.appendChild(el("div", {}, [el("span", {}, "Expiry"), el("span", {}, formatJakartaDDMMYYYY_12h(expiresAt))]));
+          } else {
+            kv.appendChild(el("div", {}, [el("span", {}, "Reference"), el("em", {}, "Fund Transfer")]));
+          }
+          wrapper.appendChild(kv);
+
+          const statusEl = el("div", { class: "footer-note" }, "Awaiting payment confirmation.");
           const pollBtn = el("button", { class: "btn primary", type: "button", style: "margin-top:10px;" }, "I've paid");
-          body.appendChild(statusEl);
-          body.appendChild(el("div", { style: "display:flex; justify-content:flex-end; margin-top:12px;" }, [pollBtn]));
+          wrapper.appendChild(statusEl);
+          wrapper.appendChild(el("div", { style: "display:flex; justify-content:flex-end; margin-top:12px;" }, [pollBtn]));
           pollBtn.addEventListener("click", async () => {
             pollBtn.disabled = true;
             let attempts = 0;

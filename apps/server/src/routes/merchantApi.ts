@@ -17,6 +17,7 @@ import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode 
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
 import { API_KEY_SCOPES, normalizeApiKeyScopes } from '../services/apiKeyScopes.js';
+import type { ApiKeyScope } from '../services/apiKeyScopes.js'; // <-- added
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -99,12 +100,13 @@ async function apiKeyOnly(req: any, res: any, next: any) {
   next();
 }
 
-function requireApiScopes(required: string[]) {
-  const requiredSet = new Set(required);
+// CHANGED: use ApiKeyScope[] instead of string[]
+function requireApiScopes(required: ApiKeyScope[]) {
+  const requiredSet = new Set<ApiKeyScope>(required);
   return function (req: any, _res: any, next: any) {
     const scopes: string[] | undefined = req.apiKeyScopes;
     if (!scopes) return next();
-    const normalizedScopes = normalizeApiKeyScopes(scopes);
+    const normalizedScopes = normalizeApiKeyScopes(scopes); // ApiKeyScope[]
     const hasAll = Array.from(requiredSet).every((s) => normalizedScopes.includes(s));
     if (!hasAll) return _res.status(403).json({ ok: false, error: 'Insufficient API scope' });
     next();

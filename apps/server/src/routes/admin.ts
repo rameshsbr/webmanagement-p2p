@@ -16,6 +16,7 @@ import {
 } from '../services/paymentExports.js';
 import { normalizeTimezone, resolveTimezone } from '../lib/timezone.js';
 import { formatClientStatusLabel } from '../services/merchantClient.js';
+import { getDashboardMetrics } from '../services/metrics/dashboard-metrics.js';
 
 async function safeNotify(text: string) {
   try {
@@ -479,24 +480,10 @@ function readAmountInput(body: unknown): { cents: number | null; provided: boole
 // Dashboard
 // ───────────────────────────────────────────────────────────────────────────────
 router.get('/', async (_req, res) => {
-  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
-  const [pendingDeposits, pendingWithdrawals, totalsToday] = await Promise.all([
-    prisma.paymentRequest.count({ where: { type: 'DEPOSIT', status: { in: awaitingStatuses } } }),
-    prisma.paymentRequest.count({ where: { type: 'WITHDRAWAL', status: { in: awaitingStatuses } } }),
-    prisma.paymentRequest.groupBy({
-      by: ['type'],
-      where: { createdAt: { gte: new Date(new Date().setHours(0,0,0,0)) }, status: 'APPROVED' },
-      _sum: { amountCents: true }
-    })
-  ]);
+  const metrics = await getDashboardMetrics();
   res.render('admin-dashboard', {
     title: 'Admin Dashboard',
-    metrics: {
-      pendingDeposits,
-      pendingWithdrawals,
-      todayDeposits: totalsToday.find(t => t.type === 'DEPOSIT')?._sum.amountCents ?? 0,
-      todayWithdrawals: totalsToday.find(t => t.type === 'WITHDRAWAL')?._sum.amountCents ?? 0
-    }
+    metrics,
   });
 });
 

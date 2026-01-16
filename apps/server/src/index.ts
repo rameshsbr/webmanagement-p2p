@@ -34,6 +34,8 @@ import { superAdminRouter } from "./routes/superAdmin.js";
 import { auditHttpWrites } from "./services/audit.js";
 import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
+import { formatJakartaDDMMYYYY_12h } from "./utils/datetime.js";
+import { startFazzSweep } from "./services/providers/fazz-poller.js";
 
 const app = express();
 augmentExpress(app);
@@ -48,6 +50,7 @@ app.use((_, res, next) => {
 backfillShortIdentifiers().catch((err) => {
   console.warn("[BOOT] short-id backfill skipped", err?.message || err);
 });
+startFazzSweep();
 
 app.use(
   "/webhooks/fazz",
@@ -93,6 +96,8 @@ app.engine("ejs", ejsMate);
 app.set("view engine", "ejs");
 app.set("views", path.join(__dirname, "views"));
 app.locals.basedir = path.join(__dirname, "views");
+app.locals.formatJakartaDDMMYYYY_12h = formatJakartaDDMMYYYY_12h;
+app.locals.buildId = process.env.BUILD_ID || Date.now().toString();
 
 // NEW: serve /public static assets (checkout-widget.js, merchant.js, etc.)
 app.use("/public", express.static(path.join(__dirname, "public")));

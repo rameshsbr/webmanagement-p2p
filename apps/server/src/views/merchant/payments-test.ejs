@@ -44,9 +44,10 @@
 <script>
 /* =============================================================================
    IDR v4 overlay (merchant test only). Isolated from P2P widget.
-   - Deposit: POST /api/v1/deposit/intents?debug=1 (VA Dynamic/Static)
+   - Deposit: POST /public/deposit/intent (VA Dynamic/Static)
+   - Session: POST /public/merchant/checkout/session
+   - Banks: GET /public/deposit/banks?currency=IDR&method=<METHOD>
    - Withdrawal: POST /api/v1/withdrawals (FAZZ_SEND)
-   - Meta: GET /merchant/idrv4/meta
    - Validate: POST /merchant/idrv4/validate
 ============================================================================= */
 (() => {
@@ -57,6 +58,11 @@
   const diditSubject = root.getAttribute('data-default-subject') || '';
   const verifiedKycName = (root.getAttribute('data-idrv4-kyc-name') || '').trim();
   const prefillName = (root.getAttribute('data-idrv4-prefill-name') || '').trim();
+  const sessionEndpoint = '/public/merchant/checkout/session';
+  let checkoutToken = '';
+  let kycPopup = null;
+  let kycStatus = null;
+  let kycListenerInstalled = false;
 
   const methodSelect = root.querySelector('[data-test-method]');
   const p2p = root.querySelector('[data-test-section="p2p"]');
@@ -172,11 +178,99 @@
     return data;
   }
 
-  async function loadMeta(methodCode) {
-    const url = `/merchant/idrv4/meta?method=${encodeURIComponent(methodCode)}`;
-    const resp = await fetch(url, { credentials: 'same-origin' });
+  async function fetchCheckoutToken() {
+    if (checkoutToken) return checkoutToken;
+    const resp = await fetch(sessionEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      credentials: 'same-origin',
+      body: JSON.stringify({ user: { diditSubject }, currency: 'IDR' }),
+    });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data?.ok) throw new Error(data?.error || 'Unable to load meta');
+    if (!resp.ok || !data?.ok) throw new Error(data?.message || data?.error || 'Unable to start checkout');
+    checkoutToken = data.token || '';
+    return checkoutToken;
+  }
+
+  async function callKyc(path, token, init) {
+    const resp = await fetch(path, {
+      ...(init || {}),
+      headers: { ...(init?.headers || {}), authorization: `Bearer ${token}` },
+      credentials: 'same-origin',
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'KYC request failed');
+    return data;
+  }
+
+  function installKycListener() {
+    if (kycListenerInstalled) return;
+    kycListenerInstalled = true;
+    window.addEventListener('message', (event) => {
+      if (event.origin !== location.origin) return;
+      const msg = event.data || {};
+      if (msg && msg.type === 'kyc.complete') {
+        const status = String(msg.status || '').toLowerCase();
+        if (status === 'approved') kycStatus = 'approved';
+        if (['rejected', 'declined', 'failed'].includes(status)) kycStatus = 'rejected';
+        try { if (kycPopup && !kycPopup.closed) kycPopup.close(); } catch {}
+      }
+    });
+  }
+
+  async function waitForKycApproval(token) {
+    for (let i = 0; i < 12; i += 1) {
+      if (kycStatus === 'approved') return true;
+      if (kycStatus === 'rejected') {
+        throw new Error('Verification failed. Please ensure the name match is at least 60%.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2500));
+      const next = await callKyc('/public/kyc/status', token, { method: 'GET' });
+      if (next?.status === 'approved') return true;
+      if (next?.status === 'rejected') {
+        throw new Error('Verification failed. Please ensure the name match is at least 60%.');
+      }
+    }
+    throw new Error('KYC pending. Please complete verification to continue.');
+  }
+
+  async function runKycFlow(token, fallbackUrl) {
+    let url = fallbackUrl || null;
+    if (!url) {
+      const start = await callKyc('/public/kyc/start', token, { method: 'POST' });
+      url = start?.url || null;
+    }
+    kycStatus = null;
+    installKycListener();
+    if (url) {
+      kycPopup = window.open(url, 'payx_kyc', 'popup=yes,noopener,noreferrer,width=480,height=720');
+    }
+    await waitForKycApproval(token);
+  }
+
+  async function loadPublicBanks(methodCode) {
+    const token = await fetchCheckoutToken();
+    const resp = await fetch(`/public/deposit/banks?currency=IDR&method=${encodeURIComponent(methodCode)}`, {
+      headers: { authorization: `Bearer ${token}` },
+      credentials: 'same-origin',
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data?.ok) throw new Error(data?.error || 'Unable to load banks');
+    return data?.banks || [];
+  }
+
+  async function createDepositIntent(token, payload) {
+    const resp = await fetch('/public/deposit/intent', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}` },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload || {}),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (resp.status === 403 && data?.error === 'KYC_REQUIRED') {
+      return { kycRequired: true, url: data?.url || null };
+    }
+    if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'Request failed');
     return data;
   }
 
@@ -233,12 +327,18 @@
       body.appendChild(form);
 
       let limits = { minDeposit: 10000, maxDeposit: 100000000 };
+      let bankOptions = [];
       try {
-        const meta = await loadMeta(methodCode);
-        const banks = Array.isArray(meta?.banks) ? meta.banks : [];
-        limits = { ...limits, ...(meta?.limits || {}) };
+        const banks = await loadPublicBanks(methodCode);
+        bankOptions = Array.isArray(banks) ? banks : [];
+        if (!bankOptions.length) throw new Error('No available banks for this method.');
         bank.innerHTML = '';
-        banks.forEach((code) => bank.appendChild(h('option', { value: code }, bankLabel(code))));
+        bankOptions.forEach((row) => {
+          bank.appendChild(h('option', { value: row.id }, row.methodLabel || row.method || row.id));
+        });
+        const first = bankOptions[0];
+        if (first?.limits?.minCents) limits.minDeposit = Math.round(first.limits.minCents / 100);
+        if (first?.limits?.maxCents) limits.maxDeposit = Math.round(first.limits.maxCents / 100);
       } catch (err) {
         warning.style.display = '';
         warning.textContent = (err && err.message) || 'Unable to load banks.';
@@ -283,72 +383,69 @@
           }
         }
 
+        const selectedBank = bankOptions.find((row) => row.id === bank.value) || bankOptions[0] || null;
+        if (!selectedBank) {
+          warning.textContent = 'No available banks for this method.'; warning.style.display = ''; return;
+        }
         const payload = {
-          user: { diditSubject },
           amountCents,
-          currency: 'IDR',
-          bankCode: String(bank.value || ''),
-          methodCode,
-          paymentMethodDisplayName: name,
+          method: methodCode,
+          payer: {
+            holderName: name,
+            bankName: String(selectedBank.methodLabel || selectedBank.method || '').trim() || undefined,
+          },
+          bankAccountId: selectedBank.id,
+          extraFields: {},
         };
 
         actions.lastChild.disabled = true;
         try {
-          const data = await apiPost('/deposit/intents?debug=1', payload, token);
-          const intent = data?.data?.data || data?.data || data || {};
+          const checkoutToken = await fetchCheckoutToken();
+          let intent = await createDepositIntent(checkoutToken, payload);
+          if (intent?.kycRequired) {
+            warning.textContent = 'KYC required. Opening verification…';
+            warning.style.display = '';
+            await runKycFlow(checkoutToken, intent.url);
+            warning.style.display = 'none';
+            intent = await createDepositIntent(checkoutToken, payload);
+          }
+
           const referenceCode = intent?.referenceCode || '-';
           const expiresAt = intent?.expiresAt || null;
-          const intentId = intent?.id || intent?.data?.id || null;
           const amountFinal = intent?.amountCents || amountCents;
-          const instructions = intent?.instructions || {};
-          const uniqueRefNo = instructions?.meta?.uniqueRefNo || null;
+          const bankDetails = intent?.bankDetails || {};
+          const displayFields = Array.isArray(bankDetails?.displayFields) ? bankDetails.displayFields : [];
           const isDynamic = methodCode.toUpperCase().includes('DYNAMIC');
-          const steps = Array.isArray(instructions?.steps) ? instructions.steps : [];
-
-          let va = intent?.va || null;
-          if (!va || !va.accountNo) {
-            va = instructions?.paymentMethod?.virtual_bank_account || null;
-          }
-          if (!va || !va.accountNo) {
-            const fallback =
-              instructions?.meta?.fetched?.payment?.data?.attributes?.paymentMethod?.instructions || null;
-            if (fallback) {
-              va = {
-                bankCode: fallback.bankShortCode || fallback.bankCode || null,
-                accountNo: fallback.accountNo || fallback.account_no || null,
-                accountName: fallback.displayName || fallback.display_name || null,
-              };
-            }
-          }
-          va = va || {};
-
-          const bankCode = va.bankCode || null;
-          const bankName = va.bankName || (bankCode ? `${bankLabel(bankCode)} (code)` : '-');
-          const accountNo = va.accountNo || '-';
-          const accountName = va.accountName || va.displayName || '-';
 
           body.innerHTML = '';
           if (headerTitle) headerTitle.textContent = 'Transfer details';
-          if (steps.length) {
-            body.appendChild(h('div', { class:'muted', style:'margin-bottom:4px;' }, 'Steps'));
-            const list = h('ol', { style:'margin:0 0 12px 16px; padding:0;' }, steps.map(step => h('li', {}, step)));
-            body.appendChild(list);
-          }
           if (isDynamic) {
             body.appendChild(h('div', { class:'muted', style:'margin:6px 0 12px;' },
               'Use the details below to make your transfer. Always include the reference.'
             ));
           }
-          const rows = [
-            h('div', { class:'muted' }, 'Bank'), h('div', {}, bankName),
-            h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, accountNo),
-            h('div', { class:'muted' }, 'Account Name'), h('div', {}, accountName),
-            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal)),
-          ];
+          const rows = [];
+          if (displayFields.length) {
+            displayFields.forEach((field) => {
+              rows.push(
+                h('div', { class:'muted' }, field?.label || field?.key || '-'),
+                h('div', { class: 'mono' }, field?.value || '-')
+              );
+            });
+          } else {
+            rows.push(
+              h('div', { class:'muted' }, 'Bank'), h('div', {}, bankDetails?.bankName || '-'),
+              h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, bankDetails?.accountNo || '-'),
+              h('div', { class:'muted' }, 'Account Name'), h('div', {}, bankDetails?.holderName || '-')
+            );
+          }
+          rows.push(
+            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal))
+          );
           if (isDynamic) {
             rows.push(
-              h('div', { class:'muted' }, 'Unique Reference'),
-              h('div', { class:'mono' }, uniqueRefNo || '-'),
+              h('div', { class:'muted' }, 'Reference'),
+              h('div', { class:'mono' }, intent?.uniqueReference || referenceCode || '-'),
               h('div', { class:'muted' }, 'Expiry'),
               h('div', {}, formatJakartaDDMMYYYY_12h(expiresAt))
             );
@@ -373,7 +470,7 @@
             const interval = setInterval(async () => {
               attempts += 1;
               try {
-                const confirm = await apiPost('/deposit/confirm', { id: intentId }, token);
+                const confirm = await apiPost('/deposit/confirm', { referenceCode }, token);
                 const status = confirm?.status || confirm?.data?.status || 'PENDING';
                 statusEl.textContent = `Status: ${status}`;
                 if (status === 'APPROVED' || attempts >= 20) {

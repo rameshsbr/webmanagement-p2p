@@ -6,6 +6,7 @@ const POLL_FIRST_MS = Number(process.env.FAZZ_SYNC_POLL_FIRST_MS ?? 2500);
 const POLL_BACKOFF_MS = Number(process.env.FAZZ_SYNC_POLL_BACKOFF_MS ?? 5000);
 const POLL_MAX_TRIES = Number(process.env.FAZZ_SYNC_POLL_MAX_TRIES ?? 24);
 const SWEEP_INTERVAL_MS = Number(process.env.FAZZ_SYNC_SWEEP_MS ?? 60_000);
+const FAZZ_MODE = String(process.env.FAZZ_MODE || "SIM").toUpperCase();
 
 type Terminal = "completed" | "failed" | "cancelled" | "expired";
 
@@ -98,6 +99,8 @@ export async function scheduleDisbursementPoll(providerPayoutId: string) {
 }
 
 export function startFazzSweep() {
+  if (FAZZ_MODE !== "REAL") return;
+  const paymentIdPattern = /^pay_[a-f0-9]{24,}$/i;
   const run = async () => {
     try {
       // Payments: only FAZZ, non-terminal (pending/processing/paid)
@@ -110,6 +113,7 @@ export function startFazzSweep() {
         take: 200,
       });
       for (const p of pay) {
+        if (!p.providerPaymentId || !paymentIdPattern.test(p.providerPaymentId)) continue;
         try {
           const { status, raw } = await fazzAdapter.getDepositStatus(p.providerPaymentId);
           await upsertPaymentRaw(p.providerPaymentId, status, raw);

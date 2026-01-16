@@ -323,8 +323,6 @@
           if (headerTitle) headerTitle.textContent = "Transfer details";
           const wrapper = el("div", { class: "transfer-modal" });
           body.appendChild(wrapper);
-          wrapper.appendChild(el("div", { class: "helper" }, "Use the details below to make your transfer. Always include the reference."));
-
           if (steps.length) {
             const stepsBlock = el("div", { class: "steps" });
             stepsBlock.appendChild(el("div", {}, el("strong", {}, "Steps")));
@@ -332,6 +330,9 @@
             steps.forEach((step) => ol.appendChild(el("li", {}, step)));
             stepsBlock.appendChild(ol);
             wrapper.appendChild(stepsBlock);
+          }
+          if (isDynamic) {
+            wrapper.appendChild(el("div", { class: "helper" }, "Use the details below to make your transfer. Always include the reference."));
           }
 
           const kv = el("div", { class: "kv" });

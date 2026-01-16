@@ -6,6 +6,7 @@ import type {
 } from "./Provider";
 import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
+import { normalizeIdrV4BankCode } from "./fazz/idr-v4-banks.js";
 
 /**
  * MODE:
@@ -63,8 +64,22 @@ function suffixNoFromTid(tid: string) {
   const digits = String(tid || "").replace(/\D/g, "");
   return digits.slice(-8).padStart(8, "0");
 }
-function oneHourFromNowIso() {
-  return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+
+/** Format a Date as an ISO-8601 string with an explicit offset like `+07:00` */
+function toOffsetISOString(d: Date, offsetMinutes: number) {
+  // Show the *same instant* in the requested local wall time, then append the offset.
+  const shifted = new Date(d.getTime() + offsetMinutes * 60_000);
+  const isoNoZ = shifted.toISOString().replace(/Z$/, ""); // 2026-01-16T12:34:56.789
+  const sign = offsetMinutes >= 0 ? "+" : "-";
+  const hh = String(Math.floor(Math.abs(offsetMinutes) / 60)).padStart(2, "0");
+  const mm = String(Math.abs(offsetMinutes) % 60).padStart(2, "0");
+  return `${isoNoZ}${sign}${hh}:${mm}`; // 2026-01-16T12:34:56.789+07:00
+}
+
+/** Jakarta = UTC+07:00. Use 65 minutes to be safely > 1 hour boundary. */
+function jakartaFutureIso(minutesAhead = 65) {
+  const d = new Date(Date.now() + minutesAhead * 60_000);
+  return toOffsetISOString(d, 7 * 60);
 }
 
 const ZERO_DECIMAL = new Set(["IDR", "JPY", "KRW"]);
@@ -166,12 +181,17 @@ function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
     pick<string>(json, ["id"]) ||
     makeFakeId("pay");
 
+  // Accept both "expiresAt" and "expiredAt" (Fazz returns "expiredAt")
   const expiresAt =
     pick<string>(json, [
       "data.attributes.expiresAt",
       "expiresAt",
       "data.expiresAt",
       "payment.expiresAt",
+      "data.attributes.expiredAt",
+      "expiredAt",
+      "data.expiredAt",
+      "payment.expiredAt",
     ]) || undefined;
 
   const accountNo =
@@ -186,6 +206,8 @@ function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
       "data.paymentMethod.virtual_bank_account.account_no",
       "data.attributes.payment_method.instructions.account_no",
       "data.attributes.paymentMethod.instructions.account_no",
+      // CamelCase fallbacks often returned by Fazz:
+      "data.attributes.paymentMethod.instructions.accountNo",
     ]) || undefined;
 
   const accountName =
@@ -200,6 +222,8 @@ function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
       "data.paymentMethod.virtual_bank_account.account_name",
       "data.attributes.payment_method.instructions.display_name",
       "data.attributes.paymentMethod.instructions.display_name",
+      // CamelCase fallback:
+      "data.attributes.paymentMethod.instructions.displayName",
     ]) || fallbackName;
 
   let paymentMethodId =
@@ -408,9 +432,13 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   ensureRealReady();
 
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
-  const displayName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
+  const bankCode = normalizeIdrV4BankCode(input.bankCode);
+  const displayName = normalizeNameForBank(input.kyc.fullName, bankCode);
   const suffixNo = suffixNoFromTid(input.tid);
-  const expiredAt = oneHourFromNowIso();
+  // IMPORTANT:
+  // - Dynamic: send expiredAt in Asia/Jakarta with +07:00, >= 61m ahead (we use 65m).
+  // - Static: do NOT send expiredAt (payment method itself is reusable/unlimited).
+  const expiredAtDynamic = jakartaFutureIso(65);
   const description = "FUND TRANSFER";
 
   const userId = !isDynamic
@@ -431,7 +459,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
         type: "virtual_bank_account",
         merchantId: input.merchantId,
         userId,
-        bankCode: input.bankCode,
+        bankCode, // normalized
         active: true,
       },
       select: { providerPaymentMethodId: true, accountNo: true, accountName: true, displayName: true },
@@ -444,10 +472,9 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       currency: input.currency,
       referenceId: input.tid,
       paymentMethodType: "virtual_bank_account",
-      expiredAt,
       description,
       paymentMethodOptions: {
-        bankShortCode: input.bankCode,
+        bankShortCode: bankCode, // normalized
         displayName,
         mode: isDynamic ? "DYNAMIC" : "STATIC",
         suffixNo,
@@ -458,6 +485,11 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
         methodCode: input.methodCode,
       },
     };
+
+    // Only include expiredAt for dynamic VAs
+    if (isDynamic) {
+      attributes.expiredAt = expiredAtDynamic;
+    }
 
     const payload: any = { data: { type: "payments", attributes } };
     if (paymentMethodId) {
@@ -483,7 +515,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       data: {
         type: "payment_methods",
         attributes: {
-          bankShortCode: input.bankCode,
+          bankShortCode: bankCode, // normalized
           referenceId: input.tid,
           displayName,
           suffixNo,
@@ -497,7 +529,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
     }
 
     const createJson = createRes.json ?? {};
-    const parsed = parsePaymentMethodResp(createJson, displayName, input.bankCode);
+    const parsed = parsePaymentMethodResp(createJson, displayName, bankCode);
     let accountNo = parsed.va.accountNo;
     let accountName = parsed.va.accountName || displayName;
 
@@ -518,7 +550,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
           type: "virtual_bank_account",
           merchantId: input.merchantId,
           userId,
-          bankCode: input.bankCode,
+          bankCode, // normalized
           providerPaymentMethodId: parsed.providerPaymentMethodId,
           accountNo: accountNo ?? null,
           accountName: accountName ?? null,
@@ -565,7 +597,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   }
 
   const json = res.json ?? {};
-  const parsed = parseCreateResp(json, displayName, input.bankCode);
+  const parsed = parseCreateResp(json, displayName, bankCode);
 
   // Backfill PM id + VA if missing
   let resolvedPaymentMethodId = parsed.paymentMethodId || paymentMethodId;
@@ -603,7 +635,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
     instructions: {
       type: "virtual_account",
       method: isDynamic ? "DYNAMIC" : "STATIC",
-      bankCode: input.bankCode,
+      bankCode, // normalized outward
       steps: [
         "Open your banking app.",
         `Transfer ${formatAmountForDisplay(input.amountCents, input.currency)} to the VA below.`,
@@ -612,7 +644,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       meta,
     },
     va: {
-      bankCode: input.bankCode,
+      bankCode, // normalized outward
       accountNo,
       accountName: vaAccountName || displayName,
       meta,
@@ -650,10 +682,11 @@ async function realGetDepositStatus(providerPaymentId: string) {
 
 async function realValidateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
   ensureRealReady();
+  const bankCode = normalizeIdrV4BankCode(input.bankCode);
   const payload = {
     data: {
       attributes: {
-        bankShortCode: input.bankCode,
+        bankShortCode: bankCode, // normalized
         accountNo: input.accountNo,
       },
     },
@@ -680,6 +713,7 @@ async function tryCreateSend(
   }
 ) {
   const amountNumber = Number(input.amountCents);
+  const bankCode = normalizeIdrV4BankCode(input.bankCode);
 
   const payload = {
     data: {
@@ -690,9 +724,9 @@ async function tryCreateSend(
         description: `Withdrawal ${input.tid}`,
         disbursementMethod: {
           type: "bank_transfer",
-          bankShortCode: input.bankCode,
+          bankShortCode: bankCode, // normalized
           bankAccountNo: input.accountNo,
-          bankAccountHolderName: normalizeNameForBank(input.holderName, input.bankCode),
+          bankAccountHolderName: normalizeNameForBank(input.holderName, bankCode),
         },
         metadata: {
           uid: input.uid,
@@ -836,9 +870,12 @@ export const fazzAdapter: ProviderAdapter = {
       ],
     };
 
+    // Return SIM expiry in +07:00 too (for consistent display)
+    const simExpiresAt = jakartaFutureIso(isDynamic ? 30 : 7 * 24 * 60);
+
     return {
       providerPaymentId,
-      expiresAt: new Date(now + expiresMs).toISOString(),
+      expiresAt: simExpiresAt,
       instructions,
       va: { bankCode: input.bankCode, accountNo: vaNumber, accountName },
     };

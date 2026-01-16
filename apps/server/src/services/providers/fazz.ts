@@ -63,8 +63,28 @@ function suffixNoFromTid(tid: string) {
   const digits = String(tid || "").replace(/\D/g, "");
   return digits.slice(-8).padStart(8, "0");
 }
-function oneHourFromNowIso() {
-  return new Date(Date.now() + 60 * 60 * 1000).toISOString();
+/**
+ * Returns an RFC3339 timestamp in Asia/Jakarta with an explicit +07:00 offset.
+ * Use minutesAhead >= 61 to satisfy Fazz ">= 1 hour" rule with safety.
+ *
+ * Example: "2026-01-16T14:55:21+07:00"
+ */
+export function fazzExpiryJakarta(minutesAhead = 61): string {
+  const when = new Date(Date.now() + minutesAhead * 60_000);
+
+  const fmt = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = Object.fromEntries(
+    fmt.formatToParts(when).map(p => [p.type, p.value])
+  );
+
+  return `${parts.year}-${parts.month}-${parts.day}` +
+         `T${parts.hour}:${parts.minute}:${parts.second}+07:00`;
 }
 
 const ZERO_DECIMAL = new Set(["IDR", "JPY", "KRW"]);
@@ -410,7 +430,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
   const displayName = normalizeNameForBank(input.kyc.fullName, input.bankCode);
   const suffixNo = suffixNoFromTid(input.tid);
-  const expiredAt = oneHourFromNowIso();
+  const expiredAt = fazzExpiryJakarta(61);
   const description = "FUND TRANSFER";
 
   const userId = !isDynamic
@@ -554,6 +574,9 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   const paymentMethodId = staticMethod?.providerPaymentMethodId;
 
   const payload = buildPaymentPayload(paymentMethodId, Boolean(paymentMethodId));
+  if (DEBUG) {
+    console.log("[FAZZ_PAYMENTS_PAYLOAD]", JSON.stringify(payload, null, 2));
+  }
   let res = await fazzPost(`/payments`, payload, input.tid);
   if (!res.ok && paymentMethodId && res.status === 400) {
     const fallbackPayload = buildPaymentPayload(paymentMethodId, false);
@@ -816,8 +839,7 @@ export const fazzAdapter: ProviderAdapter = {
     }
 
     const isDynamic = input.methodCode.toUpperCase().includes("DYNAMIC");
-    const now = Date.now();
-    const expiresMs = isDynamic ? 30 * 60_000 : 7 * 24 * 60 * 60_000;
+    const expiresMs = isDynamic ? 61 * 60_000 : 7 * 24 * 60 * 60_000;
 
     const providerPaymentId = makeFakeId("pay");
     const vaNumber = isDynamic
@@ -838,7 +860,7 @@ export const fazzAdapter: ProviderAdapter = {
 
     return {
       providerPaymentId,
-      expiresAt: new Date(now + expiresMs).toISOString(),
+      expiresAt: fazzExpiryJakarta(Math.round(expiresMs / 60_000)),
       instructions,
       va: { bankCode: input.bankCode, accountNo: vaNumber, accountName },
     };

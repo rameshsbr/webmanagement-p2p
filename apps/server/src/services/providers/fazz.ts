@@ -239,6 +239,20 @@ function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
       "data.attributes.paymentMethod.instructions.accountNo",
     ]) || undefined;
 
+  const responseBankCode =
+    pick<string>(json, [
+      "data.attributes.paymentMethod.instructions.bankShortCode",
+      "data.attributes.payment_method.instructions.bankShortCode",
+      "data.attributes.paymentMethod.virtual_bank_account.bank_short_code",
+      "data.attributes.payment_method.virtual_bank_account.bank_short_code",
+      "data.attributes.paymentMethod.virtual_bank_account.bankShortCode",
+      "data.attributes.payment_method.virtual_bank_account.bankShortCode",
+    ]) || undefined;
+
+  const normalizedBankCode = responseBankCode
+    ? normalizeIdrV4BankCode(String(responseBankCode))
+    : bankCode;
+
   const accountName =
     pick<string>(json, [
       "data.attributes.paymentMethod.virtual_bank_account.account_name",
@@ -268,7 +282,7 @@ function parseCreateResp(json: any, fallbackName: string, bankCode: string) {
   return {
     providerPaymentId: String(providerPaymentId),
     expiresAt,
-    va: { bankCode, accountNo, accountName },
+    va: { bankCode: normalizedBankCode, accountNo, accountName },
     paymentMethodId: paymentMethodId ? String(paymentMethodId) : undefined,
     raw: json,
   };
@@ -641,11 +655,22 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   }
 
   const json = res.json ?? {};
-  const parsed = parseCreateResp(json, displayName, bankCode);
+  const rawPaymentId =
+    pick<string>(json, ["data.id"]) ||
+    pick<string>(json, ["id"]);
+  if (!rawPaymentId) {
+    const err = new Error("Fazz createDepositIntent failed: missing payment id");
+    (err as any).providerError = { status: res.status, raw: json ?? res.text ?? null };
+    throw err;
+  }
+  const parsed = {
+    ...parseCreateResp(json, displayName, bankCode),
+    providerPaymentId: String(rawPaymentId),
+  };
 
   // Backfill PM id + VA if missing
   let resolvedPaymentMethodId = parsed.paymentMethodId || paymentMethodId;
-  let vaAccountNo = parsed.va.accountNo;
+  let vaAccountNo = parsed.va.accountNo || staticMethod?.accountNo;
   let vaAccountName = parsed.va.accountName || staticMethod?.accountName || staticMethod?.displayName;
 
   if (!resolvedPaymentMethodId || !vaAccountNo) {
@@ -666,7 +691,21 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   const providerSteps =
     extractProviderSteps(json) || extractProviderSteps((json as any).__fetchedPayment);
 
-  const accountNo = vaAccountNo || staticMethod?.accountNo || dynamicVaNumber();
+  if (!vaAccountNo) {
+    const err = new Error("Fazz createDepositIntent failed: missing VA account number");
+    (err as any).providerError = { status: res.status, raw: json ?? res.text ?? null };
+    throw err;
+  }
+
+  const status =
+    pick<string>(json, [
+      "data.attributes.status",
+      "data.status",
+      "status",
+      "payment.status",
+    ]) || "pending";
+
+  const resolvedBankCode = parsed.va.bankCode || bankCode;
 
   const meta: any = {};
   if (resolvedPaymentMethodId) meta.paymentMethodId = resolvedPaymentMethodId;
@@ -711,20 +750,22 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
 
   const result = {
     providerPaymentId: String(parsed.providerPaymentId),
+    status,
     expiresAt: isDynamic ? parsed.expiresAt : undefined,
     instructions: {
       type: "virtual_account",
       method: isDynamic ? "DYNAMIC" : "STATIC",
-      bankCode, // normalized outward
+      bankCode: resolvedBankCode, // normalized outward
       steps: providerSteps?.length ? providerSteps : defaultSteps,
       meta,
     },
     va: {
-      bankCode, // normalized outward
-      accountNo,
+      bankCode: resolvedBankCode, // normalized outward
+      accountNo: vaAccountNo,
       accountName: vaAccountName || displayName,
       meta,
     },
+    raw: json,
   };
 
   schedulePaymentPoll(String(parsed.providerPaymentId));
@@ -846,11 +887,23 @@ async function realCreateDisbursement(input: {
       const json = res.json ?? {};
       const providerPayoutId =
         pick<string>(json, ["data.id"]) ||
-        pick<string>(json, ["id"]) ||
-        makeFakeId(p === "/payouts" ? "pout" : "dsb");
+        pick<string>(json, ["id"]);
+      if (!providerPayoutId) {
+        const err = new Error("Fazz createDisbursement failed: missing payout id");
+        (err as any).providerError = { status: res.status, raw: json ?? res.text ?? null };
+        throw err;
+      }
+      const status =
+        pick<string>(json, [
+          "data.attributes.status",
+          "status",
+          "data.status",
+          "disbursement.status",
+          "payout.status",
+        ]) || "processing";
       const providerPayoutIdStr = String(providerPayoutId);
       scheduleDisbursementPoll(providerPayoutIdStr);
-      return { providerPayoutId: providerPayoutIdStr, raw: json };
+      return { providerPayoutId: providerPayoutIdStr, status, raw: json };
     }
     if (isPathMissingOrForbidden(res)) {
       continue;
@@ -959,9 +1012,11 @@ export const fazzAdapter: ProviderAdapter = {
 
     return {
       providerPaymentId,
+      status: "pending",
       expiresAt: simExpiresAt,
       instructions,
       va: { bankCode: input.bankCode, accountNo: vaNumber, accountName, meta },
+      raw: { simulated: true },
     };
   },
 
@@ -1015,7 +1070,7 @@ export const fazzAdapter: ProviderAdapter = {
     if (MODE === "REAL") return realCreateDisbursement(input);
 
     const providerPayoutId = makeFakeId("pout");
-    return { providerPayoutId, raw: { simulated: true, ...input } };
+    return { providerPayoutId, status: "processing", raw: { simulated: true, ...input } };
   },
 
   async getDisbursementStatus(providerPayoutId: string) {

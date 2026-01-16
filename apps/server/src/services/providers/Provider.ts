@@ -14,6 +14,7 @@ export type DepositIntentInput = {
 export type DepositIntentResult = {
   providerPaymentId: string;   // Fazz payment id (e.g. contract_xxx)
   expiresAt?: string;          // ISO string or undefined
+  status?: string;
   instructions: any;           // JSON to render VA instructions
   va: {
     bankCode: string;
@@ -21,6 +22,7 @@ export type DepositIntentResult = {
     accountName: string;
     meta?: any;
   };
+  raw?: any;
 };
 
 export interface ProviderAdapter {
@@ -45,7 +47,7 @@ export interface ProviderAdapter {
     bankCode: string;
     accountNo: string;
     holderName: string;
-  }): Promise<{ providerPayoutId: string; raw: any }>;
+  }): Promise<{ providerPayoutId: string; raw: any; status?: string }>;
 
   getDisbursementStatus(providerPayoutId: string): Promise<{ status: string; raw: any }>;
 }

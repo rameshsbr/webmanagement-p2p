@@ -7,6 +7,7 @@ import type {
 import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { normalizeIdrV4BankCode } from "./fazz/idr-v4-banks.js";
+import { scheduleDisbursementPoll, schedulePaymentPoll } from "./fazz-poller.js";
 
 /**
  * MODE:
@@ -708,7 +709,7 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
     "Use immediate transfer if available.",
   ];
 
-  return {
+  const result = {
     providerPaymentId: String(parsed.providerPaymentId),
     expiresAt: isDynamic ? parsed.expiresAt : undefined,
     instructions: {
@@ -725,6 +726,10 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
       meta,
     },
   };
+
+  schedulePaymentPoll(String(parsed.providerPaymentId));
+
+  return result;
 }
 
 async function realGetDepositStatus(providerPaymentId: string) {
@@ -843,7 +848,9 @@ async function realCreateDisbursement(input: {
         pick<string>(json, ["data.id"]) ||
         pick<string>(json, ["id"]) ||
         makeFakeId(p === "/payouts" ? "pout" : "dsb");
-      return { providerPayoutId: String(providerPayoutId), raw: json };
+      const providerPayoutIdStr = String(providerPayoutId);
+      scheduleDisbursementPoll(providerPayoutIdStr);
+      return { providerPayoutId: providerPayoutIdStr, raw: json };
     }
     if (isPathMissingOrForbidden(res)) {
       continue;

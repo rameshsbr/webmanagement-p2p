@@ -35,6 +35,7 @@ import { auditHttpWrites } from "./services/audit.js";
 import { backfillShortIdentifiers } from "./services/backfillShortIds.js";
 import { defaultTimezone, resolveTimezone } from "./lib/timezone.js";
 import { formatJakartaDDMMYYYY_12h } from "./utils/datetime.js";
+import { startFazzSweep } from "./services/providers/fazz-poller.js";
 
 const app = express();
 augmentExpress(app);
@@ -49,6 +50,7 @@ app.use((_, res, next) => {
 backfillShortIdentifiers().catch((err) => {
   console.warn("[BOOT] short-id backfill skipped", err?.message || err);
 });
+startFazzSweep();
 
 app.use(
   "/webhooks/fazz",

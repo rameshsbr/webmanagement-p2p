@@ -16,8 +16,7 @@ import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus }
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
-import { API_KEY_SCOPES, normalizeApiKeyScopes } from '../services/apiKeyScopes.js';
-import type { ApiKeyScope } from '../services/apiKeyScopes.js'; // <-- added
+import { API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from '../services/apiKeyScopes.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -100,9 +99,8 @@ async function apiKeyOnly(req: any, res: any, next: any) {
   next();
 }
 
-// CHANGED: use ApiKeyScope[] instead of string[]
 function requireApiScopes(required: ApiKeyScope[]) {
-  const requiredSet = new Set<ApiKeyScope>(required);
+  const requiredSet = new Set(required);
   return function (req: any, _res: any, next: any) {
     const scopes: string[] | undefined = req.apiKeyScopes;
     if (!scopes) return next();
@@ -252,10 +250,14 @@ merchantApiRouter.post(
       const result = await withIdempotency(scope, idemKey, async () => {
         const user = await prisma.user.upsert({
           where: { diditSubject: body.user.diditSubject },
-          create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: new Date() },
+          create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: null },
           update: {},
         });
-        if (!user.verifiedAt) throw new Error('User not verified');
+        if (!user.verifiedAt) {
+          const err = new Error('KYC_REQUIRED');
+          (err as any).code = 'KYC_REQUIRED';
+          throw err;
+        }
 
         const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
         const clientStatus = normalizeClientStatus(mapping?.status);
@@ -273,18 +275,24 @@ merchantApiRouter.post(
         const desiredCode = (body.methodCode || allowedCodes[0] || '').toUpperCase();
         if (!desiredCode) throw new Error('METHOD_NOT_ALLOWED');
 
-        const bank = await prisma.bankAccount.findFirst({
-          where: {
-            active: true,
-            currency: body.currency,
-            OR: [{ merchantId }, { merchantId: null }],
-            method: { in: [desiredCode] },
-          },
-          orderBy: [{ merchantId: 'desc' }, { createdAt: 'desc' }],
-        });
-        if (!bank) throw new Error('No active bank account for currency/method');
+        const isIdrV4Va =
+          desiredCode === 'VIRTUAL_BANK_ACCOUNT_DYNAMIC' ||
+          desiredCode === 'VIRTUAL_BANK_ACCOUNT_STATIC';
 
-        const methodRecord = await ensureMerchantMethod(merchantId, bank.method || '');
+        const bank = isIdrV4Va
+          ? null
+          : await prisma.bankAccount.findFirst({
+              where: {
+                active: true,
+                currency: body.currency,
+                OR: [{ merchantId }, { merchantId: null }],
+                method: { in: [desiredCode] },
+              },
+              orderBy: [{ merchantId: 'desc' }, { createdAt: 'desc' }],
+            });
+        if (!isIdrV4Va && !bank) throw new Error('No active bank account for currency/method');
+
+        const methodRecord = await ensureMerchantMethod(merchantId, isIdrV4Va ? desiredCode : bank?.method || '');
         if (!methodRecord) throw new Error('METHOD_NOT_ALLOWED');
 
         const referenceCode = generateTransactionId();
@@ -334,9 +342,9 @@ merchantApiRouter.post(
                   uniqueReference,
                   merchantId,
                   userId: user.id,
-                  bankAccountId: bank.id,
+                  bankAccountId: bank?.id ?? null,
                   methodId: methodRecord.id,
-                  detailsJson: { method: bank.method, reqBankCode: body.bankCode || null, meta },
+                  detailsJson: { method: isIdrV4Va ? desiredCode : bank?.method, reqBankCode: body.bankCode || null, meta },
                 },
                 select: { id: true },
               });
@@ -412,6 +420,7 @@ merchantApiRouter.post(
           return result;
         }
 
+        if (!bank) throw new Error('No active bank account for currency/method');
         const pr = await prisma.paymentRequest.create({
           data: {
             type: 'DEPOSIT',
@@ -448,6 +457,9 @@ merchantApiRouter.post(
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
+      if (message === 'KYC_REQUIRED' || err?.code === 'KYC_REQUIRED') {
+        return res.status(403).json({ ok: false, error: 'KYC_REQUIRED' });
+      }
       if (message === 'PROVIDER_PERSIST_FAILED') {
         const cause = err?.cause;
         return res.status(400).json({
@@ -746,31 +758,52 @@ merchantApiRouter.post(
 
     const result = await withIdempotency(scope, idemKey, async () => {
       const user = await prisma.user.findUnique({ where: { diditSubject: body.user.diditSubject } });
-      if (!user || !user.verifiedAt) return res.forbidden('User not verified');
+      if (!user || !user.verifiedAt) {
+        res.forbidden('User not verified');
+        return null;
+      }
 
       const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
       const clientStatus = normalizeClientStatus(mapping?.status);
-      if (clientStatus !== 'ACTIVE') return rejectForClientStatus(res, clientStatus);
+      if (clientStatus !== 'ACTIVE') {
+        rejectForClientStatus(res, clientStatus);
+        return null;
+      }
 
       const allowedMethods = await listMerchantMethods(merchantId);
-      if (!allowedMethods.length) return res.forbidden('No methods assigned');
+      if (!allowedMethods.length) {
+        res.forbidden('No methods assigned');
+        return null;
+      }
 
       const blocked = await prisma.payerBlocklist.findFirst({
         where: { merchantId, userId: user.id, active: true },
         select: { id: true },
       });
-      if (blocked) return res.forbidden('User is blocked');
+      if (blocked) {
+        res.forbidden('User is blocked');
+        return null;
+      }
 
       const hasDeposit = await prisma.paymentRequest.findFirst({
         where: { userId: user.id, merchantId, type: 'DEPOSIT', status: 'APPROVED' },
       });
-      if (!hasDeposit) return res.forbidden('Withdrawal blocked: no prior deposit');
+      if (!hasDeposit) {
+        res.forbidden('Withdrawal blocked: no prior deposit');
+        return null;
+      }
 
-      if (!bankCode) return res.badRequest('bankCode required');
+      if (!bankCode) {
+        res.badRequest('bankCode required');
+        return null;
+      }
 
       // Choose any enabled method (keep your pattern)
       const selectedMethod = allowedMethods[0] || null;
-      if (!selectedMethod) return res.forbidden('No methods assigned');
+      if (!selectedMethod) {
+        res.forbidden('No methods assigned');
+        return null;
+      }
 
       const referenceCode = generateTransactionId();
       const uniqueReference = generateUniqueReference();

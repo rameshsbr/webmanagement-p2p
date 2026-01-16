@@ -57,6 +57,11 @@
   const diditSubject = root.getAttribute('data-default-subject') || '';
   const verifiedKycName = (root.getAttribute('data-idrv4-kyc-name') || '').trim();
   const prefillName = (root.getAttribute('data-idrv4-prefill-name') || '').trim();
+  const sessionEndpoint = root.getAttribute('data-session-endpoint') || '/merchant/payments/test/session';
+  let kycToken = root.getAttribute('data-initial-token') || '';
+  let kycPopup = null;
+  let kycStatus = null;
+  let kycListenerInstalled = false;
 
   const methodSelect = root.querySelector('[data-test-method]');
   const p2p = root.querySelector('[data-test-section="p2p"]');
@@ -170,6 +175,76 @@
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'Request failed');
     return data;
+  }
+
+  async function fetchKycToken() {
+    if (kycToken) return kycToken;
+    const resp = await fetch(sessionEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify({ subject: diditSubject, currency: 'IDR' }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data?.ok) throw new Error(data?.message || data?.error || 'Unable to start KYC');
+    kycToken = data.token || '';
+    return kycToken;
+  }
+
+  async function callKyc(path, token, init) {
+    const resp = await fetch(path, {
+      ...(init || {}),
+      headers: { ...(init?.headers || {}), authorization: `Bearer ${token}` },
+      credentials: 'same-origin',
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'KYC request failed');
+    return data;
+  }
+
+  function installKycListener() {
+    if (kycListenerInstalled) return;
+    kycListenerInstalled = true;
+    window.addEventListener('message', (event) => {
+      if (event.origin !== location.origin) return;
+      const msg = event.data || {};
+      if (msg && msg.type === 'kyc.complete') {
+        const status = String(msg.status || '').toLowerCase();
+        if (status === 'approved') kycStatus = 'approved';
+        if (['rejected', 'declined', 'failed'].includes(status)) kycStatus = 'rejected';
+        try { if (kycPopup && !kycPopup.closed) kycPopup.close(); } catch {}
+      }
+    });
+  }
+
+  async function ensureIdrKyc() {
+    const token = await fetchKycToken();
+    const status = await callKyc('/public/kyc/status', token, { method: 'GET' });
+    if (status?.status === 'approved') return true;
+    if (status?.status === 'rejected') {
+      throw new Error('Verification failed. Please ensure the name match is at least 60%.');
+    }
+
+    const start = await callKyc('/public/kyc/start', token, { method: 'POST' });
+    kycStatus = null;
+    installKycListener();
+    if (start?.url) {
+      kycPopup = window.open(start.url, 'payx_kyc', 'popup=yes,noopener,noreferrer,width=480,height=720');
+    }
+
+    for (let i = 0; i < 10; i += 1) {
+      if (kycStatus === 'approved') return true;
+      if (kycStatus === 'rejected') {
+        throw new Error('Verification failed. Please ensure the name match is at least 60%.');
+      }
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+      const next = await callKyc('/public/kyc/status', token, { method: 'GET' });
+      if (next?.status === 'approved') return true;
+      if (next?.status === 'rejected') {
+        throw new Error('Verification failed. Please ensure the name match is at least 60%.');
+      }
+    }
+    throw new Error('KYC pending. Please complete verification to continue.');
   }
 
   async function loadMeta(methodCode) {
@@ -294,7 +369,23 @@
 
         actions.lastChild.disabled = true;
         try {
-          const data = await apiPost('/deposit/intents?debug=1', payload, token);
+          warning.textContent = 'Checking verification…';
+          warning.style.display = '';
+          await ensureIdrKyc();
+          warning.style.display = 'none';
+
+          let data;
+          try {
+            data = await apiPost('/deposit/intents?debug=1', payload, token);
+          } catch (err) {
+            const msg = String(err?.message || '');
+            if (/KYC_REQUIRED|User not verified/i.test(msg)) {
+              await ensureIdrKyc();
+              data = await apiPost('/deposit/intents?debug=1', payload, token);
+            } else {
+              throw err;
+            }
+          }
           const intent = data?.data?.data || data?.data || data || {};
           const referenceCode = intent?.referenceCode || '-';
           const expiresAt = intent?.expiresAt || null;

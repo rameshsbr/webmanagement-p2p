@@ -15,7 +15,7 @@ import { applyMerchantLimits } from '../middleware/merchantLimits.js';
 import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus } from '../services/merchantClient.js';
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { adapters } from '../services/providers/index.js';
-import { fazzGetBalance } from '../services/providers/fazz.js';
+import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -286,22 +286,6 @@ merchantApiRouter.post(
         const referenceCode = generateTransactionId();
         const uniqueReference = generateUniqueReference();
 
-        const pr = await prisma.paymentRequest.create({
-          data: {
-            type: 'DEPOSIT',
-            status: 'PENDING',
-            amountCents: body.amountCents,
-            currency: body.currency,
-            referenceCode,
-            uniqueReference,
-            merchantId,
-            userId: user.id,
-            bankAccountId: bank.id,
-            methodId: methodRecord.id,
-            detailsJson: { method: bank.method, reqBankCode: body.bankCode || null },
-          },
-        });
-
         const providerRes = resolveProviderByMethodCode(desiredCode);
         if (providerRes) {
           const adapter = adapters[providerRes.adapterName];
@@ -319,38 +303,76 @@ merchantApiRouter.post(
             kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
           });
 
-          if (!deposit || !deposit.providerPaymentId || !deposit.va || !deposit.va.accountNo) {
+          if (!deposit || !deposit.providerPaymentId || !deposit.va?.accountNo || !deposit.va?.bankCode) {
             const dbg = isDebug ? { depositSnapshot: toJsonSafe(deposit) } : undefined;
-            return { _error: 'ADAPTER_BAD_RESPONSE', prId: pr.id, ...dbg } as any;
+            const err = new Error('ADAPTER_BAD_RESPONSE');
+            (err as any).code = 'ADAPTER_BAD_RESPONSE';
+            (err as any).debug = dbg;
+            throw err;
           }
 
           const instructionsJson = toJsonSafe(deposit.instructions);
-          const rawCreateJson = toJsonSafe(deposit);
+          const rawCreateJson = toJsonSafe(deposit.raw ?? deposit);
+          const providerStatus = String(deposit.status || "pending");
+          const platformStatus = mapFazzPaymentStatusToPlatform(providerStatus);
+          const meta = deposit.va?.meta || deposit.instructions?.meta || undefined;
 
+          let pr: { id: string };
           try {
-            await prisma.providerPayment.create({
-              data: {
-                paymentRequestId: pr.id,
-                provider: "FAZZ",
-                providerPaymentId: String(deposit.providerPaymentId),
-                methodType: "virtual_bank_account",
-                bankCode: deposit.va.bankCode ?? null,
-                accountNumber: deposit.va.accountNo ?? null,
-                accountName: deposit.va.accountName ?? null,
-                expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
-                status: "pending",
-                instructionsJson,
-                rawCreateJson,
-              },
+            const txResult = await prisma.$transaction(async (tx) => {
+              const created = await tx.paymentRequest.create({
+                data: {
+                  type: 'DEPOSIT',
+                  status: platformStatus,
+                  amountCents: body.amountCents,
+                  currency: body.currency,
+                  referenceCode,
+                  uniqueReference,
+                  merchantId,
+                  userId: user.id,
+                  bankAccountId: bank.id,
+                  methodId: methodRecord.id,
+                  detailsJson: { method: bank.method, reqBankCode: body.bankCode || null, meta },
+                },
+                select: { id: true },
+              });
+
+              await tx.providerPayment.upsert({
+                where: { providerPaymentId: String(deposit.providerPaymentId) },
+                update: {
+                  paymentRequestId: created.id,
+                  provider: "FAZZ",
+                  methodType: "virtual_bank_account",
+                  bankCode: deposit.va.bankCode ?? null,
+                  accountNumber: deposit.va.accountNo ?? null,
+                  accountName: deposit.va.accountName ?? null,
+                  expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
+                  status: providerStatus,
+                  instructionsJson,
+                  rawCreateJson,
+                },
+                create: {
+                  paymentRequestId: created.id,
+                  provider: "FAZZ",
+                  providerPaymentId: String(deposit.providerPaymentId),
+                  methodType: "virtual_bank_account",
+                  bankCode: deposit.va.bankCode ?? null,
+                  accountNumber: deposit.va.accountNo ?? null,
+                  accountName: deposit.va.accountName ?? null,
+                  expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
+                  status: providerStatus,
+                  instructionsJson,
+                  rawCreateJson,
+                },
+              });
+
+              return { pr: created };
             });
+            pr = txResult.pr;
           } catch (e: any) {
-            const msg =
-              e?.message ||
-              e?.response?.data?.message ||
-              e?.response?.data?.error ||
-              "Unable to create deposit intent";
-            console.error("[DEPOSIT_INTENT_ERROR]", msg, e?.__attempts || "");
-            return res.status(400).json({ ok: false, error: msg });
+            const err = new Error('PROVIDER_PERSIST_FAILED');
+            (err as any).cause = e;
+            throw err;
           }
 
           await tgNotify(
@@ -386,6 +408,21 @@ merchantApiRouter.post(
           return result;
         }
 
+        const pr = await prisma.paymentRequest.create({
+          data: {
+            type: 'DEPOSIT',
+            status: 'PENDING',
+            amountCents: body.amountCents,
+            currency: body.currency,
+            referenceCode,
+            uniqueReference,
+            merchantId,
+            userId: user.id,
+            bankAccountId: bank.id,
+            methodId: methodRecord.id,
+            detailsJson: { method: bank.method, reqBankCode: body.bankCode || null },
+          },
+        });
         await tgNotify(`🟢 New DEPOSIT intent\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`);
         return {
           id: pr.id,
@@ -399,15 +436,6 @@ merchantApiRouter.post(
           },
         };
       });
-
-      if ((result as any)?._error === 'ADAPTER_BAD_RESPONSE') {
-        return res.status(502).json({
-          ok: false,
-          error: 'Unable to create deposit intent',
-          reason: 'ADAPTER_BAD_RESPONSE',
-          ...(String(req.query?.debug || '') === '1' ? result : {}),
-        });
-      }
 
       res.ok({ ok: true, data: result });
     } catch (err: any) {
@@ -425,6 +453,14 @@ merchantApiRouter.post(
           ...(String(req.query?.debug || '') === '1'
             ? { prisma: { code: cause?.code, message: cause?.message, meta: cause?.meta } }
             : {}),
+        });
+      }
+      if (err?.code === 'ADAPTER_BAD_RESPONSE') {
+        return res.status(502).json({
+          ok: false,
+          error: 'Unable to create deposit intent',
+          reason: 'ADAPTER_BAD_RESPONSE',
+          ...(isDebug ? err?.debug || {} : {}),
         });
       }
       if (err?.providerError) {
@@ -732,37 +768,15 @@ merchantApiRouter.post(
       const selectedMethod = allowedMethods[0] || null;
       if (!selectedMethod) return res.forbidden('No methods assigned');
 
-      // Create PaymentRequest (local)
       const referenceCode = generateTransactionId();
       const uniqueReference = generateUniqueReference();
-      const pr = await prisma.paymentRequest.create({
-        data: {
-          type: 'WITHDRAWAL',
-          status: 'PENDING',
-          amountCents: body.amountCents,
-          currency: body.currency,
-          referenceCode,
-          uniqueReference,
-          merchantId,
-          userId: user.id,
-          methodId: selectedMethod.id,
-          detailsJson: {
-            method: body.methodCode || 'FAZZ_SEND',
-            destination: {
-              bankCode,
-              holderName: body.destination.holderName,
-              accountNo: body.destination.accountNo,
-            },
-          },
-        },
-        select: { id: true, referenceCode: true },
-      });
 
       // Call provider adapter (create disbursement)
       const providerRes = resolveProviderByMethodCode(body.methodCode || 'FAZZ_SEND') || { adapterName: 'fazz' as const };
       const adapter = adapters[providerRes.adapterName];
       let providerPayoutId = "";
       let rawCreate: any = null;
+      let providerStatus = "processing";
 
       try {
         const out = await adapter.createDisbursement({
@@ -776,39 +790,83 @@ merchantApiRouter.post(
           holderName: body.destination.holderName,
         });
         providerPayoutId = out.providerPayoutId;
-        rawCreate = toJsonSafe(out);
+        providerStatus = String(out.status || "processing");
+        rawCreate = toJsonSafe(out.raw ?? out);
       } catch (e: any) {
         console.error("[WITHDRAW_CREATE_FAIL]", e?.message || e);
-        await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: 'REJECTED' } });
         const msg = String(e?.message || 'Create disbursement failed');
-        return res.status(400).json({ ok: false, error: msg });
+        res.status(400).json({ ok: false, error: msg });
+        return null;
       }
 
-      // Persist ProviderDisbursement row
+      const platformStatus = mapFazzDisbursementStatusToPlatform(providerStatus);
+
+      // Persist ProviderDisbursement row + PaymentRequest atomically
       try {
-        await prisma.providerDisbursement.create({
-          data: {
-            paymentRequestId: pr.id,
-            provider: "FAZZ",
-            providerPayoutId,
-            bankCode,
-            accountNumber: body.destination.accountNo,
-            accountHolder: body.destination.holderName,
-            status: "processing",
-            amountCents: body.amountCents,
-            currency: body.currency,
-            rawCreateJson: rawCreate,
-          },
+        const txResult = await prisma.$transaction(async (tx) => {
+          const created = await tx.paymentRequest.create({
+            data: {
+              type: 'WITHDRAWAL',
+              status: platformStatus,
+              amountCents: body.amountCents,
+              currency: body.currency,
+              referenceCode,
+              uniqueReference,
+              merchantId,
+              userId: user.id,
+              methodId: selectedMethod.id,
+              detailsJson: {
+                method: body.methodCode || 'FAZZ_SEND',
+                destination: {
+                  bankCode,
+                  holderName: body.destination.holderName,
+                  accountNo: body.destination.accountNo,
+                },
+              },
+            },
+            select: { id: true, referenceCode: true },
+          });
+
+          await tx.providerDisbursement.upsert({
+            where: { providerPayoutId },
+            update: {
+              paymentRequestId: created.id,
+              provider: "FAZZ",
+              bankCode,
+              accountNumber: body.destination.accountNo,
+              accountHolder: body.destination.holderName,
+              status: providerStatus,
+              amountCents: body.amountCents,
+              currency: body.currency,
+              rawCreateJson: rawCreate,
+            },
+            create: {
+              paymentRequestId: created.id,
+              provider: "FAZZ",
+              providerPayoutId,
+              bankCode,
+              accountNumber: body.destination.accountNo,
+              accountHolder: body.destination.holderName,
+              status: providerStatus,
+              amountCents: body.amountCents,
+              currency: body.currency,
+              rawCreateJson: rawCreate,
+            },
+          });
+
+          return { pr: created };
         });
+
+        await tgNotify(
+          `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}\nBank: ${bankCode}`
+        );
+
+        return { id: txResult.pr.id, referenceCode, providerPayoutId };
       } catch (e) {
         console.error("[WITHDRAW_PERSIST_FAIL]", e);
+        res.status(400).json({ ok: false, error: "Unable to create withdrawal" });
+        return null;
       }
-
-      await tgNotify(
-        `🟡 New WITHDRAWAL request\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}\nBank: ${bankCode}`
-      );
-
-      return { id: pr.id, referenceCode, providerPayoutId };
     });
 
     if (!result || (result as any).ok === false) return; // early Response from inside callback

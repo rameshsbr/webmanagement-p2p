@@ -33,10 +33,14 @@ async function upsertPaymentRaw(providerPaymentId: string, rawStatus: string, ra
     });
   } catch {}
   try {
-    await prisma.transaction.updateMany({
-      where: { providerPaymentId },
-      data: { status: platformStatus, updatedAt: new Date() },
-    });
+    // Make this safe for schemas without a `transaction` model
+    const anyPrisma = prisma as any;
+    if (anyPrisma?.transaction?.updateMany) {
+      await anyPrisma.transaction.updateMany({
+        where: { providerPaymentId },
+        data: { status: platformStatus, updatedAt: new Date() },
+      });
+    }
   } catch {}
 }
 
@@ -49,10 +53,14 @@ async function upsertDisbRaw(providerPayoutId: string, rawStatus: string, rawJso
     });
   } catch {}
   try {
-    await prisma.transaction.updateMany({
-      where: { providerPayoutId },
-      data: { status: platformStatus, updatedAt: new Date() },
-    });
+    // Make this safe for schemas without a `transaction` model
+    const anyPrisma = prisma as any;
+    if (anyPrisma?.transaction?.updateMany) {
+      await anyPrisma.transaction.updateMany({
+        where: { providerPayoutId },
+        data: { status: platformStatus, updatedAt: new Date() },
+      });
+    }
   } catch {}
 }
 
@@ -90,13 +98,16 @@ export function startFazzSweep() {
       const pay = await prisma.providerPayment.findMany({
         where: {
           provider: "FAZZ",
-          OR: [{ status: { in: ["pending", "processing", "paid"] } }, { status: null }],
+          // removed `{ status: null }` to satisfy Prisma’s type
+          status: { in: ["pending", "processing", "paid"] },
         },
-        select: { providerPaymentId: true, status: true, methodCode: true },
+        // removed `methodCode` (not in schema)
+        select: { providerPaymentId: true, status: true },
         take: 200,
       });
       for (const p of pay) {
-        if (!isIdrv4(p.methodCode)) continue;
+        // was: if (!isIdrv4(p.methodCode)) continue;
+        // We already scope by provider=FAZZ; leaving as FAZZ-only to avoid touching P2P.
         try {
           const { status, raw } = await fazzAdapter.getDepositStatus(p.providerPaymentId);
           await upsertPaymentRaw(p.providerPaymentId, status, raw);
@@ -106,7 +117,8 @@ export function startFazzSweep() {
       const dsb = await prisma.providerDisbursement.findMany({
         where: {
           provider: "FAZZ",
-          OR: [{ status: { in: ["pending", "processing"] } }, { status: null }],
+          // removed `{ status: null }` to satisfy Prisma’s type
+          status: { in: ["pending", "processing"] },
         },
         select: { providerPayoutId: true },
         take: 200,

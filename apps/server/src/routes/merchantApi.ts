@@ -104,7 +104,7 @@ function requireApiScopes(required: ApiKeyScope[]) {
   return function (req: any, _res: any, next: any) {
     const scopes: string[] | undefined = req.apiKeyScopes;
     if (!scopes) return next();
-    const normalizedScopes = normalizeApiKeyScopes(scopes);
+    const normalizedScopes = normalizeApiKeyScopes(scopes); // ApiKeyScope[]
     const hasAll = Array.from(requiredSet).every((s) => normalizedScopes.includes(s));
     if (!hasAll) return _res.status(403).json({ ok: false, error: 'Insufficient API scope' });
     next();

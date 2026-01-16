@@ -31,6 +31,7 @@ import { listMerchantMethods } from "../services/methods.js";
 import { adapters } from "../services/providers/index.js";
 import { IDRV4_BANKS } from "../services/providers/fazz/idr-v4-banks.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
+import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
 
 const router = Router();
 
@@ -880,17 +881,8 @@ async function createTestWithdrawal(opts: {
 router.get("/", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
 
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-
-  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ['PENDING', 'SUBMITTED'];
-  const [pendingDeposits, pendingWithdrawals, totalsToday, latest] = await Promise.all([
-    prisma.paymentRequest.count({ where: { merchantId, type: "DEPOSIT", status: { in: awaitingStatuses } } }),
-    prisma.paymentRequest.count({ where: { merchantId, type: "WITHDRAWAL", status: { in: awaitingStatuses } } }),
-    prisma.paymentRequest.groupBy({
-      by: ["type"],
-      where: { merchantId, createdAt: { gte: today }, status: "APPROVED" },
-      _sum: { amountCents: true },
-    }),
+  const [metrics, latest] = await Promise.all([
+    getDashboardMetrics({ merchantId }),
     prisma.paymentRequest.findMany({
       where: { merchantId },
       orderBy: { createdAt: "desc" },
@@ -926,12 +918,7 @@ router.get("/", async (req: any, res) => {
   res.render("merchant/dashboard", {
     title: "Merchant Dashboard",
     merchant,
-    metrics: {
-      pendingDeposits,
-      pendingWithdrawals,
-      todayDeposits: totalsToday.find(t => t.type === "DEPOSIT")?._sum.amountCents ?? 0,
-      todayWithdrawals: totalsToday.find(t => t.type === "WITHDRAWAL")?._sum.amountCents ?? 0,
-    },
+    metrics,
     latest: latestWithDisplay,
   });
 });

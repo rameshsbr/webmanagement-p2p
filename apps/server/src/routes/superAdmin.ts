@@ -38,6 +38,7 @@ import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
 import { ensureMerchantMethod, findMethodByCode, listAllMethods } from "../services/methods.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { displayAmount, parseAmountInput } from "../utils/money.js";
+import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
 
 export const superAdminRouter = Router();
 
@@ -1295,13 +1296,13 @@ function slug(s: string): string {
 // Dashboard
 // ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/", async (_req, res) => {
-  const awaitingStatuses: Array<'PENDING' | 'SUBMITTED'> = ["PENDING", "SUBMITTED"];
-  const [admins, merchants, pending, logs] = await Promise.all([
+  const [admins, merchants, logs, dashboard] = await Promise.all([
     prisma.adminUser.count(),
     prisma.merchant.count(),
-    prisma.paymentRequest.count({ where: { status: { in: awaitingStatuses } } }),
     prisma.adminAuditLog.count(),
+    getDashboardMetrics(),
   ]);
+  const pending = dashboard.pendingDeposits + dashboard.pendingWithdrawals;
   res.render("superadmin/dashboard", {
     title: "Super Admin",
     metrics: { admins, merchants, pending, logs },

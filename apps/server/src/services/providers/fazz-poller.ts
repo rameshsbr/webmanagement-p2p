@@ -33,14 +33,10 @@ async function upsertPaymentRaw(providerPaymentId: string, rawStatus: string, ra
     });
   } catch {}
   try {
-    // Make this safe for schemas without a `transaction` model
-    const anyPrisma = prisma as any;
-    if (anyPrisma?.transaction?.updateMany) {
-      await anyPrisma.transaction.updateMany({
-        where: { providerPaymentId },
-        data: { status: platformStatus, updatedAt: new Date() },
-      });
-    }
+    await prisma.transaction.updateMany({
+      where: { providerPaymentId },
+      data: { status: platformStatus, updatedAt: new Date() },
+    });
   } catch {}
 }
 
@@ -53,14 +49,10 @@ async function upsertDisbRaw(providerPayoutId: string, rawStatus: string, rawJso
     });
   } catch {}
   try {
-    // Make this safe for schemas without a `transaction` model
-    const anyPrisma = prisma as any;
-    if (anyPrisma?.transaction?.updateMany) {
-      await anyPrisma.transaction.updateMany({
-        where: { providerPayoutId },
-        data: { status: platformStatus, updatedAt: new Date() },
-      });
-    }
+    await prisma.transaction.updateMany({
+      where: { providerPayoutId },
+      data: { status: platformStatus, updatedAt: new Date() },
+    });
   } catch {}
 }
 
@@ -98,16 +90,13 @@ export function startFazzSweep() {
       const pay = await prisma.providerPayment.findMany({
         where: {
           provider: "FAZZ",
-          // removed `{ status: null }` to satisfy Prisma’s type
-          status: { in: ["pending", "processing", "paid"] },
+          OR: [{ status: { in: ["pending", "processing", "paid"] } }, { status: null }],
         },
-        // removed `methodCode` (not in schema)
-        select: { providerPaymentId: true, status: true },
+        select: { providerPaymentId: true, status: true, methodCode: true },
         take: 200,
       });
       for (const p of pay) {
-        // was: if (!isIdrv4(p.methodCode)) continue;
-        // We already scope by provider=FAZZ; leaving as FAZZ-only to avoid touching P2P.
+        if (!isIdrv4(p.methodCode)) continue;
         try {
           const { status, raw } = await fazzAdapter.getDepositStatus(p.providerPaymentId);
           await upsertPaymentRaw(p.providerPaymentId, status, raw);
@@ -117,8 +106,7 @@ export function startFazzSweep() {
       const dsb = await prisma.providerDisbursement.findMany({
         where: {
           provider: "FAZZ",
-          // removed `{ status: null }` to satisfy Prisma’s type
-          status: { in: ["pending", "processing"] },
+          OR: [{ status: { in: ["pending", "processing"] } }, { status: null }],
         },
         select: { providerPayoutId: true },
         take: 200,

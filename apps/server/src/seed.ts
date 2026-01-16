@@ -2,6 +2,7 @@
 import { prisma } from './lib/prisma.js';
 import { hash } from './services/crypto.js';
 import { seal } from './services/secretBox.js';
+import { API_KEY_SCOPES } from './services/apiKeyScopes.js';
 
 async function main() {
   const adminExists = await prisma.adminUser.findFirst();
@@ -28,7 +29,7 @@ async function main() {
         prefix,
         secretEnc: seal(secret),
         last4: secret.slice(-4),
-        scopes: ['read:payments'],
+        scopes: [API_KEY_SCOPES.P2P],
       }
     });
     console.log(`Merchant API key: ${prefix}.${secret}`);

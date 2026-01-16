@@ -25,6 +25,7 @@ import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
+import { API_KEY_SCOPE_LABELS, API_KEY_SCOPES, normalizeApiKeyScopes } from "../services/apiKeyScopes.js";
 import { ipFromReq, uaFromReq } from "../services/audit.js";
 import { formatClientStatusLabel, getClientStatusBySubject } from "../services/merchantClient.js";
 import { listMerchantMethods } from "../services/methods.js";
@@ -87,12 +88,20 @@ function normalizeTestSubject(input: any, merchantId: string): string {
 
 // IDR v4 helpers (isolated to the test overlay + meta/validation endpoints).
 async function resolveIdrV4ApiKey(merchantId: string): Promise<string | null> {
-  const key = await prisma.merchantApiKey.findFirst({
+  const keys = await prisma.merchantApiKey.findMany({
     where: { merchantId, active: true },
     orderBy: { createdAt: "desc" },
-    select: { prefix: true, secretEnc: true },
+    select: { prefix: true, secretEnc: true, scopes: true },
   });
-  if (!key) return null;
+  if (!keys.length) return null;
+  const key =
+    keys.find((candidate) => {
+      const scopes = normalizeApiKeyScopes(candidate.scopes);
+      return (
+        scopes.includes(API_KEY_SCOPES.IDRV4_ACCEPT) ||
+        scopes.includes(API_KEY_SCOPES.IDRV4_DISBURSE)
+      );
+    }) || keys[0];
   try {
     const secret = open(key.secretEnc);
     return `${key.prefix}.${secret}`;
@@ -186,6 +195,7 @@ async function renderMerchantApiKeys(req: any, res: any, options: RenderKeysOpti
   res.render("merchant/api-keys", {
     title: "API Keys",
     keys,
+    apiKeyScopeLabels: API_KEY_SCOPE_LABELS,
     justCreated: options.justCreated ?? null,
     error: options.error ?? null,
     selfService: allowSelfService,
@@ -1408,7 +1418,7 @@ function genSecret(): string {
 }
 
 async function listMerchantApiKeys(merchantId: string) {
-  return prisma.merchantApiKey.findMany({
+  const keys = await prisma.merchantApiKey.findMany({
     where: { merchantId },
     orderBy: { createdAt: "desc" },
     select: {
@@ -1422,6 +1432,10 @@ async function listMerchantApiKeys(merchantId: string) {
       expiresAt: true,
     },
   });
+  return keys.map((key) => ({
+    ...key,
+    scopes: normalizeApiKeyScopes(key.scopes),
+  }));
 }
 
 router.get("/keys", async (req: any, res) => {
@@ -1480,7 +1494,13 @@ router.post("/keys/create", async (req: any, res) => {
   const prefix = genPrefix();
   const secret = genSecret();
   await prisma.merchantApiKey.create({
-    data: { merchantId, prefix, secretEnc: seal(secret), last4: secret.slice(-4), scopes: ["read:payments"] }
+    data: {
+      merchantId,
+      prefix,
+      secretEnc: seal(secret),
+      last4: secret.slice(-4),
+      scopes: [API_KEY_SCOPES.P2P],
+    }
   });
   await renderMerchantApiKeys(req, res, { justCreated: `${prefix}.${secret}` });
 });
@@ -1560,7 +1580,13 @@ router.post("/keys/:id/rotate", async (req: any, res) => {
   await prisma.merchantApiKey.updateMany({ where: { id: req.params.id, merchantId }, data: { active: false } });
   const prefix = genPrefix(); const secret = genSecret();
   await prisma.merchantApiKey.create({
-    data: { merchantId, prefix, secretEnc: seal(secret), last4: secret.slice(-4), scopes: ["read:payments"] }
+    data: {
+      merchantId,
+      prefix,
+      secretEnc: seal(secret),
+      last4: secret.slice(-4),
+      scopes: [API_KEY_SCOPES.P2P],
+    }
   });
   res.redirect("/merchant/keys");
 });

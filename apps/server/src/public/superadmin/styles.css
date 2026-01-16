@@ -94,6 +94,35 @@
 
 .page-actions { display:flex; justify-content:flex-end; margin-bottom:12px }
 
+.scope-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+}
+
+.scope-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.scope-badge-group {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.scope-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: color-mix(in oklab, var(--surface) 80%, var(--tone-info));
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 /* Accounts section */
 .account-toolbar {
   display: flex;

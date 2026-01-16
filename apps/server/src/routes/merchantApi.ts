@@ -16,6 +16,7 @@ import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus }
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
+import { API_KEY_SCOPES, normalizeApiKeyScopes } from '../services/apiKeyScopes.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -103,7 +104,8 @@ function requireApiScopes(required: string[]) {
   return function (req: any, _res: any, next: any) {
     const scopes: string[] | undefined = req.apiKeyScopes;
     if (!scopes) return next();
-    const hasAll = Array.from(requiredSet).every((s) => scopes.includes(s));
+    const normalizedScopes = normalizeApiKeyScopes(scopes);
+    const hasAll = Array.from(requiredSet).every((s) => normalizedScopes.includes(s));
     if (!hasAll) return _res.status(403).json({ ok: false, error: 'Insufficient API scope' });
     next();
   };
@@ -229,7 +231,7 @@ merchantApiRouter.post(
   '/deposit/intents',
   eitherMerchantAuth,
   applyMerchantLimits,
-  requireApiScopes(['write:deposit']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_ACCEPT]),
   async (req, res) => {
     const schema = z.object({
       user: z.object({ diditSubject: z.string() }),
@@ -479,7 +481,7 @@ merchantApiRouter.post(
 merchantApiRouter.post(
   '/deposit/confirm',
   apiKeyOnly,
-  requireApiScopes(['write:deposit', 'read:deposit']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_ACCEPT]),
   async (req, res) => {
     const schema = z.object({
       id: z.string().optional(),
@@ -549,7 +551,7 @@ merchantApiRouter.post(
   '/deposit/:id/receipt',
   eitherMerchantAuth,
   applyMerchantLimits,
-  requireApiScopes(['write:deposit']),
+  requireApiScopes([API_KEY_SCOPES.P2P]),
   upload.single('receipt'),
   async (req, res) => {
     const id = req.params.id;
@@ -598,7 +600,7 @@ merchantApiRouter.post(
 merchantApiRouter.get(
   '/withdraw/config',
   apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (_req, res) => {
     const STATIC_BANKS = [
       { code: 'BCA', name: 'Bank Central Asia' },
@@ -651,7 +653,7 @@ merchantApiRouter.get(
 merchantApiRouter.get(
   '/withdraw/balance',
   apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (_req, res) => {
     try {
       const b = await fazzGetBalance();
@@ -669,7 +671,7 @@ merchantApiRouter.get(
 merchantApiRouter.post(
   '/withdraw/validate',
   apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (req, res) => {
     const schema = z.object({
       bankCode: z.string(),
@@ -706,7 +708,7 @@ merchantApiRouter.post(
   '/withdrawals',
   eitherMerchantAuth,
   applyMerchantLimits,
-  requireApiScopes(['write:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (req, res) => {
     const schema = z.object({
       user: z.object({ diditSubject: z.string() }),
@@ -878,7 +880,7 @@ merchantApiRouter.post(
 merchantApiRouter.post(
   '/withdraw/confirm',
   apiKeyOnly,
-  requireApiScopes(['write:withdrawal','read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (req, res) => {
     const schema = z.object({
       id: z.string().optional(),
@@ -969,7 +971,7 @@ merchantApiRouter.post(
 merchantApiRouter.post(
   '/v1/withdraw/confirm',
   apiKeyOnly,
-  requireApiScopes(['write:withdrawal','read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (req, res) => {
     (req.url as any) = '/withdraw/confirm';
     return (merchantApiRouter as any).handle(req, res);
@@ -980,7 +982,7 @@ merchantApiRouter.post(
 merchantApiRouter.get(
   '/v1/withdraw/balance',
   apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (req, res) => {
     (req.url as any) = '/withdraw/balance';
     return (merchantApiRouter as any).handle(req, res);
@@ -991,7 +993,7 @@ merchantApiRouter.get(
 merchantApiRouter.get(
   '/withdraw/:id/status',
   apiKeyOnly,
-  requireApiScopes(['read:withdrawal']),
+  requireApiScopes([API_KEY_SCOPES.IDRV4_DISBURSE]),
   async (req, res) => {
     const pr = await prisma.paymentRequest.findUnique({ where: { id: req.params.id } });
     if (!pr || pr.merchantId !== req.merchantId || pr.type !== 'WITHDRAWAL') {
@@ -1013,7 +1015,7 @@ merchantApiRouter.get(
   '/v1/payments',
   apiKeyOnly,
   applyMerchantLimits,
-  requireApiScopes(['read:payments']),
+  requireApiScopes([API_KEY_SCOPES.P2P]),
   async (req: any, res) => {
     const items = await prisma.paymentRequest.findMany({
       where: { merchantId: req.merchantId },
@@ -1038,7 +1040,7 @@ merchantApiRouter.get(
   '/payments',
   apiKeyOnly,
   applyMerchantLimits,
-  requireApiScopes(['read:payments']),
+  requireApiScopes([API_KEY_SCOPES.P2P]),
   async (req: any, res) => {
     const items = await prisma.paymentRequest.findMany({
       where: { merchantId: req.merchantId },

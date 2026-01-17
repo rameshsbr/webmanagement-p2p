@@ -285,7 +285,10 @@
     return Math.round(num);
   }
 
-  function bankLabel(code) {
+  function bankLabel(code, labels) {
+    const labelMap = labels && typeof labels === "object" ? labels : null;
+    const key = String(code || "").toUpperCase();
+    if (labelMap && labelMap[key]) return labelMap[key];
     const map = {
       BCA: "BCA",
       BRI: "BRI",
@@ -297,8 +300,9 @@
       HANA: "Hana",
       SAHABAT_SAMPOERNA: "Bank Sahabat Sampoerna",
       BSI: "Bank Syariah Indonesia",
+      SEABANK: "SeaBank",
+      MAYBANK: "Maybank",
     };
-    const key = String(code || "").toUpperCase();
     return map[key] || key;
   }
 
@@ -380,12 +384,16 @@
       }
 
       let limits = { minDeposit: null, maxDeposit: null };
+      let bankLabels = {};
       try {
         const meta = await fetchMeta(methodCode);
         const banks = Array.isArray(meta?.banks) ? meta.banks : [];
         limits = meta?.limits || limits;
+        bankLabels = meta?.labels || {};
         bank.innerHTML = "";
-        banks.forEach((code) => bank.appendChild(el("option", { value: code }, bankLabel(code))));
+        banks.forEach((code) =>
+          bank.appendChild(el("option", { value: code }, bankLabel(code, bankLabels)))
+        );
         if (!banks.length) {
           // Friendly message if nothing came back
           const msg = "No available banks for this method.";
@@ -460,7 +468,10 @@
           }
 
           const kv = el("div", { class: "kv" });
-          kv.appendChild(el("div", {}, [el("span", {}, "Bank"), el("span", {}, bankLabel(va.bankCode || ""))]));
+          kv.appendChild(el("div", {}, [
+            el("span", {}, "Bank"),
+            el("span", {}, bankLabel(va.bankCode || "", bankLabels)),
+          ]));
           kv.appendChild(el("div", {}, [el("span", {}, "Account No"), el("span", { class: "mono" }, va.accountNo || "-")]));
           kv.appendChild(el("div", {}, [el("span", {}, "Account Name"), el("span", {}, va.accountName || "-")]));
           kv.appendChild(el("div", {}, [el("span", {}, "Amount"), el("span", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`)]));

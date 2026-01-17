@@ -3,17 +3,33 @@ export const IDRV4_BANKS: Record<
   "VIRTUAL_BANK_ACCOUNT_DYNAMIC" | "VIRTUAL_BANK_ACCOUNT_STATIC",
   string[]
 > = {
-  VIRTUAL_BANK_ACCOUNT_DYNAMIC: ["BCA", "BRI", "BNI", "MANDIRI", "SAHABAT_SAMPOERNA", "BSI"],
+  VIRTUAL_BANK_ACCOUNT_DYNAMIC: [
+    "BCA",
+    "BRI",
+    "BNI",
+    "MANDIRI",
+    "PERMATA",
+    "CIMB_NIAGA",
+    "DANAMON",
+    "SEABANK",
+    "MAYBANK",
+    "HANA",
+    "SAHABAT_SAMPOERNA",
+    "BSI",
+  ],
   VIRTUAL_BANK_ACCOUNT_STATIC: [
     "BCA",
     "BRI",
     "BNI",
     "MANDIRI",
+    "PERMATA",
     "CIMB_NIAGA",
     "DANAMON",
-    "PERMATA",
+    "SEABANK",
+    "MAYBANK",
     "HANA",
     "SAHABAT_SAMPOERNA",
+    "BSI",
   ],
 };
 
@@ -27,11 +43,13 @@ const CANONICAL: Record<string, string> = {
   BSI: "BSI",
   SAHABAT_SAMPOERNA: "SAHABAT_SAMPOERNA",
   // Common aliases
-  CIMB_NIAGA: "CIMB",
-  CIMB: "CIMB",
+  CIMB_NIAGA: "CIMB_NIAGA",
+  CIMB: "CIMB_NIAGA",
   DANAMON: "DANAMON",
   PERMATA: "PERMATA",
   HANA: "HANA",
+  SEABANK: "SEABANK",
+  MAYBANK: "MAYBANK",
 };
 
 export function normalizeIdrV4BankCode(input: string): string {

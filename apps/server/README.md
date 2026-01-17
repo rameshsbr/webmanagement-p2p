@@ -35,3 +35,7 @@ When deleting rows directly in Prisma Studio or via scripts, expect one of two o
 - If the relationship is nullable, the parent row deletes cleanly and child foreign keys are nulled without deleting the child records.
 
 This keeps payment history, KYC records, and audit logs intact even when a parent entity is removed.
+
+## IDR v4 Method Banks
+
+IDR v4 virtual account methods (Static/Dynamic) maintain their own method-scoped bank list in the `MethodBank` table. Super Admins can edit these banks from the Methods page via the **Banks** modal. The merchant portal `GET /merchant/idrv4/meta?method=...` endpoint uses this configuration to populate the checkout widget/test modal, falling back to the seeded defaults when no rows exist. The list is intentionally separate from the P2P Banks module. 

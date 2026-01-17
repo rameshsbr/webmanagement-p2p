@@ -48,6 +48,11 @@ import {
   IDR_V4_METHOD_PREFIX,
   IDR_V4_METHOD_CODES,
 } from "../services/methods.js";
+import {
+  IDR_V4_METHOD_BANK_CODES,
+  KNOWN_IDR_V4_BANK_CODES,
+  normalizeMethodBankCode,
+} from "../services/methodBanks.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { displayAmount, parseAmountInput } from "../utils/money.js";
 import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
@@ -200,6 +205,17 @@ superAdminRouter.get("/methods", async (_req, res) => {
     include: { merchantLinks: true },
   });
 
+  const methodBanks = await prisma.methodBank.findMany({
+    where: { methodId: { in: methods.map((m) => m.id) } },
+    orderBy: [{ sort: "asc" }, { code: "asc" }],
+  });
+  const methodBankMap = new Map<string, typeof methodBanks>();
+  methodBanks.forEach((bank) => {
+    const list = methodBankMap.get(bank.methodId) || [];
+    list.push(bank);
+    methodBankMap.set(bank.methodId, list);
+  });
+
   // Detect which per-bank limit columns exist
   const promotedCols = await getPromotedColumns();
   const has = new Set(promotedCols.map((c) => c.name));
@@ -296,6 +312,10 @@ superAdminRouter.get("/methods", async (_req, res) => {
     (m as any).banks = byCode[m.code.trim().toUpperCase()] || [];
   });
 
+  methods.forEach((m) => {
+    (m as any).methodBanks = methodBankMap.get(m.id) || [];
+  });
+
   methods.forEach((method) => {
     const upperCode = method.code.trim().toUpperCase();
     const minorUnits = methodMinorUnits(upperCode);
@@ -337,6 +357,7 @@ superAdminRouter.get("/methods", async (_req, res) => {
     section: "methods",
     methods,
     stats,
+    idrV4BankCodes: KNOWN_IDR_V4_BANK_CODES,
   });
 });
 
@@ -442,6 +463,84 @@ superAdminRouter.post("/methods/:id/limits", async (req, res, next) => {
     }
 
     if (updates.length) await Promise.allSettled(updates);
+
+    res.redirect("/superadmin/methods");
+  } catch (err) {
+    next(err);
+  }
+});
+
+superAdminRouter.post("/methods/:id/banks", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const method = await prisma.method.findUnique({
+      where: { id },
+      select: { id: true, code: true, name: true },
+    });
+    if (!method) return res.status(404).send("Not found");
+
+    const methodCode = normalizeMethodBankCode(method.code);
+    if (!IDR_V4_METHOD_BANK_CODES.includes(methodCode as any)) {
+      return res.status(400).send("Banks config is only available for IDR v4 VA methods.");
+    }
+
+    const rawBanks = (req.body && (req.body as any).banks) || {};
+    const rows = Array.isArray(rawBanks) ? rawBanks : Object.values(rawBanks);
+    const normalized: Array<{ code: string; label: string | null; active: boolean; sort: number }> = [];
+    const seen = new Set<string>();
+
+    rows.forEach((row: any, index: number) => {
+      const rawCode = String(row?.code || "").trim();
+      if (!rawCode) {
+        const hasOther = String(row?.label || "").trim() || row?.active || row?.sort;
+        if (hasOther) {
+          throw new Error("Bank code is required for all rows.");
+        }
+        return;
+      }
+      const code = normalizeMethodBankCode(rawCode);
+      if (seen.has(code)) {
+        throw new Error(`Duplicate bank code: ${code}`);
+      }
+      seen.add(code);
+      const label = String(row?.label || "").trim() || null;
+      const active = row?.active === "on" || row?.active === "true" || row?.active === "1" || row?.active === true;
+      const sort = Number.isFinite(Number(row?.sort))
+        ? Number(row.sort)
+        : index + 1;
+      normalized.push({
+        code,
+        label,
+        active,
+        sort: Number.isFinite(sort) ? sort : index + 1,
+      });
+    });
+
+    const sorted = normalized
+      .map((row, idx) => ({ ...row, sort: idx + 1 }))
+      .filter((row) => row.code);
+
+    await prisma.$transaction(async (tx) => {
+      await tx.methodBank.deleteMany({ where: { methodId: method.id } });
+      if (sorted.length) {
+        await tx.methodBank.createMany({
+          data: sorted.map((row) => ({
+            methodId: method.id,
+            code: row.code,
+            label: row.label,
+            active: row.active,
+            sort: row.sort,
+          })),
+        });
+      }
+    });
+
+    try {
+      await auditAdmin(req, "method.banks.update", "METHOD", method.id, {
+        methodCode,
+        count: sorted.length,
+      });
+    } catch {}
 
     res.redirect("/superadmin/methods");
   } catch (err) {

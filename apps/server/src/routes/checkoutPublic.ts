@@ -23,6 +23,7 @@ import { tgNotify } from "../services/telegram.js";
 import { evaluateNameMatch } from "../services/paymentStatus.js";
 import { ensureMerchantMethod, isIdrV4Method, listMerchantMethods } from "../services/methods.js";
 import { requireKycOrStartFlow } from "../services/kycGate.js";
+import { adapters } from "../services/providers/index.js";
 
 // ───────────────────────────────────────────────
 // Minimal API-key verification (copied pattern)
@@ -134,8 +135,17 @@ const payerIdr = z.object({
   accountNo: z.string().min(1).optional(),
   bankName: z.string().min(1).optional(),
 });
+const destinationIdr = z.object({
+  holderName: z.string().min(2),
+  accountNo: z.string().min(3),
+  bankCode: z.string().min(2),
+  bankName: z.string().min(1).optional(),
+});
 
 function nowIso() { return new Date().toISOString(); }
+function normalizeExactName(input: string) {
+  return String(input || "").trim().replace(/\s+/g, " ").toLowerCase();
+}
 
 function rejectInactiveClient(res: any, status: ClientStatus, action: "deposit" | "withdrawal") {
   const error = status === "BLOCKED" ? "CLIENT_BLOCKED" : "CLIENT_DEACTIVATED";
@@ -693,7 +703,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
         return res.json({
           ok: false,
           error: "NAME_MISMATCH",
-          message: "Name must match your verified ID.",
+          message: "Account holder name must match the verified KYC name",
         });
       }
     }
@@ -982,7 +992,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
-    destination: z.union([payerOsko, payerPayId]),
+    destination: z.union([payerOsko, payerPayId, destinationIdr]),
     bankAccountId: z.string().cuid(),
     extraFields: z.record(z.any()).optional(),
   });
@@ -1052,8 +1062,69 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     return res.status(403).json({ ok: false, error: "WITHDRAWAL_BLOCKED_NO_PRIOR_DEPOSIT" });
   }
 
+  const isIdrV4Withdrawal = isIdrV4Method(body.method) || body.method === "FAZZ_SEND";
+  if (isIdrV4Withdrawal) {
+    const typedName = String((body.destination as any)?.holderName || "").trim();
+    const kycFirst = user.firstName ?? null;
+    const kycLast = user.lastName ?? null;
+    const kycFull = user.fullName ?? null;
+
+    if (typedName && (kycFirst || kycLast || kycFull)) {
+      const match = evaluateNameMatch(typedName, kycFirst, kycLast, kycFull);
+      if (!match.allow || match.score < 0.6) {
+        return res.json({
+          ok: false,
+          error: "NAME_MISMATCH",
+          message: "Account holder name must match the verified KYC name",
+        });
+      }
+    }
+
+    const bankCode = String((body.destination as any)?.bankCode || (body.destination as any)?.bankName || "").trim();
+    const accountNo = String((body.destination as any)?.accountNo || "").trim();
+    if (!bankCode || !accountNo || !typedName) {
+      return res.json({
+        ok: false,
+        error: "VALIDATOR_NAME_MISMATCH",
+        message: "Account name must match with validator",
+      });
+    }
+
+    try {
+      const out = await adapters.fazz.validateBankAccount({ bankCode, accountNo, name: typedName });
+      const validatedName = out?.holder || "";
+      if (!out?.ok || !validatedName || normalizeExactName(validatedName) !== normalizeExactName(typedName)) {
+        return res.json({
+          ok: false,
+          error: "VALIDATOR_NAME_MISMATCH",
+          message: "Account name must match with validator",
+        });
+      }
+    } catch (err) {
+      console.error("[withdrawal-validate] failed", err);
+      return res.json({
+        ok: false,
+        error: "VALIDATOR_NAME_MISMATCH",
+        message: "Account name must match with validator",
+      });
+    }
+  }
+
   let destRecord;
-  if (body.method === "OSKO") {
+  if (isIdrV4Withdrawal) {
+    const d = body.destination as any;
+    const bankName = String(d.bankCode || d.bankName || "").trim() || "IDR";
+    destRecord = await prisma.withdrawalDestination.create({
+      data: {
+        userId: user.id,
+        currency,
+        bankName,
+        holderName: d.holderName,
+        accountNo: d.accountNo,
+        iban: null,
+      },
+    });
+  } else if (body.method === "OSKO") {
     const d = body.destination as z.infer<typeof payerOsko>;
     const bankName = (d.bankName || "").trim() || "OSKO";
     destRecord = await prisma.withdrawalDestination.create({

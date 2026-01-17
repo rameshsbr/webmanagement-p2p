@@ -780,7 +780,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       try {
         const clone = res.clone();
         const json = await clone.json();
-        if (json) {
+        if (json && json.error !== 'KYC_REQUIRED') {
           lastIntentPayload = json;
           setTimeout(applyFazzModalPatch, 0); // after modal mounts
         }

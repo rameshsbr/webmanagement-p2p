@@ -1,5 +1,6 @@
 // apps/server/src/services/didit.ts
 import { upsertMerchantClientMapping } from "./merchantClient.js";
+import { clearKycReverify } from "./kycReset.js";
 import { generateUserId } from "./reference.js";
 
 // apps/server/src/services/didit.ts
@@ -203,6 +204,10 @@ export async function handleDiditWebhook(
       externalId,
       email: incomingEmail || email || null,
     });
+
+    if (status === "approved") {
+      await clearKycReverify({ merchantId, userId: user.id });
+    }
   }
 
   return user;

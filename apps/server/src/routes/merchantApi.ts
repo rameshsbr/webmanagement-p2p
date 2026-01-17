@@ -18,7 +18,8 @@ import { idrV4BankLabel } from '../services/methodBanks.js';
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
 import { API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from '../services/apiKeyScopes.js';
-import { createLowCodeLink, getVerificationStatus } from '../services/didit.js';
+import { getVerificationStatus } from '../services/didit.js';
+import { requireKycOrStartFlow } from '../services/kycGate.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -248,23 +249,16 @@ merchantApiRouter.post(
           create: { publicId: generateUserId(), diditSubject: body.user.diditSubject, verifiedAt: null },
           update: {},
         });
-        if (!user.verifiedAt) {
-          let url = '/fake-didit';
-          try {
-            const out = await createLowCodeLink({ subject: body.user.diditSubject, merchantId });
-            url = out.url || url;
-            await prisma.kycVerification.create({
-              data: {
-                userId: user.id,
-                provider: 'didit',
-                status: 'pending',
-                externalSessionId: out.sessionId,
-              },
-            });
-          } catch {}
+        const kycGate = await requireKycOrStartFlow({
+          merchantId,
+          userId: user.id,
+          diditSubject: body.user.diditSubject,
+          verifiedAt: user.verifiedAt,
+        });
+        if (!kycGate.allow) {
           const err = new Error('KYC_REQUIRED');
           (err as any).code = 'KYC_REQUIRED';
-          (err as any).url = url;
+          (err as any).kyc = { url: kycGate.url, sessionId: kycGate.sessionId };
           throw err;
         }
 
@@ -480,7 +474,19 @@ merchantApiRouter.post(
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
       if (message === 'KYC_REQUIRED' || err?.code === 'KYC_REQUIRED') {
-        return res.status(403).json({ ok: false, error: 'KYC_REQUIRED', url: err?.url || null });
+        return res.status(403).json({
+          ok: false,
+          error: 'KYC_REQUIRED',
+          kyc: err?.kyc || (err?.url ? { url: err.url, sessionId: null } : null),
+          message: 'Verification required before proceeding.',
+        });
+      }
+      if (message === 'KYC_START_FAILED') {
+        return res.status(500).json({
+          ok: false,
+          error: 'KYC_START_FAILED',
+          message: 'Unable to start verification.',
+        });
       }
       if (message === 'PROVIDER_PERSIST_FAILED') {
         const cause = err?.cause;

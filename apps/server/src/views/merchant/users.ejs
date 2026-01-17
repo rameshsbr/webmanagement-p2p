@@ -122,7 +122,7 @@
           <td data-col="address"><%= user.address || '-' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
-          <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
+          <td data-col="status"><span class="badge <%= (user.verificationStatus === 'Verified' || user.verificationStatus === 'Re-verified') ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
           <td data-col="clientStatus">
             <% const clientStatus = (user.clientStatus || '').toUpperCase(); %>
             <span class="badge <%= clientStatus === 'ACTIVE' ? 'success' : 'warn' %>">

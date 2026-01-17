@@ -50,6 +50,7 @@ export type UserDirectoryItem = {
   totalApprovedWithdrawals: number;
   diditProfile?: DiditProfile | null;
   latestSessionId?: string | null;
+  kycResetOpen?: boolean;
 
   /** true when manual name and Didit name differ significantly */
   nameMismatchWarning?: boolean;
@@ -107,12 +108,15 @@ function computeFullName(candidate: any): string | null {
   return name || null;
 }
 
-function computeStatus(verifiedAt: Date | null, latestKyc: string | null): string {
-  if (verifiedAt) return "Verified";
+function computeStatus(verifiedAt: Date | null, latestKyc: string | null, approvedCount: number): string {
   if (!latestKyc) return "Pending";
   const norm = latestKyc.toLowerCase();
   if (norm.includes("reject")) return "Rejected";
-  if (norm.includes("approve") || norm.includes("complete")) return "Verified";
+  if (norm.includes("approve") || norm.includes("complete")) {
+    if (approvedCount >= 2) return "Re-verified";
+    return "Verified";
+  }
+  if (verifiedAt) return "Verified";
   return "Pending";
 }
 
@@ -231,6 +235,21 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       })
     : [];
 
+  const approvedKycCounts = userIds.length
+    ? await prisma.kycVerification.groupBy({
+        where: { userId: { in: userIds }, status: "approved" },
+        by: ["userId"],
+        _count: { _all: true },
+      })
+    : [];
+
+  const openResets = userIds.length
+    ? await prisma.kycReverifyRequest.findMany({
+        where: { merchantId: { in: merchantIds }, userId: { in: userIds }, clearedAt: null },
+        select: { merchantId: true, userId: true },
+      })
+    : [];
+
   const totals = new Map<string, { deposits: number; withdrawals: number }>();
 
   paymentCounts.forEach((row) => {
@@ -241,6 +260,13 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     else if (row.type === PaymentType.WITHDRAWAL) current.withdrawals = row._count._all;
     totals.set(key, current);
   });
+
+  const kycApprovedCountMap = new Map<string, number>();
+  approvedKycCounts.forEach((row) => {
+    kycApprovedCountMap.set(row.userId, row._count._all);
+  });
+
+  const kycResetMap = new Set(openResets.map((row) => `${row.merchantId}:${row.userId}`));
 
   const merchantMap = new Map<string, string>();
   clients.forEach((row) => {
@@ -308,9 +334,11 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
     const latestKycRow = user?.kyc && user.kyc.length ? user.kyc[0] : null;
     const latestKycStatus = latestKycRow?.status || null;
     const latestSessionId = latestKycRow?.externalSessionId || null;
+    const approvedCount = user?.id ? kycApprovedCountMap.get(user.id) || 0 : 0;
     const verificationStatus = computeStatus(
       user?.verifiedAt ?? null,
-      latestKycStatus
+      latestKycStatus,
+      approvedCount
     );
 
     const merchants: Array<{ id: string; name: string }> = [
@@ -366,6 +394,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
       nameHardMismatch,
       nameMatchScore,
       latestSessionId,
+      kycResetOpen: !!(user?.id && kycResetMap.has(`${client.merchantId}:${user.id}`)),
     };
   });
 

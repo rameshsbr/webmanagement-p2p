@@ -6,6 +6,10 @@
     'VIRTUAL_BANK_ACCOUNT_STATIC',
     'FAZZ_SEND'
   ]);
+  const IDR_V4_BANK_METHODS = new Set([
+    'VIRTUAL_BANK_ACCOUNT_DYNAMIC',
+    'VIRTUAL_BANK_ACCOUNT_STATIC'
+  ]);
   function centsToUnits(v) {
     return (typeof v === 'number' && !Number.isNaN(v)) ? (v / 100).toFixed(2) : '';
   }
@@ -46,6 +50,7 @@
           const stat = stats[method.id] || { merchants: 0, deposits: 0, withdrawals: 0 };
           const formId = `method-form-${method.id}`;
           const modalId = `limits-modal-${method.id}`;
+          const banksModalId = `banks-modal-${method.id}`;
           const methodCode = String(method.code || '').trim().toUpperCase();
           const groupLabel = IDR_V4_METHODS.has(methodCode) ? 'IDR v4' : 'P2P';
           const hasIdr = Number(method.minorUnits) === 1;
@@ -77,6 +82,9 @@
               <a class="btn small" href="/superadmin/methods/<%= method.id %>/merchants">Assign merchants</a>
               <button class="btn small" type="submit" form="<%= formId %>">Save</button>
               <button class="btn small btn-outline" type="button" data-modal-open="<%= modalId %>">LIMITS</button>
+              <% if (IDR_V4_BANK_METHODS.has(methodCode)) { %>
+                <button class="btn small btn-outline" type="button" data-modal-open="<%= banksModalId %>">BANKS</button>
+              <% } %>
             </div>
           </div>
 
@@ -215,11 +223,97 @@
               </form>
             </div>
           </div>
+
+          <% if (IDR_V4_BANK_METHODS.has(methodCode)) { %>
+            <div class="modal" id="<%= banksModalId %>" data-modal>
+              <div class="modal__backdrop" data-modal-close="<%= banksModalId %>"></div>
+              <div class="modal__content" role="dialog" aria-modal="true" aria-labelledby="<%= banksModalId %>-title">
+                <div class="modal__header">
+                  <div>
+                    <h2 id="<%= banksModalId %>-title">Banks – <%= method.name %></h2>
+                    <p class="muted">Manage bank codes for IDR v4 VA methods.</p>
+                  </div>
+                  <button type="button" class="btn small" data-modal-close="<%= banksModalId %>">Close</button>
+                </div>
+
+                <form method="post" action="/superadmin/methods/<%= method.id %>/banks" class="banks-form" data-methods-form="banks" data-banks-form>
+                  <div class="table-wrap banks-table">
+                    <table class="table">
+                      <thead>
+                        <tr>
+                          <th style="width:28%;">Bank code</th>
+                          <th>Display name</th>
+                          <th style="width:90px;">Active</th>
+                          <th style="width:120px;">Order</th>
+                          <th style="width:60px;"></th>
+                        </tr>
+                      </thead>
+                      <tbody data-banks-body>
+                        <% (method.methodBanks || []).forEach((bank, idx) => { %>
+                          <tr data-bank-row>
+                            <td>
+                              <div class="bank-code-cell">
+                                <input
+                                  class="input bank-code-input"
+                                  name="banks[<%= idx %>][code]"
+                                  value="<%= bank.code %>"
+                                  placeholder="BCA"
+                                  list="idr-v4-bank-codes"
+                                  style="text-transform:uppercase;"
+                                />
+                                <div class="muted bank-code-warning">Unknown bank code</div>
+                              </div>
+                            </td>
+                            <td>
+                              <input
+                                class="input"
+                                name="banks[<%= idx %>][label]"
+                                value="<%= bank.label || '' %>"
+                                placeholder="Optional label"
+                              />
+                            </td>
+                            <td style="text-align:center;">
+                              <input type="checkbox" name="banks[<%= idx %>][active]" <%= bank.active ? 'checked' : '' %> />
+                            </td>
+                            <td>
+                              <input type="hidden" name="banks[<%= idx %>][sort]" value="<%= bank.sort || (idx + 1) %>" data-bank-sort />
+                              <div class="bank-order">
+                                <button class="btn small" type="button" data-bank-up>↑</button>
+                                <button class="btn small" type="button" data-bank-down>↓</button>
+                              </div>
+                            </td>
+                            <td style="text-align:center;">
+                              <button class="btn small btn-outline" type="button" data-bank-remove>✕</button>
+                            </td>
+                          </tr>
+                        <% }) %>
+                      </tbody>
+                    </table>
+                  </div>
+
+                  <div class="banks-controls">
+                    <button type="button" class="btn small" data-bank-add>+ Add bank</button>
+                    <div class="banks-error muted" aria-live="polite"></div>
+                  </div>
+
+                  <div class="modal__actions">
+                    <button class="btn primary" type="submit">Save banks</button>
+                  </div>
+                </form>
+              </div>
+            </div>
+          <% } %>
         <% }) %>
       </div>
     <% } %>
   </div>
 </div>
+
+<datalist id="idr-v4-bank-codes">
+  <% (idrV4BankCodes || []).forEach((code) => { %>
+    <option value="<%= code %>"></option>
+  <% }) %>
+</datalist>
 
 <style>
   .methods-grid {
@@ -354,6 +448,37 @@
     display: flex;
     justify-content: flex-end;
   }
+  .banks-table .table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  .bank-code-cell {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .bank-code-warning {
+    font-size: 11px;
+    color: #b25;
+    display: none;
+  }
+  .bank-order {
+    display: flex;
+    gap: 4px;
+    justify-content: center;
+  }
+  .banks-controls {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: 12px;
+    gap: 12px;
+  }
+  .banks-error {
+    color: #b00020;
+    font-size: 12px;
+    min-height: 16px;
+  }
   .input-with-suffix { position:relative; }
   .input-with-suffix .suffix {
     position:absolute; right:8px; top:50%; transform:translateY(-50%);
@@ -434,6 +559,122 @@
           event.preventDefault();
           if (errorEl) {
             errorEl.textContent = 'For IDR, limits must be between 10,000 and 100,000,000, and min cannot exceed max.';
+          }
+        }
+      });
+    });
+
+    const knownCodes = new Set(<%- JSON.stringify(idrV4BankCodes || []) %>);
+
+    function updateSortInputs(body) {
+      const rows = Array.from(body.querySelectorAll('[data-bank-row]'));
+      rows.forEach((row, idx) => {
+        const sortInput = row.querySelector('[data-bank-sort]');
+        if (sortInput) sortInput.value = String(idx + 1);
+      });
+    }
+
+    function refreshWarnings(row) {
+      const codeInput = row.querySelector('.bank-code-input');
+      const warning = row.querySelector('.bank-code-warning');
+      if (!codeInput || !warning) return;
+      const value = String(codeInput.value || '').trim().toUpperCase();
+      if (!value || knownCodes.has(value)) {
+        warning.style.display = 'none';
+      } else {
+        warning.style.display = '';
+      }
+    }
+
+    document.querySelectorAll('[data-banks-form]').forEach((form) => {
+      const body = form.querySelector('[data-banks-body]');
+      const errorEl = form.querySelector('.banks-error');
+      const addBtn = form.querySelector('[data-bank-add]');
+      let nextIndex = body ? body.querySelectorAll('[data-bank-row]').length : 0;
+
+      const attachRowHandlers = (row) => {
+        const codeInput = row.querySelector('.bank-code-input');
+        if (codeInput) {
+          codeInput.addEventListener('input', () => {
+            codeInput.value = String(codeInput.value || '').toUpperCase();
+            refreshWarnings(row);
+          });
+          refreshWarnings(row);
+        }
+
+        const upBtn = row.querySelector('[data-bank-up]');
+        const downBtn = row.querySelector('[data-bank-down]');
+        const removeBtn = row.querySelector('[data-bank-remove]');
+        upBtn?.addEventListener('click', () => {
+          const prev = row.previousElementSibling;
+          if (prev) prev.before(row);
+          if (body) updateSortInputs(body);
+        });
+        downBtn?.addEventListener('click', () => {
+          const next = row.nextElementSibling;
+          if (next) next.after(row);
+          if (body) updateSortInputs(body);
+        });
+        removeBtn?.addEventListener('click', () => {
+          row.remove();
+          if (body) updateSortInputs(body);
+        });
+      };
+
+      if (body) {
+        body.querySelectorAll('[data-bank-row]').forEach((row) => attachRowHandlers(row));
+      }
+
+      addBtn?.addEventListener('click', () => {
+        if (!body) return;
+        const idx = nextIndex++;
+        const row = document.createElement('tr');
+        row.setAttribute('data-bank-row', '');
+        row.innerHTML = `
+          <td>
+            <div class="bank-code-cell">
+              <input class="input bank-code-input" name="banks[${idx}][code]" placeholder="BCA" list="idr-v4-bank-codes" style="text-transform:uppercase;" />
+              <div class="muted bank-code-warning">Unknown bank code</div>
+            </div>
+          </td>
+          <td><input class="input" name="banks[${idx}][label]" placeholder="Optional label" /></td>
+          <td style="text-align:center;"><input type="checkbox" name="banks[${idx}][active]" checked /></td>
+          <td>
+            <input type="hidden" name="banks[${idx}][sort]" value="${idx + 1}" data-bank-sort />
+            <div class="bank-order">
+              <button class="btn small" type="button" data-bank-up>↑</button>
+              <button class="btn small" type="button" data-bank-down>↓</button>
+            </div>
+          </td>
+          <td style="text-align:center;"><button class="btn small btn-outline" type="button" data-bank-remove>✕</button></td>
+        `;
+        body.appendChild(row);
+        attachRowHandlers(row);
+        updateSortInputs(body);
+      });
+
+      form.addEventListener('submit', (event) => {
+        if (errorEl) errorEl.textContent = '';
+        const rows = Array.from(form.querySelectorAll('[data-bank-row]'));
+        const seen = new Set();
+        let hasError = false;
+        rows.forEach((row) => {
+          const input = row.querySelector('.bank-code-input');
+          const code = String(input?.value || '').trim().toUpperCase();
+          if (!code) {
+            hasError = true;
+            return;
+          }
+          if (seen.has(code)) {
+            hasError = true;
+          }
+          seen.add(code);
+        });
+
+        if (hasError) {
+          event.preventDefault();
+          if (errorEl) {
+            errorEl.textContent = 'Each row needs a bank code and codes must be unique.';
           }
         }
       });

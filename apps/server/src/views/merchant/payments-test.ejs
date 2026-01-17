@@ -46,7 +46,7 @@
    IDR v4 overlay (merchant test only). Isolated from P2P widget.
    - Deposit: POST /public/deposit/intent (VA Dynamic/Static)
    - Session: POST /public/merchant/checkout/session
-   - Banks: GET /public/deposit/banks?currency=IDR&method=<METHOD>
+   - Banks: GET /merchant/idrv4/meta?method=<METHOD>
    - Withdrawal: POST /api/v1/withdrawals (FAZZ_SEND)
    - Validate: POST /merchant/idrv4/validate
 ============================================================================= */
@@ -85,6 +85,8 @@
       HANA: 'Hana',
       SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna',
       BSI: 'Bank Syariah Indonesia',
+      SEABANK: 'SeaBank',
+      MAYBANK: 'Maybank',
     };
     const key = String(code || '').toUpperCase();
     return map[key] || key;
@@ -248,30 +250,20 @@
     await waitForKycApproval(token);
   }
 
-  async function loadPublicBanks(methodCode) {
-    const token = await fetchCheckoutToken();
-    const resp = await fetch(`/public/deposit/banks?currency=IDR&method=${encodeURIComponent(methodCode)}`, {
-      headers: { authorization: `Bearer ${token}` },
+  async function loadMethodMeta(methodCode) {
+    const resp = await fetch(`/merchant/idrv4/meta?method=${encodeURIComponent(methodCode)}`, {
       credentials: 'same-origin',
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || !data?.ok) throw new Error(data?.error || 'Unable to load banks');
-    return data?.banks || [];
+    return data || {};
   }
 
-  async function createDepositIntent(token, payload) {
-    const resp = await fetch('/public/deposit/intent', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', authorization: `Bearer ${token}` },
-      credentials: 'same-origin',
-      body: JSON.stringify(payload || {}),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (resp.status === 403 && data?.error === 'KYC_REQUIRED') {
-      return { kycRequired: true, url: data?.url || null };
-    }
-    if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'Request failed');
-    return data;
+  async function ensureKycApproved(token) {
+    const status = await callKyc('/public/kyc/status', token, { method: 'GET' });
+    if (status?.status === 'approved') return true;
+    await runKycFlow(token);
+    return true;
   }
 
   function openModal(title, builder) {
@@ -328,17 +320,19 @@
 
       let limits = { minDeposit: 10000, maxDeposit: 100000000 };
       let bankOptions = [];
+      let bankLabels = {};
       try {
-        const banks = await loadPublicBanks(methodCode);
-        bankOptions = Array.isArray(banks) ? banks : [];
+        const meta = await loadMethodMeta(methodCode);
+        bankOptions = Array.isArray(meta?.banks) ? meta.banks : [];
+        bankLabels = meta?.labels || {};
         if (!bankOptions.length) throw new Error('No available banks for this method.');
         bank.innerHTML = '';
-        bankOptions.forEach((row) => {
-          bank.appendChild(h('option', { value: row.id }, row.methodLabel || row.method || row.id));
+        bankOptions.forEach((code) => {
+          const label = bankLabels[code] || bankLabel(code);
+          bank.appendChild(h('option', { value: code }, label));
         });
-        const first = bankOptions[0];
-        if (first?.limits?.minCents) limits.minDeposit = Math.round(first.limits.minCents / 100);
-        if (first?.limits?.maxCents) limits.maxDeposit = Math.round(first.limits.maxCents / 100);
+        if (meta?.limits?.minDeposit) limits.minDeposit = Math.round(meta.limits.minDeposit);
+        if (meta?.limits?.maxDeposit) limits.maxDeposit = Math.round(meta.limits.maxDeposit);
       } catch (err) {
         warning.style.display = '';
         warning.textContent = (err && err.message) || 'Unable to load banks.';
@@ -383,41 +377,27 @@
           }
         }
 
-        const selectedBank = bankOptions.find((row) => row.id === bank.value) || bankOptions[0] || null;
+        const selectedBank = bankOptions.find((row) => row === bank.value) || bankOptions[0] || null;
         if (!selectedBank) {
           warning.textContent = 'No available banks for this method.'; warning.style.display = ''; return;
         }
-        const payload = {
-          amountCents,
-          method: methodCode,
-          payer: {
-            holderName: name,
-            bankName: String(selectedBank.methodLabel || selectedBank.method || '').trim() || undefined,
-          },
-          bankAccountId: selectedBank.id,
-          extraFields: {},
-        };
 
         actions.lastChild.disabled = true;
         try {
           const checkoutToken = await fetchCheckoutToken();
-          let intent = await createDepositIntent(checkoutToken, payload);
-          if (intent?.kycRequired) {
-            warning.textContent = 'KYC required. Opening verification…';
-            warning.style.display = '';
-            await runKycFlow(checkoutToken, intent.url);
-            warning.style.display = 'none';
-            intent = await createDepositIntent(checkoutToken, payload);
-            if (intent?.kycRequired) {
-              throw new Error('KYC pending. Please complete verification to continue.');
-            }
-          }
-
+          await ensureKycApproved(checkoutToken);
+          const intentResp = await apiPost('/deposit/intents', {
+            user: { diditSubject },
+            amountCents,
+            currency: 'IDR',
+            methodCode,
+            bankCode: selectedBank,
+          });
+          const intent = intentResp?.data || intentResp || {};
           const referenceCode = intent?.referenceCode || '-';
           const expiresAt = intent?.expiresAt || null;
           const amountFinal = intent?.amountCents || amountCents;
-          const bankDetails = intent?.bankDetails || {};
-          const displayFields = Array.isArray(bankDetails?.displayFields) ? bankDetails.displayFields : [];
+          const va = intent?.va || {};
           const isDynamic = methodCode.toUpperCase().includes('DYNAMIC');
 
           body.innerHTML = '';
@@ -428,27 +408,19 @@
             ));
           }
           const rows = [];
-          if (displayFields.length) {
-            displayFields.forEach((field) => {
-              rows.push(
-                h('div', { class:'muted' }, field?.label || field?.key || '-'),
-                h('div', { class: 'mono' }, field?.value || '-')
-              );
-            });
-          } else {
-            rows.push(
-              h('div', { class:'muted' }, 'Bank'), h('div', {}, bankDetails?.bankName || '-'),
-              h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, bankDetails?.accountNo || '-'),
-              h('div', { class:'muted' }, 'Account Name'), h('div', {}, bankDetails?.holderName || '-')
-            );
-          }
+          const bankName = va.bankName || bankLabels[selectedBank] || bankLabel(selectedBank);
+          rows.push(
+            h('div', { class:'muted' }, 'Bank'), h('div', {}, bankName || '-'),
+            h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, va.accountNo || '-'),
+            h('div', { class:'muted' }, 'Account Name'), h('div', {}, va.accountName || '-')
+          );
           rows.push(
             h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal))
           );
           if (isDynamic) {
             rows.push(
               h('div', { class:'muted' }, 'Reference'),
-              h('div', { class:'mono' }, intent?.uniqueReference || referenceCode || '-'),
+              h('div', { class:'mono' }, va?.meta?.uniqueRefNo || referenceCode || '-'),
               h('div', { class:'muted' }, 'Expiry'),
               h('div', {}, formatJakartaDDMMYYYY_12h(expiresAt))
             );

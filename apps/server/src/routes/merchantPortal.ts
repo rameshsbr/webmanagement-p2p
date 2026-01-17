@@ -30,7 +30,7 @@ import { ipFromReq, uaFromReq } from "../services/audit.js";
 import { formatClientStatusLabel, getClientStatusBySubject } from "../services/merchantClient.js";
 import { listMerchantMethods } from "../services/methods.js";
 import { adapters } from "../services/providers/index.js";
-import { IDRV4_BANKS } from "../services/providers/fazz/idr-v4-banks.js";
+import { getMethodBanksForMeta } from "../services/methodBanks.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
 
@@ -1036,6 +1036,8 @@ router.get("/idrv4/meta", async (req: any, res) => {
   const query = schema.parse(req.query || {});
   const methodCode = query.method || "VIRTUAL_BANK_ACCOUNT_DYNAMIC";
 
+  const { banks, labels } = await getMethodBanksForMeta(methodCode);
+
   const [depositMethod, withdrawalMethod] = await Promise.all([
     prisma.method.findUnique({
       where: { code: methodCode },
@@ -1063,7 +1065,9 @@ router.get("/idrv4/meta", async (req: any, res) => {
 
   return res.json({
     ok: true,
-    banks: IDRV4_BANKS[methodCode],
+    method: methodCode,
+    banks,
+    labels,
     limits: {
       minDeposit: toNumber(depositMethod?.depositMinAmountCents ?? null),
       maxDeposit: toNumber(depositMethod?.depositMaxAmountCents ?? null),

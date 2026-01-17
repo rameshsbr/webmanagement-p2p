@@ -14,6 +14,7 @@ import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
 import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus } from '../services/merchantClient.js';
 import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
+import { idrV4BankLabel } from '../services/methodBanks.js';
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
 import { API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from '../services/apiKeyScopes.js';
@@ -163,20 +164,7 @@ function mapProviderToLocal(p: ProviderNorm): LocalStatus {
 }
 
 function idrV4BankName(code: string | null | undefined): string {
-  const map: Record<string, string> = {
-    BCA: 'BCA',
-    BRI: 'BRI',
-    BNI: 'BNI',
-    MANDIRI: 'Mandiri',
-    CIMB_NIAGA: 'CIMB Niaga',
-    DANAMON: 'Danamon',
-    PERMATA: 'Permata',
-    HANA: 'Hana',
-    SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna',
-    BSI: 'Bank Syariah Indonesia',
-  };
-  const key = String(code || '').toUpperCase();
-  return map[key] || key;
+  return idrV4BankLabel(code || '');
 }
 
 function normalizeIdrV4Deposit(result: any, amountCents: number) {

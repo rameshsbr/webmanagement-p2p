@@ -1,4 +1,5 @@
 import { prisma } from '../lib/prisma.js';
+import { defaultIdrV4MethodBanks } from '../services/methodBanks.js';
 
 async function main() {
   // Existing AU methods
@@ -32,6 +33,26 @@ async function main() {
     update: { name: 'IDR v4 — BI FAST', enabled: true },
     create: { code: 'FAZZ_SEND', name: 'IDR v4 — BI FAST', enabled: true },
   });
+
+  const idrV4Defaults = defaultIdrV4MethodBanks();
+  const idrV4Methods = await prisma.method.findMany({
+    where: { code: { in: ['VIRTUAL_BANK_ACCOUNT_STATIC', 'VIRTUAL_BANK_ACCOUNT_DYNAMIC'] } },
+    select: { id: true, code: true },
+  });
+  for (const method of idrV4Methods) {
+    const existingCount = await prisma.methodBank.count({ where: { methodId: method.id } });
+    if (existingCount > 0) continue;
+    await prisma.methodBank.createMany({
+      data: idrV4Defaults.map((bank) => ({
+        methodId: method.id,
+        code: bank.code,
+        label: bank.label,
+        active: bank.active ?? true,
+        sort: bank.sort ?? 1000,
+      })),
+      skipDuplicates: true,
+    });
+  }
 
   // Link to the first merchant (idempotent)
   const demoMerchant = await prisma.merchant.findFirst({ orderBy: { createdAt: 'asc' } });

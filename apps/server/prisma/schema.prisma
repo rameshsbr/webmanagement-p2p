@@ -167,6 +167,22 @@ model Method {
 
   merchantLinks   MerchantMethod[]
   paymentRequests PaymentRequest[]
+  methodBanks     MethodBank[]
+}
+
+model MethodBank {
+  id        String   @id @default(cuid())
+  methodId  String
+  method    Method   @relation(fields: [methodId], references: [id], onDelete: Restrict)
+  code      String
+  label     String?
+  active    Boolean  @default(true)
+  sort      Int      @default(1000)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([methodId, code])
+  @@index([methodId, sort])
 }
 
 model MerchantMethod {

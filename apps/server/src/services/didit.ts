@@ -295,6 +295,11 @@ type CreateLinkInput = {
   merchantId?: string | null;
   externalId?: string | null;
   email?: string | null;
+  request?: {
+    headers?: Record<string, string | string[] | undefined>;
+    protocol?: string;
+    get?: (name: string) => string | undefined;
+  };
 
   // Optional override, mostly for tests or special cases
   workflowIdOverride?: string | null;
@@ -312,15 +317,39 @@ function buildVendorData(meta: DiditMeta) {
   return `${meta.merchantId}|${meta.subject}`;
 }
 
-function buildCallbackUrl(meta: DiditMeta) {
-  const base =
-    process.env.DIDIT_CALLBACK_URL ||
-    `${process.env.PUBLIC_URL || "http://localhost:4000"}/webhooks/didit`;
+function firstHeaderValue(
+  headers: Record<string, string | string[] | undefined> | undefined,
+  key: string
+): string | null {
+  if (!headers) return null;
+  const direct = headers[key] ?? headers[key.toLowerCase()];
+  if (Array.isArray(direct)) return direct[0] || null;
+  return typeof direct === "string" && direct ? direct : null;
+}
+
+function buildCallbackUrl(meta: DiditMeta, request?: CreateLinkInput["request"]) {
+  const forwardedProto = firstHeaderValue(request?.headers, "x-forwarded-proto");
+  const forwardedHost = firstHeaderValue(request?.headers, "x-forwarded-host");
+  const baseFromForwarded =
+    forwardedProto && forwardedHost ? `${forwardedProto}://${forwardedHost}` : null;
+  const hostFromReq = request?.get ? request.get("host") : null;
+  const baseFromReq = request?.protocol && hostFromReq ? `${request.protocol}://${hostFromReq}` : null;
+
+  const base = baseFromForwarded || baseFromReq || process.env.PUBLIC_BASE_URL || null;
+  let callbackBase: string | null = null;
+  if (base) {
+    callbackBase = `${base.replace(/\/+$/, "")}/webhooks/didit`;
+  } else if (process.env.DIDIT_CALLBACK_URL) {
+    callbackBase = process.env.DIDIT_CALLBACK_URL;
+  } else if (process.env.PUBLIC_URL || process.env.BASE_URL) {
+    callbackBase = `${(process.env.PUBLIC_URL || process.env.BASE_URL)!.replace(/\/+$/, "")}/webhooks/didit`;
+  }
+  if (!callbackBase) callbackBase = "http://localhost:4000/webhooks/didit";
   const qp = new URLSearchParams({
     merchantId: meta.merchantId,
     diditSubject: meta.subject,
   });
-  return `${base}?${qp.toString()}`;
+  return `${callbackBase}?${qp.toString()}`;
 }
 
 async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sessionId: string }> {
@@ -362,7 +391,7 @@ async function createLinkV2(input: CreateLinkInput): Promise<{ url: string; sess
       subject: input.subject,
       externalId: input.externalId,
       email: input.email,
-    }),
+    }, input.request),
   };
 
   const url = `${base}/v2/session/`;
@@ -459,7 +488,7 @@ async function createLinkV1(input: CreateLinkInput): Promise<CreateLinkOutput> {
       subject: input.subject,
       externalId: input.externalId,
       email: input.email,
-    }),
+    }, input.request),
     appId,
     workflowId,
     redirectUrl:

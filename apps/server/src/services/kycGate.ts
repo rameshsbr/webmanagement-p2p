@@ -11,15 +11,14 @@ type KycGateInput = {
   verifiedAt?: Date | null;
 };
 
-type KycGateAllow = { allow: true };
-
-type KycGateBlock = {
-  allow: false;
-  url: string;
-  sessionId: string;
+export type KycGateResult = {
+  allow: boolean;
+  reason?: "kyc_required" | "blocked" | "rate_limited";
+  url?: string;
+  sessionId?: string;
 };
 
-export async function requireKycOrStartFlow(input: KycGateInput): Promise<KycGateAllow | KycGateBlock> {
+export async function requireKycOrStartFlow(input: KycGateInput): Promise<KycGateResult> {
   const { merchantId, userId, diditSubject, externalId, email, verifiedAt } = input;
 
   // If already verified and no open reverify reset → allow
@@ -62,5 +61,5 @@ export async function requireKycOrStartFlow(input: KycGateInput): Promise<KycGat
     console.warn("[kyc] upsert KycVerification failed (non-fatal)", err);
   }
 
-  return { allow: false, url, sessionId };
+  return { allow: false, reason: "kyc_required", url, sessionId };
 }

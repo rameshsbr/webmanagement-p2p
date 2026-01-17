@@ -35,13 +35,54 @@ export async function listP2PMethods() {
 /** List only methods enabled for a merchant */
 export async function listMerchantMethods(merchantId: string) {
   if (!merchantId) return [];
-  return prisma.method.findMany({
+  const methods = await prisma.method.findMany({
     where: {
       enabled: true,
       merchantLinks: { some: { merchantId, enabled: true } },
     },
     orderBy: { name: "asc" },
   });
+  if (methods.length) return methods;
+
+  const isDev =
+    String(process.env.IS_LOCAL || "").toLowerCase() === "true" ||
+    String(process.env.NODE_ENV || "").toLowerCase() !== "production";
+  if (!isDev) return methods;
+
+  return [
+    {
+      id: "dev-osko",
+      code: "OSKO",
+      name: "Osko",
+      enabled: true,
+      minDepositCents: 50 * 100,
+      maxDepositCents: 5000 * 100,
+    },
+    {
+      id: "dev-payid",
+      code: "PAYID",
+      name: "PayID",
+      enabled: true,
+      minDepositCents: 50 * 100,
+      maxDepositCents: 5000 * 100,
+    },
+    {
+      id: "dev-idr-dyn",
+      code: "VIRTUAL_BANK_ACCOUNT_DYNAMIC",
+      name: "IDR VA Dynamic",
+      enabled: true,
+      minDepositCents: 10000,
+      maxDepositCents: 500000000,
+    },
+    {
+      id: "dev-idr-sta",
+      code: "VIRTUAL_BANK_ACCOUNT_STATIC",
+      name: "IDR VA Static",
+      enabled: true,
+      minDepositCents: 10000,
+      maxDepositCents: 500000000,
+    },
+  ] as any[];
 }
 
 /** Find a method by its code (case-insensitive trim) */

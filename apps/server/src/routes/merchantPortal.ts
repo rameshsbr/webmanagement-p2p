@@ -33,6 +33,8 @@ import { adapters } from "../services/providers/index.js";
 import { getMethodBanksForMeta } from "../services/methodBanks.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
+// NEW: KYC helpers
+import { createLowCodeLink, startDiditSession } from "../services/didit.js";
 
 const router = Router();
 
@@ -95,7 +97,7 @@ function parseRequestedScopes(input: any): ApiKeyScope[] {
   if (Array.isArray(input)) {
     const normalized = normalizeApiKeyScopes(input.map((s) => String(s || "").trim()).filter(Boolean));
     return normalized.length ? normalized : [API_KEY_SCOPES.P2P];
-  }
+    }
   const raw = String(input || "").toLowerCase().trim();
   if (!raw) return [API_KEY_SCOPES.P2P];
   if (raw === "p2p") return [API_KEY_SCOPES.P2P];
@@ -970,7 +972,7 @@ router.get("/payments/test", async (req: any, res) => {
   });
 });
 
-// UPDATED: accept optional currency override (e.g., currency=IDR when using IDR v4 flows)
+// UPDATED: accept optional currency override and KYC gate for IDR v4 test
 router.post("/payments/test/session", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   if (!merchantId) return res.status(401).json({ ok: false, error: "Unauthorized" });
@@ -984,16 +986,63 @@ router.post("/payments/test/session", async (req: any, res) => {
   const allowed = new Set(["AUD", "IDR"]);
   const currency = allowed.has(requested) ? requested : defaultCurrency;
 
-  const clientStatus = await getClientStatusBySubject(merchantId, subject);
-  if (clientStatus !== "ACTIVE") {
+  // 1) Client directory status: block explicit inactive/suspended
+  const clientStatusCode = await getClientStatusBySubject(merchantId, subject);
+  const clientStatusLabel = formatClientStatusLabel(clientStatusCode);
+  if (clientStatusCode && clientStatusCode !== "ACTIVE") {
     return res.status(403).json({
       ok: false,
       error: "CLIENT_INACTIVE",
-      message: `Client is ${formatClientStatusLabel(clientStatus)}`,
-      clientStatus: formatClientStatusLabel(clientStatus),
+      message: `Client is ${clientStatusLabel}`,
+      clientStatus: clientStatusLabel,
     });
   }
 
+  // 2) KYC gate: user must be verified before IDR v4 flows
+  // (mirror P2P behavior; mapping for the client will be created by webhook)
+  const user = await prisma.user.findUnique({
+    where: { diditSubject: subject },
+    select: { id: true, verifiedAt: true },
+  });
+
+  if (!user || !user.verifiedAt) {
+    // Start Didit Low-Code (v2 if configured, else dev stub fallback)
+    try {
+      const { url, sessionId } = await createLowCodeLink({
+        subject,
+        merchantId,
+        externalId,
+      });
+      return res.status(403).json({
+        ok: false,
+        error: "KYC_REQUIRED",
+        url,
+        diditSessionId: sessionId,
+        subject,
+      });
+    } catch (e) {
+      // local dev / fallback
+      try {
+        const { url, sessionId } = await startDiditSession(subject);
+        return res.status(403).json({
+          ok: false,
+          error: "KYC_REQUIRED",
+          url,
+          diditSessionId: sessionId,
+          subject,
+        });
+      } catch (err) {
+        console.error("[test session] KYC start failed", err);
+        return res.status(500).json({
+          ok: false,
+          error: "KYC_START_FAILED",
+          message: "Unable to start identity verification.",
+        });
+      }
+    }
+  }
+
+  // 3) API key scopes
   const requiredScopes = parseRequestedScopes(req.body?.scopes ?? req.body?.method ?? req.query?.method);
   const key = await resolveMerchantApiKey(merchantId, requiredScopes);
   if (!key) {
@@ -1004,12 +1053,13 @@ router.post("/payments/test/session", async (req: any, res) => {
     });
   }
 
+  // 4) Hand back the token for the widget
   const token = signCheckoutToken({
     merchantId,
     diditSubject: subject,
     currency,
     externalId,
-    clientStatus,
+    clientStatus: clientStatusCode,
   });
 
   res.json({
@@ -1017,7 +1067,7 @@ router.post("/payments/test/session", async (req: any, res) => {
     token,
     subject,
     diditSubject: subject,
-    clientStatus: formatClientStatusLabel(clientStatus),
+    clientStatus: clientStatusLabel,
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
     apiKey: key.apiKey,
     scopes: key.scopes,
@@ -1324,7 +1374,7 @@ router.get("/export/ledger.xlsx", async (req: any, res) => {
     { header: "Reason", key: "reason", width: 40 },
     { header: "Created", key: "createdAt", width: 22 },
   ];
-  entries.forEach(e => ws.addRow(e));
+    entries.forEach(e => ws.addRow(e));
   res.setHeader("Content-Type","application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
   res.setHeader("Content-Disposition",'attachment; filename="ledger.xlsx"');
   await wb.xlsx.write(res);

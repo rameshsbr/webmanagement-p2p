@@ -41,6 +41,7 @@
 <script>
 /* =============================================================================
    IDR v4 overlay (merchant test only). Uses IBGCheckoutV4 with API-key routes.
+   + KYC gate: handle 403 { error: "KYC_REQUIRED", url }
 ============================================================================= */
 (() => {
   const root = document.querySelector('[data-test-payments]');
@@ -56,25 +57,6 @@
   const methodMap = {
     'idr-v4-dynamic': 'VIRTUAL_BANK_ACCOUNT_DYNAMIC',
     'idr-v4-static': 'VIRTUAL_BANK_ACCOUNT_STATIC',
-  };
-
-  const bankLabel = (code) => {
-    const map = {
-      BCA: 'BCA',
-      BRI: 'BRI',
-      BNI: 'BNI',
-      MANDIRI: 'Mandiri',
-      CIMB_NIAGA: 'CIMB Niaga',
-      DANAMON: 'Danamon',
-      PERMATA: 'Permata',
-      HANA: 'Hana',
-      SAHABAT_SAMPOERNA: 'Bank Sahabat Sampoerna',
-      BSI: 'Bank Syariah Indonesia',
-      SEABANK: 'SeaBank',
-      MAYBANK: 'Maybank',
-    };
-    const key = String(code || '').toUpperCase();
-    return map[key] || key;
   };
 
   const setMessage = (text, variant = 'info') => {
@@ -142,19 +124,66 @@
     if (!resp.ok || !data?.ok) {
       const err = new Error(data?.message || data?.error || 'Unable to start session');
       err.code = data?.error;
+      if (data?.url) err.url = data.url;            // pass KYC link through
+      if (data?.clientStatus) err.clientStatus = data.clientStatus;
       throw err;
     }
     return data;
   };
 
+  // NEW: run KYC if required; poll until verified, then return a session
+  const ensureKycThenSession = async (payload) => {
+    try {
+      return await fetchSession(payload); // will throw if KYC_REQUIRED
+    } catch (err) {
+      if (err?.code !== 'KYC_REQUIRED' || !err?.url) throw err;
+
+      // Launch Didit
+      setMessage('Verification required — a window was opened. Complete KYC to continue…');
+      const w = window.open(err.url, 'didit', 'width=420,height=720');
+
+      // Poll the same endpoint until it returns ok:true
+      const started = Date.now();
+      const MAX_MS = 6 * 60 * 1000;          // 6 minutes
+      const INTERVAL = 2000;
+
+      return await new Promise((resolve, reject) => {
+        const t = setInterval(async () => {
+          if ((Date.now() - started) > MAX_MS || (w && w.closed)) {
+            clearInterval(t);
+            try { w && w.close(); } catch {}
+            setMessage('Verification not completed.', 'error');
+            return reject(Object.assign(new Error('Verification not completed'), { code: 'KYC_TIMEOUT' }));
+          }
+          try {
+            const s = await fetchSession(payload);
+            clearInterval(t);
+            try { w && w.close(); } catch {}
+            setMessage('');
+            resolve(s);
+          } catch (e) {
+            if (e?.code && e.code !== 'KYC_REQUIRED') {
+              clearInterval(t);
+              try { w && w.close(); } catch {}
+              setMessage(e.message || 'Unable to continue.', 'error');
+              reject(e);
+            }
+            // else keep polling on KYC_REQUIRED
+          }
+        }, INTERVAL);
+      });
+    }
+  };
+
   const ensureSessionFor = async (method) => {
+    const payload = {
+      subject: diditSubject,
+      method,
+      currency: getMode().startsWith('idr-v4') ? 'IDR' : undefined,
+    };
     try {
       disableIdrButtons(true);
-      const session = await fetchSession({
-        subject: diditSubject,
-        method,
-        currency: getMode().startsWith('idr-v4') ? 'IDR' : undefined,
-      });
+      const session = await ensureKycThenSession(payload);
       await initWidget(session);
       disableIdrButtons(false);
       setMessage('');
@@ -172,6 +201,7 @@
   };
 
   const primeSession = () => {
+    // Don’t auto-open KYC on page load; ignore errors here.
     const mode = getMode();
     const method = mode.startsWith('idr-v4') ? 'idr-v4-deposit' : 'p2p';
     fetchSession({ subject: diditSubject, method, currency: mode.startsWith('idr-v4') ? 'IDR' : undefined })

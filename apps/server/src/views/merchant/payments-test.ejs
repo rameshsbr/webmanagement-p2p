@@ -6,9 +6,6 @@
   data-session-endpoint="/merchant/payments/test/session"
   data-default-subject="<%= testCheckout.subject %>"
   data-initial-token="<%= testCheckout.token %>"
-  data-idrv4-api-key="<%= testCheckout.idrV4ApiKey || '' %>"
-  data-idrv4-kyc-name="<%= testCheckout.verifiedKycName || '' %>"
-  data-idrv4-prefill-name="<%= testCheckout.prefillName || '' %>"
   style="display:flex; flex-direction:column; gap:14px;"
 >
   <!-- Method group selector -->
@@ -43,26 +40,14 @@
 
 <script>
 /* =============================================================================
-   IDR v4 overlay (merchant test only). Isolated from P2P widget.
-   - Deposit: POST /public/deposit/intent (VA Dynamic/Static)
-   - Session: POST /public/merchant/checkout/session
-   - Banks: GET /merchant/idrv4/meta?method=<METHOD>
-   - Withdrawal: POST /api/v1/withdrawals (FAZZ_SEND)
-   - Validate: POST /merchant/idrv4/validate
+   IDR v4 overlay (merchant test only). Uses IBGCheckoutV4 with API-key routes.
 ============================================================================= */
 (() => {
   const root = document.querySelector('[data-test-payments]');
   if (!root) return;
 
-  const apiToken = root.getAttribute('data-idrv4-api-key') || '';
   const diditSubject = root.getAttribute('data-default-subject') || '';
-  const verifiedKycName = (root.getAttribute('data-idrv4-kyc-name') || '').trim();
-  const prefillName = (root.getAttribute('data-idrv4-prefill-name') || '').trim();
-  const sessionEndpoint = '/public/merchant/checkout/session';
-  let checkoutToken = '';
-  let kycPopup = null;
-  let kycStatus = null;
-  let kycListenerInstalled = false;
+  const sessionEndpoint = root.getAttribute('data-session-endpoint') || '/merchant/payments/test/session';
 
   const methodSelect = root.querySelector('[data-test-method]');
   const p2p = root.querySelector('[data-test-section="p2p"]');
@@ -121,532 +106,80 @@
     showSection(getMode());
   }, true);
 
-  const normalizeName = (value) =>
-    String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9\s]/g, ' ')
-      .replace(/\s+/g, ' ')
-      .trim();
-
-  const nameScore = (a, b) => {
-    const left = normalizeName(a);
-    const right = normalizeName(b);
-    if (!left || !right) return 0;
-    const leftWords = new Set(left.split(' '));
-    const rightWords = new Set(right.split(' '));
-    let common = 0;
-    leftWords.forEach((w) => { if (rightWords.has(w)) common += 1; });
-    return common / Math.max(leftWords.size, rightWords.size, 1);
-  };
-
-  const formatJakartaDDMMYYYY_12h = <%- formatJakartaDDMMYYYY_12h.toString() %>;
-  const formatIdr = (value) => `IDR ${Number(value || 0).toLocaleString('en-US')}`;
-
-  const money = (value) => {
-    const raw = String(value || '').replace(/,/g, '').trim();
-    if (!raw) return null;
-    const num = Number(raw);
-    if (!Number.isFinite(num) || num <= 0) return null;
-    return Math.round(num);
-  };
-
-  const h = (tag, attrs = {}, kids = []) => {
-    const el = document.createElement(tag);
-    for (const [k, v] of Object.entries(attrs)) {
-      if (k === 'class') el.className = v;
-      else if (k === 'style') el.style.cssText = v;
-      else if (k === 'html') el.innerHTML = v;
-      else el.setAttribute(k, v);
-    }
-    [].concat(kids).forEach((c) => el.appendChild(typeof c === 'string' ? document.createTextNode(c) : c));
-    return el;
-  };
-
-  function authHeaders() {
-    if (!apiToken) return {};
-    return { authorization: `Bearer ${apiToken}` };
-  }
-
-  async function apiPost(path, body, token) {
-    const headers = { 'Content-Type': 'application/json', ...(token ? { authorization: `Bearer ${token}` } : authHeaders()) };
-    const resp = await fetch(`/api/v1${path}`, {
-      method: 'POST',
-      headers,
-      credentials: 'same-origin',
-      body: JSON.stringify(body || {}),
+  const disableIdrButtons = (disabled) => {
+    idrv4?.querySelectorAll('[data-test-action]').forEach((btn) => {
+      btn.disabled = !!disabled;
+      btn.style.opacity = disabled ? '.6' : '';
     });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'Request failed');
-    return data;
-  }
+  };
 
-  async function fetchCheckoutToken() {
-    if (checkoutToken) return checkoutToken;
+  const ensureWidget = async () => {
+    if (window.IBGCheckoutV4) return window.IBGCheckoutV4;
+    await new Promise((resolve) => window.addEventListener('load', resolve, { once: true }));
+    return window.IBGCheckoutV4;
+  };
+
+  const initWidget = async (session) => {
+    if (!session?.apiKey) return;
+    const widget = await ensureWidget();
+    if (!widget) return;
+    widget.init({
+      apiBase: '/api/v1',
+      merchantBase: '/merchant',
+      token: session.apiKey,
+      diditSubject: session.diditSubject || diditSubject || '',
+    });
+  };
+
+  const fetchSession = async (payload) => {
     const resp = await fetch(sessionEndpoint, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders() },
+      headers: { 'Content-Type': 'application/json' },
       credentials: 'same-origin',
-      body: JSON.stringify({ user: { diditSubject }, currency: 'IDR' }),
+      body: JSON.stringify(payload || {}),
     });
     const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data?.ok) throw new Error(data?.message || data?.error || 'Unable to start checkout');
-    checkoutToken = data.token || '';
-    return checkoutToken;
-  }
-
-  async function callKyc(path, token, init) {
-    const resp = await fetch(path, {
-      ...(init || {}),
-      headers: { ...(init?.headers || {}), authorization: `Bearer ${token}` },
-      credentials: 'same-origin',
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || data?.ok === false) throw new Error(data?.error || data?.message || 'KYC request failed');
+    if (!resp.ok || !data?.ok) {
+      const err = new Error(data?.message || data?.error || 'Unable to start session');
+      err.code = data?.error;
+      throw err;
+    }
     return data;
-  }
+  };
 
-  function installKycListener() {
-    if (kycListenerInstalled) return;
-    kycListenerInstalled = true;
-    window.addEventListener('message', (event) => {
-      if (event.origin !== location.origin) return;
-      const msg = event.data || {};
-      if (msg && msg.type === 'kyc.complete') {
-        const status = String(msg.status || '').toLowerCase();
-        if (status === 'approved') kycStatus = 'approved';
-        if (['rejected', 'declined', 'failed'].includes(status)) kycStatus = 'rejected';
-        try { if (kycPopup && !kycPopup.closed) kycPopup.close(); } catch {}
+  const ensureSessionFor = async (method) => {
+    try {
+      disableIdrButtons(true);
+      const session = await fetchSession({
+        subject: diditSubject,
+        method,
+        currency: getMode().startsWith('idr-v4') ? 'IDR' : undefined,
+      });
+      await initWidget(session);
+      disableIdrButtons(false);
+      setMessage('');
+      return true;
+    } catch (err) {
+      if (err?.code === 'NO_API_KEY_OR_SCOPE') {
+        setMessage('No API key with the required scopes. Create one in API Keys and ask Super Admin to assign scopes.', 'error');
+        disableIdrButtons(true);
+        return false;
       }
-    });
-  }
-
-  async function waitForKycApproval(token) {
-    for (let i = 0; i < 12; i += 1) {
-      if (kycStatus === 'approved') return true;
-      if (kycStatus === 'rejected') {
-        throw new Error('Verification failed. Please ensure the name match is at least 60%.');
-      }
-      await new Promise((resolve) => setTimeout(resolve, 2500));
-      const next = await callKyc('/public/kyc/status', token, { method: 'GET' });
-      if (next?.status === 'approved') return true;
-      if (next?.status === 'rejected') {
-        throw new Error('Verification failed. Please ensure the name match is at least 60%.');
-      }
+      setMessage((err && err.message) || 'Unable to initialize IDR v4 checkout.', 'error');
+      disableIdrButtons(true);
+      return false;
     }
-    throw new Error('KYC pending. Please complete verification to continue.');
-  }
+  };
 
-  async function runKycFlow(token, fallbackUrl) {
-    let url = fallbackUrl || null;
-    if (!url) {
-      const start = await callKyc('/public/kyc/start', token, { method: 'POST' });
-      url = start?.url || null;
-    }
-    kycStatus = null;
-    installKycListener();
-    if (url) {
-      kycPopup = window.open(url, '_blank', 'popup=yes,noopener,noreferrer,width=480,height=720');
-    }
-    await waitForKycApproval(token);
-  }
-
-  async function loadMethodMeta(methodCode) {
-    const resp = await fetch(`/merchant/idrv4/meta?method=${encodeURIComponent(methodCode)}`, {
-      credentials: 'same-origin',
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data?.ok) throw new Error(data?.error || 'Unable to load banks');
-    return data || {};
-  }
-
-  async function ensureKycApproved(token) {
-    const status = await callKyc('/public/kyc/status', token, { method: 'GET' });
-    if (status?.status === 'approved') return true;
-    await runKycFlow(token);
-    return true;
-  }
-
-  function openModal(title, builder) {
-    const overlay = h('div', { class: 'payx-overlay', style: `
-      position: fixed; inset: 0; background: rgba(0,0,0,.35); display:flex; align-items:center; justify-content:center; z-index:9999;`
-    });
-    const box = h('div', { class: 'payx-box', style: `
-      background: var(--card-bg, #fff); color: inherit; border-radius: 10px; min-width: 520px; width: min(720px, 94vw);
-      box-shadow: 0 8px 24px rgba(0,0,0,.2); padding: 16px;`
-    });
-    const close = () => overlay.remove();
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    const headerTitle = h('div', { class:'muted', style:'font-weight:600;' }, title);
-    box.appendChild(h('div', { style:'display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;' }, [
-      headerTitle,
-      h('button', { class:'btn small', type:'button' }, 'Close')
-    ]));
-    box.querySelector('button')?.addEventListener('click', close);
-    const body = h('div');
-    box.appendChild(body);
-    overlay.appendChild(box);
-    document.body.appendChild(overlay);
-    builder(body, close, headerTitle);
-  }
-
-  async function openIdrDeposit() {
+  const primeSession = () => {
     const mode = getMode();
-    const methodCode = methodMap[mode] || methodMap['idr-v4-dynamic'];
+    const method = mode.startsWith('idr-v4') ? 'idr-v4-deposit' : 'p2p';
+    fetchSession({ subject: diditSubject, method, currency: mode.startsWith('idr-v4') ? 'IDR' : undefined })
+      .then((session) => initWidget(session))
+      .catch(() => {});
+  };
 
-    openModal('Deposit', async (body, close, headerTitle) => {
-      const form = h('form', { style:'display:grid; gap:10px;' });
-      const amount = h('input', { class:'input', inputmode:'numeric', placeholder:'Amount (IDR, min 10,000 max 100,000,000)' });
-      const fullName = h('input', { class:'input', placeholder:'Full name', value: prefillName || verifiedKycName || '' });
-      const bank = h('select', { class:'input' });
-      const warning = h('div', { class:'muted', style:'font-size:12px; color:#b91c1c; display:none;' });
-
-      const actions = h('div', { style:'display:flex; gap:8px; justify-content:flex-end;' }, [
-        h('button', { class:'btn', type:'button' }, 'Cancel'),
-        h('button', { class:'btn primary', type:'submit' }, 'Create VA')
-      ]);
-      actions.firstChild.addEventListener('click', close);
-
-      const row = (label, el) => h('label', { class:'form-line', style:'display:grid; grid-template-columns: 160px 1fr; gap:8px; align-items:center;' },
-        [ h('span', { class:'muted' }, label), el ]);
-
-      form.append(
-        row('Amount (IDR)', amount),
-        row('Full name', fullName),
-        row('Bank (VA)', bank),
-        warning,
-        actions,
-      );
-      body.appendChild(form);
-
-      let limits = { minDeposit: 10000, maxDeposit: 100000000 };
-      let bankOptions = [];
-      let bankLabels = {};
-      try {
-        const meta = await loadMethodMeta(methodCode);
-        bankOptions = Array.isArray(meta?.banks) ? meta.banks : [];
-        bankLabels = meta?.labels || {};
-        if (!bankOptions.length) throw new Error('No available banks for this method.');
-        bank.innerHTML = '';
-        bankOptions.forEach((code) => {
-          const label = bankLabels[code] || bankLabel(code);
-          bank.appendChild(h('option', { value: code }, label));
-        });
-        if (meta?.limits?.minDeposit) limits.minDeposit = Math.round(meta.limits.minDeposit);
-        if (meta?.limits?.maxDeposit) limits.maxDeposit = Math.round(meta.limits.maxDeposit);
-      } catch (err) {
-        warning.style.display = '';
-        warning.textContent = (err && err.message) || 'Unable to load banks.';
-      }
-
-      const token = apiToken || '';
-      if (!token) {
-        warning.style.display = '';
-        warning.textContent = 'Missing API token for IDR v4. Create a key with IDR v4 scopes first.';
-        actions.lastChild.disabled = true;
-        return;
-      }
-      if (!diditSubject) {
-        warning.style.display = '';
-        warning.textContent = 'Missing user subject for IDR v4. Refresh the page.';
-        actions.lastChild.disabled = true;
-        return;
-      }
-
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        warning.style.display = 'none';
-
-        const amountCents = money(amount.value);
-        if (!amountCents) {
-          warning.textContent = 'Enter a valid amount.'; warning.style.display = ''; return;
-        }
-        if (typeof limits.minDeposit === 'number' && amountCents < limits.minDeposit) {
-          warning.textContent = `Amount must be ≥ ${limits.minDeposit.toLocaleString('en-US')} IDR.`; warning.style.display = ''; return;
-        }
-        if (typeof limits.maxDeposit === 'number' && amountCents > limits.maxDeposit) {
-          warning.textContent = `Amount must be ≤ ${limits.maxDeposit.toLocaleString('en-US')} IDR.`; warning.style.display = ''; return;
-        }
-        const name = String(fullName.value || '').trim();
-        if (!name) { warning.textContent = 'Enter the full name.'; warning.style.display = ''; return; }
-        if (verifiedKycName) {
-          const score = nameScore(name, verifiedKycName);
-          if (score < 0.6) {
-            warning.textContent = 'Full name must match the verified KYC name.';
-            warning.style.display = '';
-            return;
-          }
-        }
-
-        const selectedBank = bankOptions.find((row) => row === bank.value) || bankOptions[0] || null;
-        if (!selectedBank) {
-          warning.textContent = 'No available banks for this method.'; warning.style.display = ''; return;
-        }
-
-        actions.lastChild.disabled = true;
-        try {
-          const checkoutToken = await fetchCheckoutToken();
-          await ensureKycApproved(checkoutToken);
-          const intentResp = await apiPost('/deposit/intents', {
-            user: { diditSubject },
-            amountCents,
-            currency: 'IDR',
-            methodCode,
-            bankCode: selectedBank,
-          });
-          const intent = intentResp?.data || intentResp || {};
-          const referenceCode = intent?.referenceCode || '-';
-          const expiresAt = intent?.expiresAt || null;
-          const amountFinal = intent?.amountCents || amountCents;
-          const va = intent?.va || {};
-          const isDynamic = methodCode.toUpperCase().includes('DYNAMIC');
-
-          body.innerHTML = '';
-          if (headerTitle) headerTitle.textContent = 'Transfer details';
-          if (isDynamic) {
-            body.appendChild(h('div', { class:'muted', style:'margin:6px 0 12px;' },
-              'Use the details below to make your transfer. Always include the reference.'
-            ));
-          }
-          const rows = [];
-          const bankName = va.bankName || bankLabels[selectedBank] || bankLabel(selectedBank);
-          rows.push(
-            h('div', { class:'muted' }, 'Bank'), h('div', {}, bankName || '-'),
-            h('div', { class:'muted' }, 'Account No'), h('div', { class:'mono' }, va.accountNo || '-'),
-            h('div', { class:'muted' }, 'Account Name'), h('div', {}, va.accountName || '-')
-          );
-          rows.push(
-            h('div', { class:'muted' }, 'Amount'), h('div', { class:'mono' }, formatIdr(amountFinal))
-          );
-          if (isDynamic) {
-            rows.push(
-              h('div', { class:'muted' }, 'Reference'),
-              h('div', { class:'mono' }, va?.meta?.uniqueRefNo || referenceCode || '-'),
-              h('div', { class:'muted' }, 'Expiry'),
-              h('div', {}, formatJakartaDDMMYYYY_12h(expiresAt))
-            );
-          } else {
-            rows.push(h('div', { class:'muted' }, 'Reference'), h('div', {}, 'Fund Transfer'));
-          }
-          const grid = h('div', { style:'display:grid; grid-template-columns: 160px 1fr; gap:6px;' }, rows);
-          body.appendChild(grid);
-
-          const statusEl = h('div', { class:'muted', style:'margin-top:10px;' }, 'Awaiting payment confirmation.');
-          const pollBtn = h('button', { class:'btn primary', type:'button', style:'margin-top:10px;' }, "I've paid");
-          const backBtn = h('button', { class:'btn', type:'button', style:'margin-left:8px;' }, 'Back');
-          const footer = h('div', { style:'display:flex; justify-content:flex-end; gap:8px; margin-top:12px;' }, [backBtn, pollBtn]);
-          body.appendChild(statusEl);
-          body.appendChild(footer);
-
-          backBtn.addEventListener('click', close);
-          pollBtn.addEventListener('click', async () => {
-            pollBtn.disabled = true;
-            statusEl.textContent = 'Checking status…';
-            let attempts = 0;
-            const interval = setInterval(async () => {
-              attempts += 1;
-              try {
-                const confirm = await apiPost('/deposit/confirm', { referenceCode }, token);
-                const status = confirm?.status || confirm?.data?.status || 'PENDING';
-                statusEl.textContent = `Status: ${status}`;
-                if (status === 'APPROVED' || attempts >= 20) {
-                  clearInterval(interval);
-                  pollBtn.disabled = false;
-                }
-              } catch (err) {
-                clearInterval(interval);
-                pollBtn.disabled = false;
-                statusEl.textContent = (err && err.message) || 'Unable to confirm payment.';
-              }
-            }, 2500);
-          });
-        } catch (err) {
-          warning.textContent = (err && err.message) || 'Unable to create deposit intent.';
-          warning.style.display = '';
-        } finally {
-          actions.lastChild.disabled = false;
-        }
-      });
-    });
-  }
-
-  async function openIdrWithdrawal() {
-    openModal('Withdrawal', async (body, close) => {
-      const form = h('form', { style:'display:grid; gap:10px;' });
-      const amount = h('input', { class:'input', inputmode:'numeric', placeholder:'Amount (IDR, min 10,000 max 100,000,000)' });
-      const bank = h('select', { class:'input' });
-      const holderName = h('input', { class:'input', placeholder:'Account holder name' });
-      const accountNo = h('input', { class:'input', placeholder:'Account number' });
-      const validateBtn = h('button', { class:'btn', type:'button' }, 'Validate');
-      const validateMsg = h('span', { class:'muted' });
-      const holderLabel = h('div', { class:'muted', style:'font-size:12px; display:none;' });
-      const submitBtn = h('button', { class:'btn primary', type:'submit', disabled:'disabled' }, 'Submit withdraw');
-      const warning = h('div', { class:'muted', style:'font-size:12px; color:#b91c1c; display:none;' });
-
-      const row = (label, el) => h('label', { class:'form-line', style:'display:grid; grid-template-columns: 180px 1fr; gap:8px; align-items:center;' },
-        [ h('span', { class:'muted' }, label), el ]);
-
-      const actions = h('div', { style:'display:flex; gap:8px; justify-content:flex-end;' }, [
-        h('button', { class:'btn', type:'button' }, 'Cancel'),
-        submitBtn,
-      ]);
-      actions.firstChild.addEventListener('click', close);
-
-      form.append(
-        row('Amount (IDR)', amount),
-        row('Bank', bank),
-        row('Account holder name', holderName),
-        row('Account number', accountNo),
-        h('div', { style:'display:flex; gap:8px; align-items:center;' }, [validateBtn, validateMsg]),
-        holderLabel,
-        warning,
-        actions,
-      );
-      body.appendChild(form);
-
-      let limits = { minWithdrawal: 10000, maxWithdrawal: 100000000 };
-      try {
-        const meta = await loadMeta(methodMap['idr-v4-dynamic']);
-        limits = { ...limits, ...(meta?.limits || {}) };
-      } catch {
-        // ignore; limits are optional
-      }
-
-      const token = apiToken || '';
-      if (!token) {
-        warning.style.display = '';
-        warning.textContent = 'Missing API token for IDR v4. Create a key with IDR v4 scopes first.';
-        submitBtn.disabled = true;
-        validateBtn.disabled = true;
-        return;
-      }
-      if (!diditSubject) {
-        warning.style.display = '';
-        warning.textContent = 'Missing user subject for IDR v4. Refresh the page.';
-        submitBtn.disabled = true;
-        validateBtn.disabled = true;
-        return;
-      }
-
-      try {
-        const resp = await fetch('/api/v1/withdraw/config', {
-          method: 'GET',
-          headers: token ? { authorization: `Bearer ${token}` } : {},
-          credentials: 'same-origin',
-        });
-        const data = await resp.json().catch(() => ({}));
-        const banks = Array.isArray(data?.banks) ? data.banks : [];
-        bank.innerHTML = '';
-        banks.forEach((row) => {
-          bank.appendChild(h('option', { value: row.code }, row.name || row.code));
-        });
-      } catch (err) {
-        warning.textContent = (err && err.message) || 'Unable to load bank list.';
-        warning.style.display = '';
-      }
-
-      validateBtn.addEventListener('click', async () => {
-        warning.style.display = 'none';
-        holderLabel.style.display = 'none';
-        const amt = money(amount.value);
-        if (!amt) { warning.textContent = 'Enter a valid amount.'; warning.style.display = ''; return; }
-        if (typeof limits.minWithdrawal === 'number' && amt < limits.minWithdrawal) {
-          warning.textContent = `Amount must be ≥ ${limits.minWithdrawal.toLocaleString('en-US')} IDR.`; warning.style.display = ''; return;
-        }
-        if (typeof limits.maxWithdrawal === 'number' && amt > limits.maxWithdrawal) {
-          warning.textContent = `Amount must be ≤ ${limits.maxWithdrawal.toLocaleString('en-US')} IDR.`; warning.style.display = ''; return;
-        }
-
-        const name = String(holderName.value || '').trim();
-        const acc = String(accountNo.value || '').trim();
-        const code = String(bank.value || '').trim();
-        if (!name || !acc || !code) {
-          warning.textContent = 'Fill all fields first.'; warning.style.display = ''; return;
-        }
-
-        validateMsg.textContent = 'Validating…';
-        validateBtn.disabled = true;
-        try {
-          const res = await fetch('/merchant/idrv4/validate', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            credentials: 'same-origin',
-            body: JSON.stringify({ bankCode: code, accountNo: acc, name }),
-          });
-          const data = await res.json().catch(() => ({}));
-          if (!res.ok || !data?.ok) throw new Error(data?.error || 'Validation failed');
-          const score = nameScore(name, data?.holder || '');
-          holderLabel.textContent = data?.holder ? `Account holder: ${data.holder}` : '';
-          holderLabel.style.display = data?.holder ? '' : 'none';
-          if (score >= 0.6) {
-            validateMsg.textContent = 'Validated ✓';
-            submitBtn.disabled = false;
-          } else {
-            validateMsg.textContent = 'Name mismatch.';
-            submitBtn.disabled = true;
-          }
-        } catch (err) {
-          validateMsg.textContent = (err && err.message) || 'Validation error';
-          submitBtn.disabled = true;
-        } finally {
-          validateBtn.disabled = false;
-        }
-      });
-
-      form.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        warning.style.display = 'none';
-
-        const amountCents = money(amount.value);
-        if (!amountCents) { warning.textContent = 'Enter a valid amount.'; warning.style.display = ''; return; }
-
-        const payload = {
-          user: { diditSubject },
-          amountCents,
-          currency: 'IDR',
-          methodCode: 'FAZZ_SEND',
-          destination: {
-            bankCode: String(bank.value || '').trim(),
-            holderName: String(holderName.value || '').trim(),
-            accountNo: String(accountNo.value || '').trim(),
-          },
-        };
-
-        submitBtn.disabled = true;
-        try {
-          const data = await apiPost('/withdrawals', payload, token);
-          const result = data?.data || data;
-          body.innerHTML = '';
-          body.appendChild(h('div', { class:'muted', style:'margin-bottom:6px;' }, 'Withdrawal submitted'));
-          body.appendChild(h('div', { class:'mono' }, `Reference: ${result?.referenceCode || '-'}`));
-          const statusEl = h('div', { class:'muted', style:'margin-top:10px;' }, 'Status: PENDING');
-          const refresh = h('button', { class:'btn primary', type:'button', style:'margin-top:8px;' }, 'Refresh status');
-          const closeBtn = h('button', { class:'btn', type:'button', style:'margin-left:8px; margin-top:8px;' }, 'Close');
-          const footer = h('div', { style:'display:flex; gap:8px; justify-content:flex-end;' }, [closeBtn, refresh]);
-          body.appendChild(statusEl);
-          body.appendChild(footer);
-
-          closeBtn.addEventListener('click', close);
-          refresh.addEventListener('click', async () => {
-            refresh.disabled = true;
-            try {
-              const confirm = await apiPost('/withdraw/confirm', { referenceCode: result?.referenceCode }, token);
-              const status = confirm?.status || confirm?.data?.status || 'PENDING';
-              statusEl.textContent = `Status: ${status}`;
-            } catch (err) {
-              statusEl.textContent = (err && err.message) || 'Unable to refresh status.';
-            } finally {
-              refresh.disabled = false;
-            }
-          });
-        } catch (err) {
-          warning.textContent = (err && err.message) || 'Unable to submit withdrawal.';
-          warning.style.display = '';
-        } finally {
-          submitBtn.disabled = false;
-        }
-      });
-    });
-  }
+  primeSession();
 
   // Intercept clicks for IDR v4 so P2P widget does not open.
   root.addEventListener('click', (e) => {
@@ -656,8 +189,17 @@
     e.preventDefault();
     e.stopPropagation();
     const kind = (btn.getAttribute('data-test-action') || '').toLowerCase();
-    if (kind === 'deposit') openIdrDeposit();
-    else if (kind === 'withdrawal') openIdrWithdrawal();
+    const method = kind === 'withdrawal' ? 'idr-v4-withdrawal' : 'idr-v4-deposit';
+    ensureSessionFor(method).then((ok) => {
+      if (!ok) return;
+      const mode = getMode();
+      const methodCode = methodMap[mode] || methodMap['idr-v4-dynamic'];
+      if (kind === 'withdrawal') {
+        window.IBGCheckoutV4?.openWithdrawal();
+      } else {
+        window.IBGCheckoutV4?.openDeposit({ method: methodCode });
+      }
+    });
   }, true);
 })();
 </script>

@@ -18,6 +18,7 @@ import { idrV4BankLabel } from '../services/methodBanks.js';
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
 import { API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from '../services/apiKeyScopes.js';
+import { createLowCodeLink, getVerificationStatus } from '../services/didit.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -242,8 +243,22 @@ merchantApiRouter.post(
           update: {},
         });
         if (!user.verifiedAt) {
+          let url = '/fake-didit';
+          try {
+            const out = await createLowCodeLink({ subject: body.user.diditSubject, merchantId });
+            url = out.url || url;
+            await prisma.kycVerification.create({
+              data: {
+                userId: user.id,
+                provider: 'didit',
+                status: 'pending',
+                externalSessionId: out.sessionId,
+              },
+            });
+          } catch {}
           const err = new Error('KYC_REQUIRED');
           (err as any).code = 'KYC_REQUIRED';
+          (err as any).url = url;
           throw err;
         }
 
@@ -446,7 +461,7 @@ merchantApiRouter.post(
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
       if (message === 'KYC_REQUIRED' || err?.code === 'KYC_REQUIRED') {
-        return res.status(403).json({ ok: false, error: 'KYC_REQUIRED' });
+        return res.status(403).json({ ok: false, error: 'KYC_REQUIRED', url: err?.url || null });
       }
       if (message === 'PROVIDER_PERSIST_FAILED') {
         const cause = err?.cause;
@@ -546,6 +561,53 @@ merchantApiRouter.post(
       status: newStatus || pr.status,
       provider: { status: providerStatus, ...(isDebug ? { raw: toJsonSafe(raw ?? {}) } : {}) },
     });
+  }
+);
+
+merchantApiRouter.get(
+  '/kyc/status',
+  apiKeyOnly,
+  applyMerchantLimits,
+  requireApiScopes([API_KEY_SCOPES.IDRV4_ACCEPT]),
+  async (req, res) => {
+    const diditSubject = String(req.query?.diditSubject || '').trim();
+    if (!diditSubject) {
+      return res.status(400).json({ ok: false, error: 'diditSubject is required' });
+    }
+
+    const merchantId = (req as any).merchantId as string;
+    const user = await prisma.user.findUnique({
+      where: { diditSubject },
+      select: { id: true, verifiedAt: true },
+    });
+
+    if (!user) return res.json({ ok: true, status: 'pending' });
+
+    await upsertMerchantClientMapping({ merchantId, userId: user.id });
+
+    if (user.verifiedAt) return res.json({ ok: true, status: 'approved' });
+
+    const last = await prisma.kycVerification.findFirst({
+      where: { userId: user.id, provider: 'didit' },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (last?.externalSessionId) {
+      try {
+        const status = await getVerificationStatus(last.externalSessionId);
+        if (status === 'approved') {
+          await prisma.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
+          await prisma.kycVerification.update({ where: { id: last.id }, data: { status: 'approved' } });
+          return res.json({ ok: true, status: 'approved' });
+        }
+        if (status === 'rejected') {
+          await prisma.kycVerification.update({ where: { id: last.id }, data: { status: 'rejected' } });
+          return res.json({ ok: true, status: 'rejected' });
+        }
+      } catch {}
+    }
+
+    return res.json({ ok: true, status: last?.status || 'pending' });
   }
 );
 

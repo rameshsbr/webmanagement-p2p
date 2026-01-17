@@ -25,7 +25,7 @@ import { deriveDiditSubject } from "../lib/diditSubject.js";
 import { normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
-import { API_KEY_SCOPE_LABELS, API_KEY_SCOPES, normalizeApiKeyScopes } from "../services/apiKeyScopes.js";
+import { API_KEY_SCOPE_LABELS, API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from "../services/apiKeyScopes.js";
 import { ipFromReq, uaFromReq } from "../services/audit.js";
 import { formatClientStatusLabel, getClientStatusBySubject } from "../services/merchantClient.js";
 import { listMerchantMethods } from "../services/methods.js";
@@ -86,46 +86,48 @@ function normalizeTestSubject(input: any, merchantId: string): string {
   return generated.slice(0, 64);
 }
 
-// IDR v4 helpers (isolated to the test overlay + meta/validation endpoints).
-async function resolveIdrV4ApiKey(merchantId: string): Promise<string | null> {
+type ApiKeySession = {
+  apiKey: string;
+  scopes: ApiKeyScope[];
+};
+
+function parseRequestedScopes(input: any): ApiKeyScope[] {
+  if (Array.isArray(input)) {
+    const normalized = normalizeApiKeyScopes(input.map((s) => String(s || "").trim()).filter(Boolean));
+    return normalized.length ? normalized : [API_KEY_SCOPES.P2P];
+  }
+  const raw = String(input || "").toLowerCase().trim();
+  if (!raw) return [API_KEY_SCOPES.P2P];
+  if (raw === "p2p") return [API_KEY_SCOPES.P2P];
+  if (raw === "idr-v4-deposit") return [API_KEY_SCOPES.IDRV4_ACCEPT];
+  if (raw === "idr-v4-withdrawal" || raw === "idr-v4-disburse") return [API_KEY_SCOPES.IDRV4_DISBURSE];
+  return [API_KEY_SCOPES.P2P];
+}
+
+async function resolveMerchantApiKey(merchantId: string, requiredScopes: ApiKeyScope[]): Promise<ApiKeySession | null> {
   const keys = await prisma.merchantApiKey.findMany({
-    where: { merchantId, active: true },
+    where: {
+      merchantId,
+      active: true,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
     orderBy: { createdAt: "desc" },
     select: { prefix: true, secretEnc: true, scopes: true },
   });
   if (!keys.length) return null;
-  const key =
-    keys.find((candidate) => {
-      const scopes = normalizeApiKeyScopes(candidate.scopes);
-      return (
-        scopes.includes(API_KEY_SCOPES.IDRV4_ACCEPT) ||
-        scopes.includes(API_KEY_SCOPES.IDRV4_DISBURSE)
-      );
-    }) || keys[0];
-  try {
-    const secret = open(key.secretEnc);
-    return `${key.prefix}.${secret}`;
-  } catch {
-    return null;
+  const required = new Set(requiredScopes);
+  for (const candidate of keys) {
+    const scopes = normalizeApiKeyScopes(candidate.scopes);
+    const hasAll = Array.from(required).every((scope) => scopes.includes(scope));
+    if (!hasAll) continue;
+    try {
+      const secret = open(candidate.secretEnc);
+      return { apiKey: `${candidate.prefix}.${secret}`, scopes };
+    } catch {
+      continue;
+    }
   }
-}
-
-async function resolveVerifiedKycName(diditSubject: string): Promise<string | null> {
-  const user = await prisma.user.findUnique({
-    where: { diditSubject },
-    select: {
-      fullName: true,
-      firstName: true,
-      lastName: true,
-      verifiedAt: true,
-      kyc: { where: { status: "approved" }, select: { id: true }, take: 1 },
-    },
-  });
-  if (!user) return null;
-  const hasApproval = !!user.verifiedAt || (user.kyc && user.kyc.length > 0);
-  if (!hasApproval) return null;
-  const full = user.fullName || [user.firstName, user.lastName].filter(Boolean).join(" ");
-  return full?.trim() ? full.trim() : null;
+  return null;
 }
 
 function buildMerchantMethodFilter(code: string, methodId?: string): Prisma.PaymentRequestWhereInput {
@@ -961,22 +963,10 @@ router.get("/payments/test", async (req: any, res) => {
   const subject = deriveDiditSubject(merchantId, externalId);
   const currency = (req.merchantDetails?.defaultCurrency || "AUD").toUpperCase();
   const token = signCheckoutToken({ merchantId, diditSubject: subject, currency, externalId });
-  const [idrV4ApiKey, verifiedKycName, user] = await Promise.all([
-    resolveIdrV4ApiKey(merchantId),
-    resolveVerifiedKycName(subject),
-    prisma.user.findUnique({
-      where: { diditSubject: subject },
-      select: { fullName: true, firstName: true, lastName: true },
-    }),
-  ]);
-  const prefillName = verifiedKycName
-    || user?.fullName
-    || [user?.firstName, user?.lastName].filter(Boolean).join(" ")
-    || null;
 
   res.render("merchant/payments-test", {
     title: "Test Payments",
-    testCheckout: { subject, token, idrV4ApiKey, verifiedKycName, prefillName },
+    testCheckout: { subject, token },
   });
 });
 
@@ -1004,6 +994,16 @@ router.post("/payments/test/session", async (req: any, res) => {
     });
   }
 
+  const requiredScopes = parseRequestedScopes(req.body?.scopes ?? req.body?.method ?? req.query?.method);
+  const key = await resolveMerchantApiKey(merchantId, requiredScopes);
+  if (!key) {
+    return res.status(403).json({
+      ok: false,
+      error: "NO_API_KEY_OR_SCOPE",
+      message: "Create an API key in Merchant → API Keys and ask Super Admin to assign the required scopes.",
+    });
+  }
+
   const token = signCheckoutToken({
     merchantId,
     diditSubject: subject,
@@ -1016,8 +1016,11 @@ router.post("/payments/test/session", async (req: any, res) => {
     ok: true,
     token,
     subject,
+    diditSubject: subject,
     clientStatus: formatClientStatusLabel(clientStatus),
     expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString(),
+    apiKey: key.apiKey,
+    scopes: key.scopes,
   });
 });
 

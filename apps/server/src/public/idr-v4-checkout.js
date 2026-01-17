@@ -18,9 +18,6 @@
   };
   let _stylesInjected = false;
 
-  // NEW: ephemeral checkout token (for public KYC endpoints)
-  let _checkout = { token: "", expiresAt: 0 };
-
   function normalizeBase(value, fallback) {
     const raw = String(value || fallback || "").trim();
     return raw.endsWith("/") ? raw.slice(0, -1) : raw;
@@ -115,7 +112,10 @@
     });
     const data = await resp.json().catch(() => ({}));
     if (!resp.ok || data?.ok === false) {
-      throw new Error(data?.error || data?.message || "Request failed");
+      const err = new Error(data?.error || data?.message || "Request failed");
+      err.status = resp.status;
+      err.data = data;
+      throw err;
     }
     return data;
   }
@@ -132,88 +132,29 @@
   }
 
   // ───────────────────────────────────────────────
-  // NEW: Public-checkout helpers (KYC)
+  // API-key KYC helpers
   // ───────────────────────────────────────────────
 
-  async function ensureCheckoutToken() {
-    // Reuse if still fresh (5s skew)
-    if (_checkout.token && Date.now() < (_checkout.expiresAt - 5000)) return _checkout.token;
-
-    const resp = await fetch(`${_cfg.merchantBase}/checkout/session`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", ...authHeaders() },
-      body: JSON.stringify({
-        user: { diditSubject: _cfg.diditSubject || "" },
-        currency: "IDR",
-      }),
-    });
-    const data = await resp.json().catch(() => ({}));
-    if (!resp.ok || !data?.ok || !data?.token) {
-      throw new Error(data?.error || "Unable to start checkout");
-    }
-    _checkout.token = data.token;
-    _checkout.expiresAt = Date.parse(data.expiresAt || "") || (Date.now() + 12 * 60 * 1000);
-    return _checkout.token;
-  }
-
-  async function kycStatus() {
-    const token = await ensureCheckoutToken();
-    const r = await fetch(`/public/kyc/status`, {
-      method: "GET",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const j = await r.json().catch(() => ({}));
-    return (j && j.status) || "pending";
-  }
-
-  async function kycStart() {
-    const token = await ensureCheckoutToken();
-    const r = await fetch(`/public/kyc/start`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${token}` },
-    });
-    const j = await r.json().catch(() => ({}));
-    return (j && j.url) || null;
-  }
-
-  async function kycEnsureApproved(warnEl) {
-    // If already approved, nothing to do
-    try {
-      const s0 = await kycStatus();
-      if (s0 === "approved") return true;
-    } catch {
-      // fall through; we'll try to start
-    }
-
-    const url = await kycStart();
-    if (!url) {
+  async function pollKycStatus(warnEl) {
+    if (!_cfg.diditSubject) {
       if (warnEl) {
-        warnEl.textContent = "KYC verification is required but could not be started.";
+        warnEl.textContent = "Missing diditSubject for KYC polling.";
         warnEl.style.display = "";
       }
       return false;
     }
-
-    // Open Didit in a new tab and listen for the completion ping
-    const popup = window.open(url, "_blank", "noopener,noreferrer");
-    const onMsg = (ev) => {
-      if (!ev || !ev.data || ev.data.type !== "kyc.complete") return;
-      try { if (popup && !popup.closed) popup.close(); } catch {}
-      window.removeEventListener("message", onMsg);
-    };
-    window.addEventListener("message", onMsg);
-
-    // Poll status for up to ~2 minutes
-    for (let i = 0; i < 60; i += 1) {
-      await new Promise((r) => setTimeout(r, 2000));
+    const subject = encodeURIComponent(_cfg.diditSubject);
+    for (let i = 0; i < 40; i += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
       try {
-        const s = await kycStatus();
-        if (s === "approved") {
-          window.removeEventListener("message", onMsg);
-          return true;
-        }
-        if (s === "rejected") {
-          window.removeEventListener("message", onMsg);
+        const resp = await fetch(`${_cfg.apiBase}/kyc/status?diditSubject=${subject}`, {
+          method: "GET",
+          headers: authHeaders(),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || data?.ok === false) continue;
+        if (data?.status === "approved") return true;
+        if (data?.status === "rejected") {
           if (warnEl) {
             warnEl.textContent = "KYC verification failed. Please try again.";
             warnEl.style.display = "";
@@ -224,8 +165,6 @@
         // ignore transient errors while polling
       }
     }
-    // timeout
-    window.removeEventListener("message", onMsg);
     if (warnEl) {
       warnEl.textContent = "KYC verification timed out. Please try again.";
       warnEl.style.display = "";
@@ -421,29 +360,42 @@
         const name = String(fullName.value || "").trim();
         if (!name) { warning.textContent = "Enter the full name."; warning.style.display = ""; return; }
 
-        // ── NEW: require KYC before creating the VA (public endpoints)
         actions.lastChild.disabled = true;
         try {
-          await ensureCheckoutToken(); // make sure we can hit public endpoints
-          const ok = await kycEnsureApproved(warning);
-          if (!ok) { actions.lastChild.disabled = false; return; }
-        } catch (e2) {
-          warning.textContent = (e2 && e2.message) || "Unable to check KYC status.";
-          warning.style.display = "";
-          actions.lastChild.disabled = false;
-          return;
-        }
-
-        // ── Existing behavior: create VA via merchant API
-        try {
-          const data = await apiPost("/deposit/intents?debug=1", {
+          const payload = {
             user: { diditSubject: _cfg.diditSubject || "" },
             amountCents,
             currency: "IDR",
             bankCode: String(bank.value || ""),
             methodCode,
             paymentMethodDisplayName: name,
-          });
+          };
+
+          let data;
+          try {
+            data = await apiPost("/deposit/intents?debug=1", payload);
+          } catch (err) {
+            const apiError = err || {};
+            const info = apiError.data || {};
+            if (apiError.status === 403 && info?.error === "KYC_REQUIRED") {
+              const url = info?.url || null;
+              if (!url) {
+                warning.textContent = "KYC verification is required but no verification URL was provided.";
+                warning.style.display = "";
+                actions.lastChild.disabled = false;
+                return;
+              }
+              window.open(url, "_blank", "noopener,noreferrer");
+              const approved = await pollKycStatus(warning);
+              if (!approved) {
+                actions.lastChild.disabled = false;
+                return;
+              }
+              data = await apiPost("/deposit/intents?debug=1", payload);
+            } else {
+              throw err;
+            }
+          }
           const intent = data?.data || data;
           const va = intent?.va || {};
           const instructions = intent?.instructions || {};

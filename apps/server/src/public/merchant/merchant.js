@@ -636,7 +636,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
 
   const showSection = (mode) => {
     currentMode = mode;
-    if (mode === 'idr-v4') {
+    if (mode.startsWith('idr-v4')) {
       sectionP2P && (sectionP2P.style.display = 'none');
       sectionIDR && (sectionIDR.style.display = '');
       setMessage('IDR v4 limits: 10,000.00 – 100,000,000.00 IDR. Enter a valid amount in the popup.');
@@ -667,9 +667,10 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   })();
 
   const fetchSession = async () => {
+    if (currentMode.startsWith('idr-v4')) return null;
     const payload = { subject };
-    // Tell server we want IDR for IDR v4; server patch below honors this
-    if (currentMode === 'idr-v4') payload.currency = 'IDR';
+    payload.method = 'p2p';
+    payload.scopes = ['P2P'];
 
     const resp = await fetch(sessionEndpoint, {
       method: 'POST',
@@ -690,6 +691,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   };
 
   const prefetchSession = async () => {
+    if (currentMode.startsWith('idr-v4')) return;
     try {
       prefetchedToken = await fetchSession();
     } catch {
@@ -728,7 +730,10 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     } catch (err) {
       const message = (err && err.message) || 'Unable to open checkout';
       notify(message);
-      if (err && (err.code === 'CLIENT_INACTIVE' || err.clientStatus)) {
+      if (err && err.code === 'NO_API_KEY_OR_SCOPE') {
+        locked = true;
+        setMessage('No API key with the required scopes. Create one in API Keys and ask Super Admin to assign scopes.', 'error');
+      } else if (err && (err.code === 'CLIENT_INACTIVE' || err.clientStatus)) {
         locked = true;
         setMessage(message, 'error');
       } else {

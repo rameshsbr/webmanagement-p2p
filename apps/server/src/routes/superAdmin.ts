@@ -35,6 +35,7 @@ import { PaymentType, Prisma, type MerchantAccountEntryType } from "@prisma/clie
 import { defaultTimezone, normalizeTimezone, resolveTimezone } from "../lib/timezone.js";
 import { getApiKeyRevealConfig } from "../config/apiKeyReveal.js";
 import { revealApiKey, ApiKeyRevealError } from "../services/apiKeyReveal.js";
+import { clearKycReverify, requestKycReverify } from "../services/kycReset.js";
 import {
   API_KEY_SCOPE_LABELS,
   API_KEY_SCOPE_OPTIONS,
@@ -1825,6 +1826,53 @@ superAdminRouter.get("/users", async (req, res) => {
     statusMessage,
     statusError,
   });
+});
+
+superAdminRouter.post("/clients/:userId/kyc/force-reset", async (req, res) => {
+  const userId = String(req.params.userId || "");
+  const merchantId = String(req.query?.merchantId || req.body?.merchantId || "");
+  if (!userId || !merchantId) {
+    return res.status(400).json({ ok: false, error: "merchantId and userId are required." });
+  }
+
+  const mapping = await prisma.merchantClient.findUnique({
+    where: { merchantId_userId: { merchantId, userId } },
+    select: { merchantId: true, userId: true, user: { select: { diditSubject: true } } },
+  });
+
+  if (!mapping) {
+    return res.status(404).json({ ok: false, error: "Client not found for merchant." });
+  }
+
+  const adminId = req.admin?.sub ? String(req.admin.sub) : null;
+  await requestKycReverify({
+    merchantId,
+    userId,
+    diditSubject: mapping.user?.diditSubject ?? null,
+    requestedByAdminId: adminId,
+  });
+
+  return res.json({ ok: true });
+});
+
+superAdminRouter.post("/clients/:userId/kyc/clear-reset", async (req, res) => {
+  const userId = String(req.params.userId || "");
+  const merchantId = String(req.query?.merchantId || req.body?.merchantId || "");
+  if (!userId || !merchantId) {
+    return res.status(400).json({ ok: false, error: "merchantId and userId are required." });
+  }
+
+  const mapping = await prisma.merchantClient.findUnique({
+    where: { merchantId_userId: { merchantId, userId } },
+    select: { merchantId: true, userId: true },
+  });
+
+  if (!mapping) {
+    return res.status(404).json({ ok: false, error: "Client not found for merchant." });
+  }
+
+  await clearKycReverify({ merchantId, userId });
+  return res.json({ ok: true });
 });
 
 const clientStatusUpdateSchema = z.object({

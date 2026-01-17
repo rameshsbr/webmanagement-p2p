@@ -156,7 +156,7 @@
           <td data-col="address"><%= user.address || '-' %></td>
           <td data-col="email"><%= user.email || '—' %></td>
           <td data-col="phone"><%= user.phone || '—' %></td>
-          <td data-col="status"><span class="badge <%= user.verificationStatus === 'Verified' ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
+          <td data-col="status"><span class="badge <%= (user.verificationStatus === 'Verified' || user.verificationStatus === 'Re-verified') ? 'success' : 'warn' %>"><%= user.verificationStatus %></span></td>
           <td data-col="clientStatus" class="info-cell">
             <% const clientStatus = (user.clientStatus || '').toUpperCase(); %>
             <div class="info-line" style="align-items:center; gap:6px;">
@@ -179,6 +179,24 @@
               </div>
               <button type="submit" class="btn small">Update</button>
             </form>
+            <div class="row" style="gap:6px; margin-top:6px; flex-wrap:wrap;">
+              <button
+                type="button"
+                class="btn small"
+                data-kyc-reset-action="force"
+                data-merchant-id="<%= user.merchantId %>"
+                data-user-id="<%= user.id %>"
+              >Force Reset KYC</button>
+              <% if (user.kycResetOpen) { %>
+                <button
+                  type="button"
+                  class="btn small"
+                  data-kyc-reset-action="clear"
+                  data-merchant-id="<%= user.merchantId %>"
+                  data-user-id="<%= user.id %>"
+                >Clear</button>
+              <% } %>
+            </div>
           </td>
           <td data-col="registered"><%- renderDateTime(user.registeredAt) %></td>
           <td data-col="lastActivity"><%- user.lastActivityAt ? renderDateTime(user.lastActivityAt) : '-' %></td>

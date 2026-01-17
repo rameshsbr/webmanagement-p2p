@@ -124,7 +124,7 @@
     if (!resp.ok || !data?.ok) {
       const err = new Error(data?.message || data?.error || 'Unable to start session');
       err.code = data?.error;
-      if (data?.url) err.url = data.url;            // pass KYC link through
+      if (data?.kyc?.url || data?.url) err.url = data?.kyc?.url || data?.url;            // pass KYC link through
       if (data?.clientStatus) err.clientStatus = data.clientStatus;
       throw err;
     }

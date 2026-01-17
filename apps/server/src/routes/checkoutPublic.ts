@@ -22,6 +22,7 @@ import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 import { evaluateNameMatch } from "../services/paymentStatus.js";
 import { ensureMerchantMethod, listMerchantMethods } from "../services/methods.js";
+import { requireKycOrStartFlow } from "../services/kycGate.js";
 
 // ───────────────────────────────────────────────
 // Minimal API-key verification (copied pattern)
@@ -653,22 +654,31 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
       .json({ ok: false, error: v.error, field: v.field || undefined });
   const sanitizedExtras = v.values || {};
 
-  // KYC required BEFORE showing instructions
-  if (!user.verifiedAt) {
-    let url: string | null = null;
-    try {
-      const didit = await import("../services/didit.js");
-      if (typeof (didit as any).createLowCodeLink === "function") {
-        const out = await (didit as any).createLowCodeLink({ subject: diditSubject, merchantId });
-        url = out?.url || null;
-        if (url && out?.sessionId) {
-          await prisma.kycVerification.create({
-            data: { userId: user.id, provider: "didit", status: "pending", externalSessionId: out.sessionId },
-          });
-        }
-      }
-    } catch {}
-    return res.status(403).json({ ok: false, error: "KYC_REQUIRED", url: url || "/public/kyc/done" });
+  let kycGate;
+  try {
+    kycGate = await requireKycOrStartFlow({
+      merchantId,
+      userId: user.id,
+      diditSubject,
+      externalId: req.checkout.externalId,
+      email: req.checkout.email,
+      verifiedAt: user.verifiedAt,
+    });
+  } catch (err) {
+    console.error("[deposit-intent] KYC start failed", err);
+    return res.status(500).json({
+      ok: false,
+      error: "KYC_START_FAILED",
+      message: "Unable to start verification.",
+    });
+  }
+  if (!kycGate.allow) {
+    return res.json({
+      ok: false,
+      error: "KYC_REQUIRED",
+      kyc: { url: kycGate.url, sessionId: kycGate.sessionId },
+      message: "Verification required before proceeding.",
+    });
   }
 
   const display = computeDisplayFields(chosenBank);
@@ -1135,11 +1145,22 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
 
 checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
   const { diditSubject, merchantId, externalId, email } = req.checkout;
+  const sessionId = String(req.query?.sessionId || "").trim();
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (user) {
     await upsertMerchantClientMapping({ merchantId, userId: user.id, externalId, email });
   }
   if (!user) return res.json({ ok: true, status: "pending" });
+
+  if (sessionId) {
+    try {
+      const didit = await import("../services/didit.js");
+      if (typeof didit.getVerificationStatus === "function") {
+        const status = await didit.getVerificationStatus(sessionId);
+        return res.json({ ok: true, status });
+      }
+    } catch {}
+  }
 
   const last = await prisma.kycVerification.findFirst({
     where: { userId: user.id, provider: "didit" },

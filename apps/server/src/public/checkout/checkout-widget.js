@@ -157,13 +157,17 @@
       },
     });
     const ct = resp.headers.get("content-type") || "";
+    let json = null;
+    if (ct.includes("application/json")) {
+      try { json = await resp.json(); } catch {}
+    }
     if (!resp.ok) {
-      let err = { ok: false, status: resp.status, error: "HTTP_ERROR" };
-      try { err = await resp.json(); } catch {}
+      const err = json || { ok: false, status: resp.status, error: "HTTP_ERROR" };
       console.error(`[PayX] request failed (${resp.status}) for ${path}`, err);
       throw err;
     }
-    return ct.includes("application/json") ? resp.json() : resp.text();
+    if (json && json.ok === false) throw json;
+    return json ?? resp.text();
   }
 
   function inputRow(label, inputEl, required = false) {
@@ -250,6 +254,35 @@
       if (s2.status === "rejected")  { safeCallback("onKycRejected", {}); throw { ok:false, error:"KYC_REJECTED" }; }
     }
     throw { ok:false, error:"KYC_PENDING" };
+  }
+
+  async function runKycPopup(token, kyc) {
+    const url = kyc && kyc.url;
+    const sessionId = kyc && kyc.sessionId;
+    if (!url || !sessionId) throw { ok: false, error: "KYC_REQUIRED" };
+
+    installKycListener();
+    _kycPopup = window.open(url, "payx_kyc_reverify", "popup=yes,noopener,noreferrer,width=480,height=720");
+
+    const maxMs = 6 * 60 * 1000;
+    const start = Date.now();
+    while ((Date.now() - start) < maxMs) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const statusResp = await call(`/public/kyc/status?sessionId=${encodeURIComponent(sessionId)}`, token, { method: "GET" });
+      if (statusResp.status === "approved") {
+        try { if (_kycPopup && !_kycPopup.closed) _kycPopup.close(); } catch {}
+        safeCallback("onKycApproved", { sessionId });
+        return true;
+      }
+      if (statusResp.status === "rejected") {
+        try { if (_kycPopup && !_kycPopup.closed) _kycPopup.close(); } catch {}
+        safeCallback("onKycRejected", { sessionId });
+        throw { ok: false, error: "KYC_REJECTED", message: "Verification failed." };
+      }
+    }
+
+    try { if (_kycPopup && !_kycPopup.closed) _kycPopup.close(); } catch {}
+    throw { ok: false, error: "KYC_TIMEOUT", message: "Verification not completed." };
   }
 
   function saveDraft(kind, claims, data) {
@@ -786,11 +819,23 @@
         status.textContent = "Creating intent…";
         const body = { amountCents, method: method.value, payer, extraFields: extras, bankAccountId: selectedBankId };
 
-        const resp = await call("/public/deposit/intent", token, {
+        const requestIntent = () => call("/public/deposit/intent", token, {
           method: "POST",
           headers: { "content-type":"application/json" },
           body: JSON.stringify(body),
         });
+
+        const resp = await (async () => {
+          try {
+            return await requestIntent();
+          } catch (err) {
+            if (err?.error !== "KYC_REQUIRED" || !err?.kyc?.url) throw err;
+            status.textContent = "Verification required. Complete KYC to continue…";
+            await runKycPopup(token, err.kyc);
+            status.textContent = "Creating intent…";
+            return await requestIntent();
+          }
+        })();
 
         renderDepositInstructions({ box, header, token, claims, intent: resp, close });
         clearDraft("deposit", claims);

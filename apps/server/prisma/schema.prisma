@@ -118,6 +118,25 @@ model KycVerification {
   updatedAt         DateTime @updatedAt
 }
 
+model KycReverifyRequest {
+  id                 String     @id @default(cuid())
+  merchantId         String
+  merchant           Merchant   @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  userId             String
+  user               User       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  diditSubject       String?
+  requestedByAdminId String?
+  requestedByAdmin   AdminUser? @relation(fields: [requestedByAdminId], references: [id], onDelete: SetNull)
+  reason             String?
+  createdAt          DateTime   @default(now())
+  clearedAt          DateTime?
+
+  @@index([merchantId])
+  @@index([userId])
+  @@index([diditSubject])
+  @@index([merchantId, userId])
+}
+
 model BankAccount {
   id         String    @id @default(cuid())
   merchantId String?

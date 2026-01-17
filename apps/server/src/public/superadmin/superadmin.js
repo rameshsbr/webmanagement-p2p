@@ -823,3 +823,85 @@ const RECEIPT_TOAST_KEY = 'sa.receipt.uploaded';
 
   if (shouldToast) toast('Receipt uploaded successfully.');
 })();
+
+(() => {
+  const buttons = document.querySelectorAll('[data-kyc-reset-action]');
+  if (!buttons.length) return;
+
+  const notify = (message, variant) => {
+    if (typeof window.toast === 'function') {
+      window.toast(message, variant ? { variant } : undefined);
+    } else if (message) {
+      console.log('[toast]', message);
+    }
+  };
+
+  const buildClearButton = (merchantId, userId) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'btn small';
+    btn.textContent = 'Clear';
+    btn.setAttribute('data-kyc-reset-action', 'clear');
+    btn.setAttribute('data-merchant-id', merchantId);
+    btn.setAttribute('data-user-id', userId);
+    return btn;
+  };
+
+  const runAction = async (btn) => {
+    const action = btn.getAttribute('data-kyc-reset-action');
+    const merchantId = btn.getAttribute('data-merchant-id') || '';
+    const userId = btn.getAttribute('data-user-id') || '';
+    if (!action || !merchantId || !userId) return;
+
+    const isClear = action === 'clear';
+    if (!isClear) {
+      const ok = await confirmDialog({
+        title: 'Force reset KYC',
+        message: 'Require this client to re-verify before the next deposit?',
+        confirmLabel: 'Force reset',
+      });
+      if (!ok) return;
+    }
+
+    btn.disabled = true;
+    try {
+      const endpoint = isClear
+        ? `/superadmin/clients/${userId}/kyc/clear-reset?merchantId=${encodeURIComponent(merchantId)}`
+        : `/superadmin/clients/${userId}/kyc/force-reset?merchantId=${encodeURIComponent(merchantId)}`;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { Accept: 'application/json' },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data?.ok) {
+        const msg = data?.error || 'Failed to update KYC reset.';
+        notify(msg, 'error');
+        return;
+      }
+
+      if (isClear) {
+        notify('KYC reset cleared.');
+        btn.remove();
+      } else {
+        notify('KYC reset requested.');
+        const container = btn.parentElement;
+        const hasClear = container?.querySelector('[data-kyc-reset-action="clear"]');
+        if (!hasClear && container) {
+          container.appendChild(buildClearButton(merchantId, userId));
+        }
+      }
+    } catch (err) {
+      console.warn('[superadmin kyc reset] failed', err);
+      notify('Failed to update KYC reset.', 'error');
+    } finally {
+      btn.disabled = false;
+    }
+  };
+
+  document.addEventListener('click', (event) => {
+    const target = event.target instanceof Element ? event.target.closest('[data-kyc-reset-action]') : null;
+    if (!target) return;
+    event.preventDefault();
+    runAction(target);
+  });
+})();

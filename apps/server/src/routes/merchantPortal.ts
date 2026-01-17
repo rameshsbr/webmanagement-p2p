@@ -34,7 +34,7 @@ import { getMethodBanksForMeta } from "../services/methodBanks.js";
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
 // NEW: KYC helpers
-import { createLowCodeLink, startDiditSession } from "../services/didit.js";
+import { requireKycOrStartFlow } from "../services/kycGate.js";
 
 const router = Router();
 
@@ -1000,46 +1000,39 @@ router.post("/payments/test/session", async (req: any, res) => {
 
   // 2) KYC gate: user must be verified before IDR v4 flows
   // (mirror P2P behavior; mapping for the client will be created by webhook)
-  const user = await prisma.user.findUnique({
+  const user = await prisma.user.upsert({
     where: { diditSubject: subject },
+    create: { publicId: refs.generateUserId(), diditSubject: subject, verifiedAt: null },
+    update: {},
     select: { id: true, verifiedAt: true },
   });
 
-  if (!user || !user.verifiedAt) {
-    // Start Didit Low-Code (v2 if configured, else dev stub fallback)
-    try {
-      const { url, sessionId } = await createLowCodeLink({
-        subject,
-        merchantId,
-        externalId,
-      });
-      return res.status(403).json({
-        ok: false,
-        error: "KYC_REQUIRED",
-        url,
-        diditSessionId: sessionId,
-        subject,
-      });
-    } catch (e) {
-      // local dev / fallback
-      try {
-        const { url, sessionId } = await startDiditSession(subject);
-        return res.status(403).json({
-          ok: false,
-          error: "KYC_REQUIRED",
-          url,
-          diditSessionId: sessionId,
-          subject,
-        });
-      } catch (err) {
-        console.error("[test session] KYC start failed", err);
-        return res.status(500).json({
-          ok: false,
-          error: "KYC_START_FAILED",
-          message: "Unable to start identity verification.",
-        });
-      }
-    }
+  let kycGate;
+  try {
+    kycGate = await requireKycOrStartFlow({
+      merchantId,
+      userId: user.id,
+      diditSubject: subject,
+      externalId,
+      verifiedAt: user.verifiedAt,
+    });
+  } catch (err) {
+    console.error("[test session] KYC start failed", err);
+    return res.status(500).json({
+      ok: false,
+      error: "KYC_START_FAILED",
+      message: "Unable to start identity verification.",
+    });
+  }
+
+  if (!kycGate.allow) {
+    return res.status(403).json({
+      ok: false,
+      error: "KYC_REQUIRED",
+      kyc: { url: kycGate.url, sessionId: kycGate.sessionId },
+      message: "Verification required before proceeding.",
+      subject,
+    });
   }
 
   // 3) API key scopes

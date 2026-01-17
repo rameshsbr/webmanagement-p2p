@@ -135,41 +135,69 @@
   // API-key KYC helpers
   // ───────────────────────────────────────────────
 
-  async function pollKycStatus(warnEl) {
-    if (!_cfg.diditSubject) {
-      if (warnEl) {
-        warnEl.textContent = "Missing diditSubject for KYC polling.";
-        warnEl.style.display = "";
-      }
-      return false;
-    }
-    const subject = encodeURIComponent(_cfg.diditSubject);
-    for (let i = 0; i < 40; i += 1) {
-      await new Promise((r) => setTimeout(r, 3000));
+  function waitForKycApproval(warnEl) {
+    let pollId = null;
+    let outcome = null;
+    let messageHandler = null;
+
+    const stop = () => {
+      if (pollId) clearInterval(pollId);
+      pollId = null;
+      if (messageHandler) window.removeEventListener("message", messageHandler);
+      messageHandler = null;
+    };
+
+    const updateWarn = (text) => {
+      if (!warnEl) return;
+      warnEl.textContent = text;
+      warnEl.style.display = text ? "" : "none";
+    };
+
+    const checkOnce = async () => {
       try {
-        const resp = await fetch(`${_cfg.apiBase}/kyc/status?diditSubject=${subject}`, {
+        const resp = await fetch("/public/kyc/status", {
           method: "GET",
           headers: authHeaders(),
         });
         const data = await resp.json().catch(() => ({}));
-        if (!resp.ok || data?.ok === false) continue;
-        if (data?.status === "approved") return true;
-        if (data?.status === "rejected") {
-          if (warnEl) {
-            warnEl.textContent = "KYC verification failed. Please try again.";
-            warnEl.style.display = "";
-          }
-          return false;
+        if (!resp.ok || data?.ok === false) return;
+        if (data?.status === "approved") {
+          outcome = true;
+          stop();
+          updateWarn("");
+        } else if (data?.status === "rejected") {
+          outcome = false;
+          stop();
+          updateWarn("KYC verification failed. Please try again.");
         }
       } catch {
         // ignore transient errors while polling
       }
-    }
-    if (warnEl) {
-      warnEl.textContent = "KYC verification timed out. Please try again.";
-      warnEl.style.display = "";
-    }
-    return false;
+    };
+
+    return new Promise((resolve) => {
+      updateWarn("Complete verification to continue.");
+      messageHandler = (event) => {
+        const payload = event && event.data ? event.data : null;
+        if (payload && payload.type === "kyc.complete" && payload.status === "approved") {
+          outcome = true;
+          stop();
+          updateWarn("");
+          resolve(true);
+        }
+      };
+      window.addEventListener("message", messageHandler);
+      pollId = setInterval(checkOnce, 4000);
+      checkOnce().then(() => {
+        if (outcome !== null) resolve(outcome);
+      });
+      setTimeout(() => {
+        if (outcome !== null) return;
+        stop();
+        updateWarn("KYC verification timed out. Please try again.");
+        resolve(false);
+      }, 120000);
+    });
   }
 
   function normalizeName(value) {
@@ -288,6 +316,7 @@
       const form = el("form", { style: "display:grid; gap:10px;" });
       const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR, min 10,000 max 100,000,000)" });
       const fullName = el("input", { class: "input", placeholder: "Full name" });
+      const nameError = el("div", { class: "muted", style: "font-size:12px; color:#b91c1c; display:none;" });
       const bank = el("select", { class: "input" });
       const warning = el("div", { class: "muted", style: "font-size:12px; color:#b91c1c; display:none;" });
       const actions = el("div", { style: "display:flex; gap:8px; justify-content:flex-end;" }, [
@@ -304,6 +333,7 @@
       form.append(
         row("Amount (IDR)", amount),
         row("Full name", fullName),
+        nameError,
         row("Bank (VA)", bank),
         warning,
         actions,
@@ -342,6 +372,7 @@
       form.addEventListener("submit", async (e) => {
         e.preventDefault();
         warning.style.display = "none";
+        nameError.style.display = "none";
 
         const amountCents = parseAmount(amount.value);
         if (!amountCents) { warning.textContent = "Enter a valid amount."; warning.style.display = ""; return; }
@@ -372,8 +403,14 @@
           } catch (err) {
             const apiError = err || {};
             const info = apiError.data || {};
-            if (apiError.status === 403 && info?.error === "KYC_REQUIRED") {
-              const url = info?.url || null;
+            if (info?.error === "NAME_MISMATCH") {
+              nameError.textContent = info?.message || "Name must match your verified ID.";
+              nameError.style.display = "";
+              actions.lastChild.disabled = false;
+              return;
+            }
+            if (info?.error === "KYC_REQUIRED") {
+              const url = info?.kyc?.url || info?.url || null;
               if (!url) {
                 warning.textContent = "KYC verification is required but no verification URL was provided.";
                 warning.style.display = "";
@@ -382,7 +419,7 @@
               }
               // launch KYC, then poll
               window.open(url, "_blank", "noopener,noreferrer");
-              const approved = await pollKycStatus(warning);
+              const approved = await waitForKycApproval(warning);
               if (!approved) {
                 actions.lastChild.disabled = false;
                 return;
@@ -396,6 +433,7 @@
           // --- robust extraction (new/legacy shapes) ---
           const intent = data?.data || data || {};
           const legacy = intent?.providerDetails || intent?.bankDetails || {};
+          const displayFields = intent?.bankDetails?.displayFields || intent?.displayFields || null;
           const vaRaw = intent?.va || legacy.va || {};
           const instrRaw = intent?.instructions || legacy.instructions || {};
 
@@ -452,18 +490,32 @@
           }
 
           const kv = el("div", { class: "kv" });
-          kv.appendChild(el("div", {}, [
-            el("span", {}, "Bank"),
-            el("span", {}, bankLabel(va.bankCode || "", labels)),
-          ]));
-          kv.appendChild(el("div", {}, [el("span", {}, "Account No"), el("span", { class: "mono" }, va.accountNo || "-")]));
-          kv.appendChild(el("div", {}, [el("span", {}, "Account Name"), el("span", {}, va.accountName || "-")]));
-          kv.appendChild(el("div", {}, [el("span", {}, "Amount"), el("span", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`)]));
-          if (isDynamic) {
-            kv.appendChild(el("div", {}, [el("span", {}, "Unique Reference"), el("span", { class: "mono" }, uniqueRefNo || "-")]));
-            kv.appendChild(el("div", {}, [el("span", {}, "Expiry"), el("span", {}, formatJakartaDDMMYYYY_12h(expiresAt))]));
+          const rows = Array.isArray(displayFields?.all) ? displayFields.all : null;
+          if (rows && rows.length) {
+            rows.forEach((field) => {
+              if (!field) return;
+              const label = field.label || field.key || "";
+              const value = field.value ?? "";
+              if (!label) return;
+              kv.appendChild(el("div", {}, [
+                el("span", {}, label),
+                el("span", { class: field.type === "note" ? "" : "mono" }, String(value || "-")),
+              ]));
+            });
           } else {
-            kv.appendChild(el("div", {}, [el("span", {}, "Reference"), el("em", {}, "Fund Transfer")]));
+            kv.appendChild(el("div", {}, [
+              el("span", {}, "Bank"),
+              el("span", {}, bankLabel(va.bankCode || "", labels)),
+            ]));
+            kv.appendChild(el("div", {}, [el("span", {}, "Account No"), el("span", { class: "mono" }, va.accountNo || "-")]));
+            kv.appendChild(el("div", {}, [el("span", {}, "Account Name"), el("span", {}, va.accountName || "-")]));
+            kv.appendChild(el("div", {}, [el("span", {}, "Amount"), el("span", { class: "mono" }, `IDR ${amountCents.toLocaleString("en-US")}`)]));
+            if (isDynamic) {
+              kv.appendChild(el("div", {}, [el("span", {}, "Unique Reference"), el("span", { class: "mono" }, uniqueRefNo || "-")]));
+              kv.appendChild(el("div", {}, [el("span", {}, "Expiry"), el("span", {}, formatJakartaDDMMYYYY_12h(expiresAt))]));
+            } else {
+              kv.appendChild(el("div", {}, [el("span", {}, "Reference"), el("em", {}, "Fund Transfer")]));
+            }
           }
           wrapper.appendChild(kv);
 

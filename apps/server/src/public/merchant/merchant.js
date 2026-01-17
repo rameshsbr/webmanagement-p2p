@@ -679,6 +679,9 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       body: JSON.stringify(payload),
     });
     const data = await resp.json().catch(() => ({}));
+    if (data && data.kycRequired) {
+      return { kycRequired: true, kyc: data.kyc || null, subject: data.subject || subject };
+    }
     if (!resp.ok || !data || !data.ok) {
       const err = new Error((data && (data.message || data.error)) || 'Unable to prepare checkout');
       err.code = data && data.error ? data.error : '';
@@ -687,22 +690,23 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     }
     if (data.clientStatus) setMessage(`Client status: ${data.clientStatus}`);
     subject = data.subject || subject;
-    return data.token;
+    return { token: data.token };
   };
 
   const prefetchSession = async () => {
     if (currentMode.startsWith('idr-v4')) return;
     try {
-      prefetchedToken = await fetchSession();
+      const session = await fetchSession();
+      if (session && session.token) prefetchedToken = session.token;
     } catch {
       prefetchedToken = '';
       // non-fatal; will retry on click
     }
   };
 
-  const claimToken = async () => {
-    if (prefetchedToken) { const t = prefetchedToken; prefetchedToken = ''; return t; }
-    if (bootstrapToken)  { const t = bootstrapToken;  bootstrapToken  = ''; return t; }
+  const claimSession = async () => {
+    if (prefetchedToken) { const t = prefetchedToken; prefetchedToken = ''; return { token: t }; }
+    if (bootstrapToken)  { const t = bootstrapToken;  bootstrapToken  = ''; return { token: t }; }
     return fetchSession();
   };
 
@@ -723,10 +727,23 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     setBusy(true);
     try {
       const PayX = await loadPayX();
-      const token = await claimToken();
+      const session = await claimSession();
+      if (session && session.kycRequired) {
+        const kyc = session.kyc || {};
+        if (kyc.url) {
+          window.open(kyc.url, '_blank', 'noopener,noreferrer');
+          await waitForKycApproval(() => open(kind));
+          return;
+        }
+        setMessage('Verification required before proceeding.', 'error');
+        return;
+      }
+      const token = session?.token || '';
+      if (!token) throw new Error('Unable to prepare checkout');
       await PayX.init({ token });
       if (kind === 'deposit') PayX.openDeposit();
       else PayX.openWithdrawal();
+      setMessage('');
     } catch (err) {
       const message = (err && err.message) || 'Unable to open checkout';
       notify(message);
@@ -743,6 +760,57 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
       setBusy(false);
     }
   };
+
+  const waitForKycApproval = (() => {
+    let pollId = null;
+    let resolveNext = null;
+    let listening = false;
+
+    const stop = () => {
+      if (pollId) clearInterval(pollId);
+      pollId = null;
+      if (listening) {
+        window.removeEventListener('message', onMessage);
+        listening = false;
+      }
+    };
+
+    const onMessage = (event) => {
+      const data = event && event.data ? event.data : null;
+      if (data && data.type === 'kyc.complete' && data.status === 'approved') {
+        stop();
+        setMessage('');
+        if (resolveNext) resolveNext();
+      }
+    };
+
+    const poll = async () => {
+      try {
+        const resp = await fetch('/public/kyc/status', { credentials: 'same-origin' });
+        const data = await resp.json().catch(() => ({}));
+        if (data && data.status === 'approved') {
+          stop();
+          setMessage('');
+          if (resolveNext) resolveNext();
+        }
+      } catch {}
+    };
+
+    return (resume) => new Promise((resolve) => {
+      resolveNext = () => {
+        resolve();
+        if (typeof resume === 'function') resume();
+      };
+      setMessage('Complete verification to continue.');
+      if (!listening) {
+        window.addEventListener('message', onMessage);
+        listening = true;
+      }
+      if (pollId) clearInterval(pollId);
+      pollId = setInterval(poll, 4000);
+      poll();
+    });
+  })();
 
   allActionButtons.forEach((btn) => {
     btn.addEventListener('click', (e) => {

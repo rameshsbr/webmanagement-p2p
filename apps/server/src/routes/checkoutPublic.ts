@@ -21,7 +21,7 @@ import {
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 import { evaluateNameMatch } from "../services/paymentStatus.js";
-import { ensureMerchantMethod, listMerchantMethods } from "../services/methods.js";
+import { ensureMerchantMethod, isIdrV4Method, listMerchantMethods } from "../services/methods.js";
 import { requireKycOrStartFlow } from "../services/kycGate.js";
 
 // ───────────────────────────────────────────────
@@ -681,6 +681,24 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
     });
   }
 
+  if (isIdrV4Method(base.method)) {
+    const payerName = (base.payer as any)?.holderName?.trim() || "";
+    const kycFirst = user.firstName ?? null;
+    const kycLast = user.lastName ?? null;
+    const kycFull = user.fullName ?? null;
+
+    if (payerName && (kycFirst || kycLast || kycFull)) {
+      const match = evaluateNameMatch(payerName, kycFirst, kycLast, kycFull);
+      if (!match.allow || match.score < 0.6) {
+        return res.json({
+          ok: false,
+          error: "NAME_MISMATCH",
+          message: "Name must match your verified ID.",
+        });
+      }
+    }
+  }
+
   const display = computeDisplayFields(chosenBank);
   const referenceCode = generateTransactionId();
   const uniqueReference = generateUniqueReference();
@@ -1131,7 +1149,13 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
   try {
     const didit = await import("../services/didit.js");
     if (typeof didit.createLowCodeLink === "function") {
-      const out = await didit.createLowCodeLink({ subject: diditSubject, merchantId, externalId, email });
+      const out = await didit.createLowCodeLink({
+        subject: diditSubject,
+        merchantId,
+        externalId,
+        email,
+        request: req,
+      });
       url = out.url;
 
       // Idempotent write to avoid P2002 when the same session is returned twice
@@ -1158,11 +1182,28 @@ checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits
   }
   if (!user) return res.json({ ok: true, status: "pending" });
 
+  if (user.verifiedAt) return res.json({ ok: true, status: "approved" });
+
   if (sessionId) {
     try {
       const didit = await import("../services/didit.js");
       if (typeof didit.getVerificationStatus === "function") {
         const status = await didit.getVerificationStatus(sessionId);
+        if (status === "approved") {
+          await prisma.user.update({ where: { id: user.id }, data: { verifiedAt: new Date() } });
+          await prisma.kycVerification.updateMany({
+            where: { externalSessionId: sessionId },
+            data: { status: "approved" },
+          });
+          return res.json({ ok: true, status: "approved" });
+        }
+        if (status === "rejected") {
+          await prisma.kycVerification.updateMany({
+            where: { externalSessionId: sessionId },
+            data: { status: "rejected" },
+          });
+          return res.json({ ok: true, status: "rejected" });
+        }
         return res.json({ ok: true, status });
       }
     } catch {}
@@ -1172,8 +1213,6 @@ checkoutPublicRouter.get("/public/kyc/status", checkoutAuth, applyMerchantLimits
     where: { userId: user.id, provider: "didit" },
     orderBy: { createdAt: "desc" },
   });
-
-  if (user.verifiedAt) return res.json({ ok: true, status: "approved" });
 
   if (last?.externalSessionId) {
     try {

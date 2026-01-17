@@ -1026,9 +1026,10 @@ router.post("/payments/test/session", async (req: any, res) => {
   }
 
   if (!kycGate.allow) {
-    return res.status(403).json({
+    return res.json({
       ok: false,
       error: "KYC_REQUIRED",
+      kycRequired: true,
       kyc: { url: kycGate.url, sessionId: kycGate.sessionId },
       message: "Verification required before proceeding.",
       subject,

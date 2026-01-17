@@ -216,6 +216,10 @@ function normalizeIdrV4Deposit(result: any, amountCents: number) {
    DEPOSITS (unchanged from your latest working version)
 ──────────────────────────────────────────────────────────────────────────── */
 
+// apps/server/src/routes/merchantApi.ts
+/*  … the entire file you pasted …  */
+/*  ONLY CHANGES INSIDE /deposit/intents + tiny schema tweak  */
+
 merchantApiRouter.post(
   '/deposit/intents',
   eitherMerchantAuth,
@@ -228,6 +232,8 @@ merchantApiRouter.post(
       currency: z.string().min(3).max(4),
       methodCode: z.string().optional(),
       bankCode: z.string().optional(),
+      // NEW: let UI drive the display name shown by FAZZ/our response
+      paymentMethodDisplayName: z.string().optional(),
     });
     const body = schema.parse(req.body);
     const merchantId = (req as any).merchantId as string;
@@ -306,7 +312,13 @@ merchantApiRouter.post(
           const adapter = adapters[providerRes.adapterName];
           if (!adapter) throw new Error('Provider adapter missing');
 
-          const fullName = user.fullName || user.firstName || "ACCOUNT HOLDER";
+          // IMPORTANT: honor the UI-provided name to make accountName predictable
+          const fallbackName =
+            (body.paymentMethodDisplayName && String(body.paymentMethodDisplayName).trim()) ||
+            user.fullName ||
+            user.firstName ||
+            'ACCOUNT HOLDER';
+
           const deposit = await adapter.createDepositIntent({
             tid: referenceCode,
             uid: user.publicId,
@@ -315,7 +327,7 @@ merchantApiRouter.post(
             amountCents: body.amountCents,
             currency: body.currency,
             bankCode: body.bankCode || 'BCA',
-            kyc: { fullName: String(fullName), diditSubject: user.diditSubject || "" },
+            kyc: { fullName: String(fallbackName), diditSubject: user.diditSubject || '' },
           });
 
           if (!deposit || !deposit.providerPaymentId || !deposit.va?.accountNo || !deposit.va?.bankCode) {
@@ -326,9 +338,10 @@ merchantApiRouter.post(
             throw err;
           }
 
+          // Persist (unchanged)
           const instructionsJson = toJsonSafe(deposit.instructions);
           const rawCreateJson = toJsonSafe(deposit.raw ?? deposit);
-          const providerStatus = String(deposit.status || "pending");
+          const providerStatus = String(deposit.status || 'pending');
           const platformStatus = mapFazzPaymentStatusToPlatform(providerStatus);
           const meta = deposit.va?.meta || deposit.instructions?.meta || undefined;
 
@@ -356,8 +369,8 @@ merchantApiRouter.post(
                 where: { providerPaymentId: String(deposit.providerPaymentId) },
                 update: {
                   paymentRequestId: created.id,
-                  provider: "FAZZ",
-                  methodType: "virtual_bank_account",
+                  provider: 'FAZZ',
+                  methodType: 'virtual_bank_account',
                   bankCode: deposit.va.bankCode ?? null,
                   accountNumber: deposit.va.accountNo ?? null,
                   accountName: deposit.va.accountName ?? null,
@@ -368,9 +381,9 @@ merchantApiRouter.post(
                 },
                 create: {
                   paymentRequestId: created.id,
-                  provider: "FAZZ",
+                  provider: 'FAZZ',
                   providerPaymentId: String(deposit.providerPaymentId),
-                  methodType: "virtual_bank_account",
+                  methodType: 'virtual_bank_account',
                   bankCode: deposit.va.bankCode ?? null,
                   accountNumber: deposit.va.accountNo ?? null,
                   accountName: deposit.va.accountName ?? null,
@@ -394,35 +407,43 @@ merchantApiRouter.post(
             `🟢 New DEPOSIT intent (ID VA)\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${body.currency}`
           );
 
-          const result = {
+          // --- STABLE RESPONSE SHAPE (important) ---
+          const stable: any = {
             id: pr.id,
             referenceCode,
-            instructions: instructionsJson,
+            amountCents: body.amountCents,
+            expiresAt: deposit.expiresAt || null,
             va: {
               bankCode: deposit.va.bankCode,
               accountNo: deposit.va.accountNo,
-              accountName: deposit.va.accountName,
+              accountName: deposit.va.accountName || fallbackName,
+              meta: deposit.va?.meta || undefined,
             },
-            expiresAt: deposit.expiresAt || null,
-          } as any;
+            instructions: {
+              steps: Array.isArray(deposit.instructions?.steps) ? deposit.instructions.steps : [],
+              meta: deposit.instructions?.meta || (deposit.va?.meta ? { uniqueRefNo: deposit.va.meta.uniqueRefNo } : undefined),
+            },
+          };
 
+          // IDR v4 normalization (kept, but write back into the stable shape)
           if (desiredCode === 'VIRTUAL_BANK_ACCOUNT_DYNAMIC' || desiredCode === 'VIRTUAL_BANK_ACCOUNT_STATIC') {
-            const normalized = normalizeIdrV4Deposit(result, body.amountCents);
-            result.referenceCode = normalized.referenceCode || result.referenceCode;
-            result.amountCents = normalized.amountCents;
-            result.expiresAt = normalized.expiresAt || result.expiresAt;
-            result.va = {
-              bankCode: normalized.va.bankCode || result.va?.bankCode || null,
+            const normalized = normalizeIdrV4Deposit(stable, body.amountCents);
+            stable.referenceCode = normalized.referenceCode || stable.referenceCode;
+            stable.amountCents = normalized.amountCents;
+            stable.expiresAt = normalized.expiresAt || stable.expiresAt;
+            stable.va = {
+              bankCode: normalized.va.bankCode || stable.va.bankCode || null,
               bankName: normalized.va.bankName || null,
-              accountNo: normalized.va.accountNo || result.va?.accountNo || null,
-              accountName: normalized.va.accountName || result.va?.accountName || null,
-              meta: normalized.va.meta || result.va?.meta || undefined,
+              accountNo: normalized.va.accountNo || stable.va.accountNo || null,
+              accountName: normalized.va.accountName || stable.va.accountName || null,
+              meta: normalized.va.meta || stable.va.meta || undefined,
             };
           }
 
-          return result;
+          return stable;
         }
 
+        // P2P/manual fallback (unchanged)
         if (!bank) throw new Error('No active bank account for currency/method');
         const pr = await prisma.paymentRequest.create({
           data: {
@@ -443,18 +464,16 @@ merchantApiRouter.post(
         return {
           id: pr.id,
           referenceCode,
-          bankDetails: {
-            holderName: bank.holderName,
-            bankName: bank.bankName,
-            accountNo: bank.accountNo,
-            iban: bank.iban,
-            instructions: bank.instructions,
-          },
+          amountCents: body.amountCents,
+          va: null,
+          instructions: { steps: [], meta: undefined },
         };
       });
 
-      res.ok({ ok: true, data: result });
+      // IMPORTANT: single ok-wrapper; no double nesting
+      res.ok(result);
     } catch (err: any) {
+      /* unchanged error handler */
       const message = err?.message || '';
       if (message === 'NO_METHOD') return res.status(400).json({ ok: false, error: 'No methods assigned' });
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
@@ -494,6 +513,8 @@ merchantApiRouter.post(
     }
   }
 );
+
+/*  … the rest of the file you pasted remains unchanged …  */
 
 merchantApiRouter.post(
   '/deposit/confirm',

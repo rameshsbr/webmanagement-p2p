@@ -198,7 +198,7 @@
     const datePart = parts[0] || "";
     const timePartRaw = parts[1] || "";
     const dateBits = datePart.split("/");
-    const dd = dateBits[0] || "";
+       const dd = dateBits[0] || "";
     const mm = dateBits[1] || "";
     const yyyy = dateBits[2] || "";
     const timePart = timePartRaw.toUpperCase();
@@ -284,6 +284,7 @@
   async function openDeposit(opts = {}) {
     const methodCode = (opts.method || "VIRTUAL_BANK_ACCOUNT_DYNAMIC").toUpperCase();
     openModal("IDR v4 Deposit", async (body, close, headerTitle) => {
+      // --- build form ---
       const form = el("form", { style: "display:grid; gap:10px;" });
       const amount = el("input", { class: "input", inputmode: "numeric", placeholder: "Amount (IDR, min 10,000 max 100,000,000)" });
       const fullName = el("input", { class: "input", placeholder: "Full name" });
@@ -309,6 +310,7 @@
       );
       body.appendChild(form);
 
+      // basic checks
       if (!_cfg.diditSubject) {
         warning.style.display = "";
         warning.textContent = "Missing diditSubject. Provide it in IBGCheckoutV4.init().";
@@ -322,23 +324,16 @@
         return;
       }
 
+      // load method meta → banks + limits
       let limits = { minDeposit: null, maxDeposit: null };
-      let bankLabels = {};
+      let labels = {};
       try {
         const meta = await fetchMeta(methodCode);
         const banks = Array.isArray(meta?.banks) ? meta.banks : [];
         limits = meta?.limits || limits;
-        bankLabels = meta?.labels || {};
+        labels = meta?.labels || {};
         bank.innerHTML = "";
-        banks.forEach((code) =>
-          bank.appendChild(el("option", { value: code }, bankLabel(code, bankLabels)))
-        );
-        if (!banks.length) {
-          // Friendly message if nothing came back
-          const msg = "No available banks for this method.";
-          warning.textContent = msg;
-          warning.style.display = "";
-        }
+        banks.forEach((code) => bank.appendChild(el("option", { value: code }, bankLabel(code, labels))));
       } catch (err) {
         warning.style.display = "";
         warning.textContent = (err && err.message) || "Unable to load bank list.";
@@ -385,6 +380,7 @@
                 actions.lastChild.disabled = false;
                 return;
               }
+              // launch KYC, then poll
               window.open(url, "_blank", "noopener,noreferrer");
               const approved = await pollKycStatus(warning);
               if (!approved) {
@@ -396,22 +392,58 @@
               throw err;
             }
           }
-          const intent = data?.data || data;
-          const va = intent?.va || {};
-          const instructions = intent?.instructions || {};
-          const uniqueRefNo = instructions?.meta?.uniqueRefNo || null;
-          const steps = Array.isArray(instructions?.steps) ? instructions.steps : [];
-          const isDynamic = methodCode.toUpperCase().includes("DYNAMIC");
+
+          // --- robust extraction (new/legacy shapes) ---
+          const intent = data?.data || data || {};
+          const legacy = intent?.providerDetails || intent?.bankDetails || {};
+          const vaRaw = intent?.va || legacy.va || {};
+          const instrRaw = intent?.instructions || legacy.instructions || {};
+
+          const va = {
+            bankCode:
+              vaRaw.bankCode ||
+              legacy.bankCode ||
+              legacy.bankShortCode ||
+              instrRaw.bankCode ||
+              "",
+            accountNo:
+              vaRaw.accountNo ||
+              legacy.accountNo ||
+              legacy.account_no ||
+              instrRaw.accountNo ||
+              "",
+            accountName:
+              vaRaw.accountName ||
+              legacy.accountName ||
+              legacy.account_name ||
+              legacy.holderName ||
+              "",
+            meta: vaRaw.meta || instrRaw.meta || legacy.meta || undefined,
+          };
+
+          const instructions = {
+            steps: Array.isArray(instrRaw.steps) ? instrRaw.steps : [],
+            meta: instrRaw.meta || va.meta || undefined,
+          };
+
+          const uniqueRefNo =
+            (instructions.meta && instructions.meta.uniqueRefNo) ||
+            (va.meta && va.meta.uniqueRefNo) ||
+            null;
+
+          const isDynamic = methodCode.includes("DYNAMIC");
           const expiresAt = intent?.expiresAt || intent?.expiredAt || null;
+
+          // render
           body.innerHTML = "";
           if (headerTitle) headerTitle.textContent = "Transfer details";
           const wrapper = el("div", { class: "transfer-modal" });
           body.appendChild(wrapper);
-          if (steps.length) {
+          if (instructions.steps.length) {
             const stepsBlock = el("div", { class: "steps" });
             stepsBlock.appendChild(el("div", {}, el("strong", {}, "Steps")));
             const ol = el("ol");
-            steps.forEach((step) => ol.appendChild(el("li", {}, step)));
+            instructions.steps.forEach((step) => ol.appendChild(el("li", {}, step)));
             stepsBlock.appendChild(ol);
             wrapper.appendChild(stepsBlock);
           }
@@ -422,7 +454,7 @@
           const kv = el("div", { class: "kv" });
           kv.appendChild(el("div", {}, [
             el("span", {}, "Bank"),
-            el("span", {}, bankLabel(va.bankCode || "", bankLabels)),
+            el("span", {}, bankLabel(va.bankCode || "", labels)),
           ]));
           kv.appendChild(el("div", {}, [el("span", {}, "Account No"), el("span", { class: "mono" }, va.accountNo || "-")]));
           kv.appendChild(el("div", {}, [el("span", {}, "Account Name"), el("span", {}, va.accountName || "-")]));
@@ -440,6 +472,7 @@
           wrapper.appendChild(statusEl);
           wrapper.appendChild(el("div", { style: "display:flex; justify-content:flex-end; margin-top:12px;" }, [pollBtn]));
           pollBtn.addEventListener("click", async () => {
+            // keep as-is: poll confirm
             pollBtn.disabled = true;
             let attempts = 0;
             const interval = setInterval(async () => {

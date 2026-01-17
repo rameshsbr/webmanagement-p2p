@@ -138,3 +138,4 @@ dist
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
 apps/server/.....read
+apps/server/uploads/.DS_Store

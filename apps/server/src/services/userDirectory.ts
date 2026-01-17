@@ -177,7 +177,7 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
         email: true,
         status: true,
         updatedAt: true,
-        merchant: { select: { id: true, name: true } },
+        merchant: { select: { id: true, name: true} },
         user: {
           select: {
             id: true,
@@ -263,7 +263,10 @@ export async function getUserDirectory(filters: UserDirectoryFilters): Promise<U
 
   const kycApprovedCountMap = new Map<string, number>();
   approvedKycCounts.forEach((row) => {
-    kycApprovedCountMap.set(row.userId, row._count._all);
+    // FIX: guard null userId from prisma.groupBy result
+    if (row.userId) {
+      kycApprovedCountMap.set(row.userId, row._count._all);
+    }
   });
 
   const kycResetMap = new Set(openResets.map((row) => `${row.merchantId}:${row.userId}`));

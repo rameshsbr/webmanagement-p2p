@@ -54,6 +54,9 @@ model Merchant {
   // NEW: configured payment methods
   methods               MerchantMethod[]
   ProviderPaymentMethod ProviderPaymentMethod[]
+
+  // NEW (fix): back-relation for KycReverifyRequest
+  kycReverifyRequests KycReverifyRequest[]
 }
 
 model MerchantApiKey {
@@ -105,6 +108,9 @@ model User {
   blocklistEntries      PayerBlocklist[]
   merchantClients       MerchantClient[]
   ProviderPaymentMethod ProviderPaymentMethod[]
+
+  // NEW (fix): back-relation for KycReverifyRequest
+  kycReverifyRequests KycReverifyRequest[]
 }
 
 model KycVerification {
@@ -384,7 +390,7 @@ model AdminUser {
   active                   Boolean   @default(true)
   displayName              String?
   createdAt                DateTime  @default(now())
-  updatedAt                DateTime  @default(now()) @updatedAt // ← add default so backfill works
+  updatedAt                DateTime  @default(now()) @updatedAt
   twoFactorEnabled         Boolean   @default(false)
   totpSecret               String?
   superTwoFactorEnabled    Boolean   @default(false)
@@ -400,6 +406,9 @@ model AdminUser {
   processedPayments PaymentRequest[]          @relation("PaymentProcessedBy")
   accountEntries    MerchantAccountEntry[]    @relation("AccountEntryCreatedBy")
   apiKeyRevealLogs  MerchantApiKeyRevealLog[]
+
+  // NEW (fix): back-relation for KycReverifyRequest
+  kycReverifyRequests KycReverifyRequest[]
 }
 
 model AdminLoginLog {
@@ -662,22 +671,22 @@ model ProviderWebhookLog {
 }
 
 model ProviderPaymentMethod {
-  id                       String   @id @default(cuid())
-  provider                 String // 'FAZZ'
-  type                     String // 'virtual_bank_account'
-  merchantId               String
-  merchant                 Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
-  userId                   String
-  user                     User     @relation(fields: [userId], references: [id], onDelete: Restrict)
-  bankCode                 String
-  providerPaymentMethodId  String   @unique
-  accountNo                String?
-  accountName              String?
-  displayName              String?
-  active                   Boolean  @default(true)
-  metaJson                 Json?
-  createdAt                DateTime @default(now())
-  updatedAt                DateTime @updatedAt
+  id                      String   @id @default(cuid())
+  provider                String // 'FAZZ'
+  type                    String // 'virtual_bank_account'
+  merchantId              String
+  merchant                Merchant @relation(fields: [merchantId], references: [id], onDelete: Restrict)
+  userId                  String
+  user                    User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  bankCode                String
+  providerPaymentMethodId String   @unique
+  accountNo               String?
+  accountName             String?
+  displayName             String?
+  active                  Boolean  @default(true)
+  metaJson                Json?
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
 
   @@index([provider, type, merchantId, userId, bankCode])
 }

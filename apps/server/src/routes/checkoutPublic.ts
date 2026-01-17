@@ -767,7 +767,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
       const vaBankShort = out?.va?.bankCode || out?.instructions?.payment?.data?.attributes?.paymentMethod?.instructions?.bankShortCode || bankCode || "BCA";
 
       // Start from bank config fields, but **override values+labels** for VA
-      const overridden = display.all.map((item) => {
+      const overridden = computeDisplayFields(chosenBank).all.map((item) => {
         if (item.key === "holderName") {
           return { ...item, label: "Account Holder Name", value: vaAccountName };
         }
@@ -828,7 +828,7 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
       method: chosenBank?.method || null,
       label: chosenBank?.label || null,
       fields: chosenBank?.fields || null,
-      displayFields: display.all,
+      displayFields: computeDisplayFields(chosenBank).all,
     },
     limits: { minCents, maxCents },
   });
@@ -1131,13 +1131,19 @@ checkoutPublicRouter.post("/public/kyc/start", checkoutAuth, applyMerchantLimits
   try {
     const didit = await import("../services/didit.js");
     if (typeof didit.createLowCodeLink === "function") {
-      const out = await didit.createLowCodeLink({ subject: diditSubject, merchantId });
+      const out = await didit.createLowCodeLink({ subject: diditSubject, merchantId, externalId, email });
       url = out.url;
-      await prisma.kycVerification.create({
-        data: { userId: user.id, provider: "didit", status: "pending", externalSessionId: out.sessionId },
+
+      // Idempotent write to avoid P2002 when the same session is returned twice
+      await prisma.kycVerification.upsert({
+        where: { externalSessionId: out.sessionId },
+        create: { userId: user.id, provider: "didit", status: "pending", externalSessionId: out.sessionId },
+        update: { userId: user.id },
       });
     }
-  } catch {}
+  } catch (e) {
+    console.warn("[public/kyc/start] real KYC link failed, will fallback to fake", (e as any)?.message || e);
+  }
 
   if (!url) url = "/fake-didit";
   res.json({ ok: true, url });

@@ -243,7 +243,7 @@
     kycStatus = null;
     installKycListener();
     if (url) {
-      kycPopup = window.open(url, 'payx_kyc', 'popup=yes,noopener,noreferrer,width=480,height=720');
+      kycPopup = window.open(url, '_blank', 'popup=yes,noopener,noreferrer,width=480,height=720');
     }
     await waitForKycApproval(token);
   }
@@ -408,6 +408,9 @@
             await runKycFlow(checkoutToken, intent.url);
             warning.style.display = 'none';
             intent = await createDepositIntent(checkoutToken, payload);
+            if (intent?.kycRequired) {
+              throw new Error('KYC pending. Please complete verification to continue.');
+            }
           }
 
           const referenceCode = intent?.referenceCode || '-';

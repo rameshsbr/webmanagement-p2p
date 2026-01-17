@@ -13,13 +13,14 @@ import { tgNotify } from '../services/telegram.js';
 import { open, tscmp } from '../services/secretBox.js';
 import { applyMerchantLimits } from '../middleware/merchantLimits.js';
 import { normalizeClientStatus, upsertMerchantClientMapping, type ClientStatus } from '../services/merchantClient.js';
-import { ensureMerchantMethod, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
+import { ensureMerchantMethod, isIdrV4Method, listMerchantMethods, resolveProviderByMethodCode } from '../services/methods.js';
 import { idrV4BankLabel } from '../services/methodBanks.js';
 import { adapters } from '../services/providers/index.js';
 import { fazzGetBalance, mapFazzDisbursementStatusToPlatform, mapFazzPaymentStatusToPlatform } from '../services/providers/fazz.js';
 import { API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from '../services/apiKeyScopes.js';
 import { getVerificationStatus } from '../services/didit.js';
 import { requireKycOrStartFlow } from '../services/kycGate.js';
+import { evaluateNameMatch } from '../services/paymentStatus.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -137,6 +138,10 @@ function toJsonSafe<T = any>(value: T): any {
       return null;
     }
   }
+}
+
+function normalizeExactName(input: string) {
+  return String(input || '').trim().replace(/\s+/g, ' ').toLowerCase();
 }
 
 /** ---- helper: read method from Prisma JsonValue safely ---- */
@@ -281,6 +286,26 @@ merchantApiRouter.post(
         const isIdrV4Va =
           desiredCode === 'VIRTUAL_BANK_ACCOUNT_DYNAMIC' ||
           desiredCode === 'VIRTUAL_BANK_ACCOUNT_STATIC';
+
+        const payerName = String(body.paymentMethodDisplayName || '').trim();
+        if (isIdrV4Method(desiredCode) && payerName) {
+          const kycFirst = user.firstName ?? null;
+          const kycLast = user.lastName ?? null;
+          const kycFull = user.fullName ?? null;
+          if (kycFirst || kycLast || kycFull) {
+            const match = evaluateNameMatch(payerName, kycFirst, kycLast, kycFull);
+            if (!match.allow || match.score < 0.6) {
+              return {
+                __nameMismatch: true,
+                response: {
+                  ok: false,
+                  error: 'NAME_MISMATCH',
+                  message: 'Account holder name must match the verified KYC name',
+                },
+              };
+            }
+          }
+        }
 
         const bank = isIdrV4Va
           ? null
@@ -464,6 +489,9 @@ merchantApiRouter.post(
         };
       });
 
+      if (result?.__nameMismatch) {
+        return res.json(result.response);
+      }
       // IMPORTANT: single ok-wrapper; no double nesting
       res.ok(result);
     } catch (err: any) {
@@ -806,6 +834,7 @@ merchantApiRouter.post(
       amountCents: z.number().int().positive(),
       currency: z.string().min(3).max(4),
       methodCode: z.string().optional(), // e.g., "FAZZ_SEND"
+      validatorName: z.string().optional(),
       destination: z.object({
         bankCode: z.string().optional(),
         bankName: z.string().optional(),
@@ -838,6 +867,29 @@ merchantApiRouter.post(
       if (!user || !user.verifiedAt) {
         res.forbidden('User not verified');
         return null;
+      }
+
+      const isIdrV4Withdrawal =
+        String(body.currency || '').toUpperCase() === 'IDR' &&
+        String(body.methodCode || 'FAZZ_SEND').toUpperCase() === 'FAZZ_SEND';
+      if (isIdrV4Withdrawal) {
+        const typedName = String(body.destination?.holderName || '').trim();
+        const kycFirst = user.firstName ?? null;
+        const kycLast = user.lastName ?? null;
+        const kycFull = user.fullName ?? null;
+        if (typedName && (kycFirst || kycLast || kycFull)) {
+          const match = evaluateNameMatch(typedName, kycFirst, kycLast, kycFull);
+          if (!match.allow || match.score < 0.6) {
+            return {
+              __nameMismatch: true,
+              response: {
+                ok: false,
+                error: 'NAME_MISMATCH',
+                message: 'Account holder name must match the verified KYC name',
+              },
+            };
+          }
+        }
       }
 
       const mapping = await upsertMerchantClientMapping({ merchantId, userId: user.id });
@@ -873,6 +925,52 @@ merchantApiRouter.post(
       if (!bankCode) {
         res.badRequest('bankCode required');
         return null;
+      }
+
+      if (isIdrV4Withdrawal) {
+        const typedName = String(body.destination?.holderName || '').trim();
+        const accountNo = String(body.destination?.accountNo || '').trim();
+        const clientValidatedName = String(body.validatorName || '').trim();
+        if (!typedName || !accountNo || !clientValidatedName) {
+          return {
+            __validatorMismatch: true,
+            response: {
+              ok: false,
+              error: 'VALIDATOR_NAME_MISMATCH',
+              message: 'Account name must match with validator',
+            },
+          };
+        }
+
+        try {
+          const providerRes =
+            resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_STATIC') ||
+            resolveProviderByMethodCode('VIRTUAL_BANK_ACCOUNT_DYNAMIC') ||
+            { adapterName: 'fazz' as const };
+          const adapter = adapters[providerRes.adapterName];
+          const out = await adapter.validateBankAccount({ bankCode, accountNo, name: typedName });
+          const validatedName = out?.holder || '';
+          if (!out?.ok || !validatedName || normalizeExactName(validatedName) !== normalizeExactName(typedName)) {
+            return {
+              __validatorMismatch: true,
+              response: {
+                ok: false,
+                error: 'VALIDATOR_NAME_MISMATCH',
+                message: 'Account name must match with validator',
+              },
+            };
+          }
+        } catch (err) {
+          console.error("[withdrawal-validate] failed", err);
+          return {
+            __validatorMismatch: true,
+            response: {
+              ok: false,
+              error: 'VALIDATOR_NAME_MISMATCH',
+              message: 'Account name must match with validator',
+            },
+          };
+        }
       }
 
       // Choose any enabled method (keep your pattern)
@@ -984,6 +1082,9 @@ merchantApiRouter.post(
     });
 
     if (!result || (result as any).ok === false) return; // early Response from inside callback
+    if ((result as any).__nameMismatch || (result as any).__validatorMismatch) {
+      return res.json((result as any).response);
+    }
     return res.ok(result);
   }
 );

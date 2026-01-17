@@ -208,6 +208,17 @@
       .trim();
   }
 
+  function normalizeExactName(value) {
+    return String(value || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .toLowerCase();
+  }
+
+  function exactNameMatch(a, b) {
+    return normalizeExactName(a) === normalizeExactName(b);
+  }
+
   function formatJakartaDDMMYYYY_12h(iso) {
     if (!iso) return "-";
     const d = new Date(iso);
@@ -404,7 +415,7 @@
             const apiError = err || {};
             const info = apiError.data || {};
             if (info?.error === "NAME_MISMATCH") {
-              nameError.textContent = info?.message || "Name must match your verified ID.";
+              nameError.textContent = info?.message || "Account holder name must match the verified KYC name";
               nameError.style.display = "";
               actions.lastChild.disabled = false;
               return;
@@ -606,6 +617,8 @@
         return;
       }
 
+      let validatedName = "";
+
       let limits = { minWithdrawal: null, maxWithdrawal: null };
       try {
         const meta = await fetchMeta("VIRTUAL_BANK_ACCOUNT_DYNAMIC");
@@ -651,19 +664,20 @@
 
         validateMsg.textContent = "Validating…";
         validateBtn.disabled = true;
+        submitBtn.disabled = true;
+        validatedName = "";
         try {
-          const resp = await fetch(`${_cfg.merchantBase}/idrv4/validate`, {
+          const resp = await fetch(`${_cfg.apiBase}/withdraw/validate`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
-            credentials: "include",
+            headers: { "Content-Type": "application/json", ...authHeaders() },
             body: JSON.stringify({ bankCode: code, accountNo: acc, name }),
           });
           const data = await resp.json().catch(() => ({}));
           if (!resp.ok || !data?.ok) throw new Error(data?.error || "Validation failed");
-          const score = nameScore(name, data?.holder || "");
-          holderLabel.textContent = data?.holder ? `Account holder: ${data.holder}` : "";
-          holderLabel.style.display = data?.holder ? "" : "none";
-          if (score >= 0.6) {
+          validatedName = String(data?.holder || "").trim();
+          holderLabel.textContent = validatedName ? `Validated name: ${validatedName}` : "";
+          holderLabel.style.display = validatedName ? "" : "none";
+          if (validatedName && exactNameMatch(name, validatedName)) {
             validateMsg.textContent = "Validated ✓";
             submitBtn.disabled = false;
           } else {
@@ -684,6 +698,12 @@
         const amountCents = parseAmount(amount.value);
         if (!amountCents) { warning.textContent = "Enter a valid amount."; warning.style.display = ""; return; }
 
+        if (!validatedName) {
+          warning.textContent = "Account name must match with validator";
+          warning.style.display = "";
+          return;
+        }
+
         submitBtn.disabled = true;
         try {
           const data = await apiPost("/withdrawals", {
@@ -691,6 +711,7 @@
             amountCents,
             currency: "IDR",
             methodCode: "FAZZ_SEND",
+            validatorName: validatedName,
             destination: {
               bankCode: String(bank.value || "").trim(),
               holderName: String(holderName.value || "").trim(),
@@ -720,7 +741,14 @@
             }
           });
         } catch (err) {
-          warning.textContent = (err && err.message) || "Unable to submit withdrawal.";
+          const info = err?.data || {};
+          if (info?.error === "NAME_MISMATCH") {
+            warning.textContent = "Account holder name must match the verified KYC name";
+          } else if (info?.error === "VALIDATOR_NAME_MISMATCH") {
+            warning.textContent = "Account name must match with validator";
+          } else {
+            warning.textContent = (err && err.message) || "Unable to submit withdrawal.";
+          }
           warning.style.display = "";
         } finally {
           submitBtn.disabled = false;

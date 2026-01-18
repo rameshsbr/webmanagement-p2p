@@ -5,12 +5,16 @@ export const IDR_V4_METHODS = new Set([
 ]);
 
 const FAZZ_DISPLAY_STATUS: Record<string, { label: string; variant: "" | "warn" | "danger" | "success" }> = {
+  created: { label: "Created", variant: "warn" },
+  awaiting_payment: { label: "Awaiting Payment", variant: "warn" },
+  queued: { label: "Queued", variant: "warn" },
   pending: { label: "Pending", variant: "warn" },
   processing: { label: "Processing", variant: "warn" },
   cancelled: { label: "Cancelled", variant: "danger" },
   expired: { label: "Expired", variant: "danger" },
   failed: { label: "Failed", variant: "danger" },
   paid: { label: "Paid", variant: "warn" },
+  succeeded: { label: "Succeeded", variant: "success" },
   completed: { label: "Completed", variant: "success" },
 };
 

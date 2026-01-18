@@ -3269,6 +3269,16 @@ superAdminRouter.get("/accounts/settlements", async (req, res) => {
   );
 });
 
+superAdminRouter.get("/accounts/metrics", async (req, res) => {
+  const merchantId = pickMerchantFilter(req.query?.merchantId);
+  const merchants = await prisma.merchant.findMany({ select: { id: true, name: true } });
+  res.render("superadmin/metrics", {
+    title: "Accounts · Metrics",
+    merchantId,
+    merchants,
+  });
+});
+
 superAdminRouter.post(
   "/accounts/settlements",
   upload.single("receipt"),

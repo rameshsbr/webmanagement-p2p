@@ -23,6 +23,7 @@ import { authRouter } from "./routes/auth.js";
 import { adminRouter } from "./routes/admin.js";
 import { adminSecurityRouter } from "./routes/adminSecurity.js";
 import { merchantApiRouter } from "./routes/merchantApi.js";
+import metricsRouter from "./routes/metrics.js";
 import { publicRouter } from "./routes/public.js";
 import { webhookRouter } from "./routes/webhooks.js";
 import { sdkRouter } from "./routes/sdk.js";
@@ -68,6 +69,7 @@ app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 
 // mount merchant API early so /api/merchant/* is available to your curl tests
 app.use("/api/merchant", merchantApiRouter);
+app.use("/metrics", metricsRouter);
 
 // Security & logging
 app.use(

@@ -1,0 +1,98 @@
+<% layout('merchant/layout') -%>
+
+<div class="metrics-toolbar" data-metrics-scope="merchant" data-merchant-id="<%= merchantId %>">
+  <form class="metrics-filters" data-metrics-form>
+    <label>
+      <span>From</span>
+      <input type="date" name="from"/>
+    </label>
+    <label>
+      <span>To</span>
+      <input type="date" name="to"/>
+    </label>
+    <label>
+      <span>Timezone</span>
+      <input type="text" name="tz" placeholder="Asia/Jakarta"/>
+    </label>
+    <div class="metrics-methods">
+      <span>Methods</span>
+      <label><input type="checkbox" name="method" value="IDR_VA_DYNAMIC"/>IDR v4 Dynamic</label>
+      <label><input type="checkbox" name="method" value="IDR_VA_STATIC"/>IDR v4 Static</label>
+      <label><input type="checkbox" name="method" value="IDR_SEND"/>IDR Send</label>
+      <label><input type="checkbox" name="method" value="P2P"/>P2P</label>
+    </div>
+    <div class="metrics-actions">
+      <button type="submit" class="btn">Apply</button>
+    </div>
+  </form>
+</div>
+
+<div class="kpis metrics-kpis" data-metrics-kpis>
+  <div class="kpi">
+    <div class="label">KYC Starts</div>
+    <div class="value" data-kpi="kyc.starts">0</div>
+  </div>
+  <div class="kpi">
+    <div class="label">KYC Completes</div>
+    <div class="value" data-kpi="kyc.completes">0</div>
+  </div>
+  <div class="kpi">
+    <div class="label">KYC Completion Rate</div>
+    <div class="value" data-kpi="kyc.completionRate">0%</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Avg Approval Time</div>
+    <div class="value" data-kpi="kyc.avgTimeToApprovalMs">0m</div>
+  </div>
+</div>
+
+<div class="kpis metrics-kpis" data-metrics-kpis>
+  <div class="kpi">
+    <div class="label">VA Create Success</div>
+    <div class="value" data-kpi="deposits.vaCreateSuccessRate">0%</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Approved Deposits</div>
+    <div class="value" data-kpi="deposits.approvedCount">0</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Rejected Deposits</div>
+    <div class="value" data-kpi="deposits.rejectedCount">0</div>
+  </div>
+  <div class="kpi">
+    <div class="label">Approved Withdrawals</div>
+    <div class="value" data-kpi="withdrawals.approvedCount">0</div>
+  </div>
+</div>
+
+<div class="metrics-grid">
+  <div class="card metrics-card">
+    <div class="title">KYC Starts vs Completes</div>
+    <div class="metrics-chart" data-chart="kyc"></div>
+  </div>
+  <div class="card metrics-card">
+    <div class="title">Deposits Status</div>
+    <div class="metrics-chart" data-chart="deposits"></div>
+  </div>
+  <div class="card metrics-card">
+    <div class="title">Withdrawals Status</div>
+    <div class="metrics-chart" data-chart="withdrawals"></div>
+  </div>
+</div>
+
+<div class="metrics-grid">
+  <div class="card metrics-card">
+    <div class="title">Approved Volume by Method</div>
+    <div class="metrics-breakdown" data-breakdown="methods"></div>
+  </div>
+  <div class="card metrics-card">
+    <div class="title">Top Reject Reasons</div>
+    <div class="metrics-table" data-breakdown="rejects"></div>
+  </div>
+  <div class="card metrics-card">
+    <div class="title">Top Issues</div>
+    <div class="metrics-table" data-breakdown="issues"></div>
+  </div>
+</div>
+
+<script src="/static/shared/metrics.js" defer></script>

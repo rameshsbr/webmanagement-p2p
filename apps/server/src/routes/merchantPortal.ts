@@ -1213,17 +1213,17 @@ router.get("/clients/automatcher", async (req: any, res) => {
   }
   const merchantId = req.merchant?.sub as string;
   const q = String(req.query.q || "").trim();
-  const where = q
+  const where: Prisma.MonoovaProfileWhereInput = q
     ? {
         OR: [
-          { clientUniqueId: { contains: q, mode: "insensitive" } },
-          { user: { email: { contains: q, mode: "insensitive" } } },
-          { user: { fullName: { contains: q, mode: "insensitive" } } },
-          { user: { publicId: { contains: q, mode: "insensitive" } } },
+          { clientUniqueId: { contains: q, mode: 'insensitive' as Prisma.QueryMode } },
+          { user: { is: { email:    { contains: q, mode: 'insensitive' as Prisma.QueryMode } } } },
+          { user: { is: { fullName: { contains: q, mode: 'insensitive' as Prisma.QueryMode } } } },
+          { user: { is: { publicId: { contains: q, mode: 'insensitive' as Prisma.QueryMode } } } },        
         ],
-        user: { merchantClients: { some: { merchantId } } },
+        user: { is: { merchantClients: { some: { merchantId } } } },
       }
-    : { user: { merchantClients: { some: { merchantId } } } };
+    : { user: { is: { merchantClients: { some: { merchantId } } } } };
 
   const rows = await prisma.monoovaProfile.findMany({
     where,

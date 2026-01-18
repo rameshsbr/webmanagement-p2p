@@ -1180,6 +1180,8 @@ checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantL
   const relPath = "/uploads/" + req.file.filename;
 
   try {
+    // Capture bankId outside the tx closure so TS knows it’s non-null.
+    const bankId = bank.id;
     const { payment } = await prisma.$transaction(async (tx) => {
       const duplicate = await tx.paymentRequest.findUnique({ where: { referenceCode: payload.referenceCode } });
       if (duplicate) {
@@ -1559,7 +1561,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
       uniqueReference,
       merchantId,
       userId: user.id,
-      bankAccountId: bank.id,
+      bankAccountId: bank?.id ?? null,
       methodId: selectedMethod?.id || null,
       detailsJson: { method: body.method, destination: body.destination, destinationId: destRecord.id, extras: sanitizedExtras },
     },

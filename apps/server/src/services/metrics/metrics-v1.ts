@@ -99,7 +99,9 @@ function resolveMethodCode(row: any) {
 
 function methodMatches(row: any, methodCode: string, filters: string[]) {
   if (!filters.length) return true;
-  const rail = String(row?.detailsJson?.rail || "").trim().toUpperCase();
+  // Narrow detailsJson safely before reading custom keys like `rail`.
+  const details = row?.detailsJson as Prisma.JsonObject | null;
+  const rail = String((details && (details as any).rail) || "").trim().toUpperCase();
   for (const f of filters) {
     if (f === "P2P" && methodCode && !isIdrV4Method(methodCode) && methodCode !== AUD_NPP_CODE) return true;
     if (f === "IDR_VA_DYNAMIC" && methodCode === "VIRTUAL_BANK_ACCOUNT_DYNAMIC") return true;
@@ -336,7 +338,8 @@ export async function getMetricsOverview(filters: MetricsFilters) {
     if (methodCode === "VIRTUAL_BANK_ACCOUNT_STATIC") bucket = "IDR_VA_STATIC";
     if (methodCode === "FAZZ_SEND") bucket = "IDR_SEND";
     if (methodCode === AUD_NPP_CODE) {
-      const rail = String(row?.detailsJson?.rail || "").trim().toUpperCase();
+      const details = row?.detailsJson as Prisma.JsonObject | null;
+      const rail = String((details && (details as any).rail) || "").trim().toUpperCase();
       bucket = rail === "PAYID" ? "AUD_NPP_PAYID" : "AUD_NPP_BANK";
     }
     const current = methodBreakdownMap.get(bucket) || { method: bucket, approvedSumCents: 0, approvedCount: 0 };

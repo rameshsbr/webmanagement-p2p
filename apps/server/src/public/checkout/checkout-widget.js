@@ -440,6 +440,101 @@
     return { wrap, getValues, validate };
   }
 
+  function buildAudNppRailSelect(selected) {
+    const select = el(
+      "select",
+      { style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px" },
+      [
+        el("option", { value: "" }, "Select rail"),
+        el("option", { value: "BANK_ACCOUNT" }, "Bank Account"),
+        el("option", { value: "PAYID" }, "PayID"),
+      ]
+    );
+    if (selected) select.value = selected;
+    return select;
+  }
+
+  function buildAudNppDepositFields(draftExtras) {
+    const wrap = el("div");
+    const railSelect = buildAudNppRailSelect((draftExtras && draftExtras.rail) || "");
+    wrap.appendChild(inputRow("Rail", railSelect, true));
+    return {
+      wrap,
+      getValues: () => ({ rail: railSelect.value }),
+      validate: () => (railSelect.value ? null : "Select a rail."),
+    };
+  }
+
+  function buildAudNppWithdrawalFields(draftExtras) {
+    const wrap = el("div");
+    const railSelect = buildAudNppRailSelect((draftExtras && draftExtras.rail) || "");
+
+    const nameInput = textInput({ placeholder: "Account holder name" });
+    const bsbInput = textInput({ placeholder: "BSB" });
+    const accountInput = textInput({ placeholder: "Account number" });
+    const payIdType = el(
+      "select",
+      { style: "height:36px; width:100%; box-sizing:border-box; padding:6px 10px" },
+      [
+        el("option", { value: "Email" }, "Email"),
+        el("option", { value: "Phone Number" }, "Phone Number"),
+      ]
+    );
+    const payIdValue = textInput({ placeholder: "PayID value" });
+
+    nameInput.value = String(draftExtras?.accountName || draftExtras?.holderName || "");
+    bsbInput.value = String(draftExtras?.bsb || "");
+    accountInput.value = String(draftExtras?.accountNumber || "");
+    payIdType.value = String(draftExtras?.payIdType || "Email");
+    payIdValue.value = String(draftExtras?.payIdValue || "");
+
+    const bankWrap = el("div", {}, [
+      inputRow("BSB", bsbInput, true),
+      inputRow("Account number", accountInput, true),
+    ]);
+    const payIdWrap = el("div", {}, [
+      inputRow("PayID type", payIdType, true),
+      inputRow("PayID value", payIdValue, true),
+    ]);
+
+    function refreshRail() {
+      bankWrap.style.display = railSelect.value === "BANK_ACCOUNT" ? "" : "none";
+      payIdWrap.style.display = railSelect.value === "PAYID" ? "" : "none";
+    }
+
+    railSelect.addEventListener("change", refreshRail);
+    refreshRail();
+
+    wrap.appendChild(inputRow("Rail", railSelect, true));
+    wrap.appendChild(inputRow("Account name", nameInput, true));
+    wrap.appendChild(bankWrap);
+    wrap.appendChild(payIdWrap);
+
+    return {
+      wrap,
+      getValues: () => ({
+        rail: railSelect.value,
+        accountName: nameInput.value,
+        bsb: bsbInput.value,
+        accountNumber: accountInput.value,
+        payIdType: payIdType.value,
+        payIdValue: payIdValue.value,
+      }),
+      validate: () => {
+        if (!railSelect.value) return "Select a rail.";
+        if (!nameInput.value.trim()) return "Account name is required.";
+        if (railSelect.value === "BANK_ACCOUNT") {
+          if (!bsbInput.value.trim()) return "BSB is required.";
+          if (!accountInput.value.trim()) return "Account number is required.";
+        }
+        if (railSelect.value === "PAYID") {
+          if (!payIdValue.value.trim()) return "PayID value is required.";
+        }
+        return null;
+      },
+    };
+  }
+
   async function getBankAndFormsForMethod(token, methodValue) {
     const method = String(methodValue || "").trim();
     const currency = currencyUnit();
@@ -511,13 +606,24 @@
     }
     const banks = (resp && Array.isArray(resp.banks)) ? resp.banks : [];
     const methods = [];
-    banks.forEach((bank) => {
-      const value = String(bank?.method || "").trim().toUpperCase();
-      if (!value) return;
-      if (methods.find((m) => m.value === value)) return;
-      const label = String(bank?.methodLabel || value).trim();
-      methods.push({ value, label: label || value });
-    });
+    const apiMethods = Array.isArray(resp?.methods) ? resp.methods : [];
+    if (apiMethods.length) {
+      apiMethods.forEach((method) => {
+        const value = String(method?.code || "").trim().toUpperCase();
+        if (!value) return;
+        if (methods.find((m) => m.value === value)) return;
+        const label = String(method?.name || value).trim();
+        methods.push({ value, label: label || value });
+      });
+    } else {
+      banks.forEach((bank) => {
+        const value = String(bank?.method || "").trim().toUpperCase();
+        if (!value) return;
+        if (methods.find((m) => m.value === value)) return;
+        const label = String(bank?.methodLabel || value).trim();
+        methods.push({ value, label: label || value });
+      });
+    }
     _availableMethods = methods;
     console.info(`[PayX] fetchAvailableMethods:done`, { count: methods.length });
     return methods;
@@ -607,6 +713,9 @@
     if (/^614\d{8}$/.test(digits)) return "+61" + digits.slice(2);
     if (/^61\d{9}$/.test(digits)) return "+" + digits;
     return input || "";
+  }
+  function isAudNppMethod(methodVal) {
+    return String(methodVal || "").trim().toUpperCase() === "AUD_NPP";
   }
   function inferPayerFromExtras(methodVal, extras) {
     const ex = extras || {};
@@ -716,6 +825,18 @@
         return;
       }
 
+      if (isAudNppMethod(methodVal)) {
+        selectedBankId = null;
+        dyn = buildAudNppDepositFields(prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        configWarning.textContent = "";
+        configWarning.style.display = "none";
+        formReady = true;
+        updateValidity();
+        return;
+      }
+
       try {
         console.info("[PayX] openDeposit:getBankForms:start", methodVal);
         const { bankId, depositFields } = await getBankAndFormsForMethod(token, methodVal);
@@ -751,7 +872,8 @@
       const amountCents = normalizeAmountInput(amount.value);
       let err = validateDepositInputs(amountCents);
       err = err || dyn.validate();
-      const ready = formReady && Boolean(String(method.value || ""));
+      const needsBank = !isAudNppMethod(method.value);
+      const ready = Boolean(String(method.value || "")) && (!needsBank ? true : formReady);
       setEnabled(nextBtn, ready && !err);
       status.textContent = err || "";
     }
@@ -773,7 +895,8 @@
     nextBtn.addEventListener("click", async () => {
       const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
-      const payer = inferPayerFromExtras(method.value, extras);
+      const isAudNpp = isAudNppMethod(method.value);
+      const payer = isAudNpp ? null : inferPayerFromExtras(method.value, extras);
 
       if (amountCents === null) {
         const { min: _m1, max: _m2 } = getLimitNumbers();
@@ -781,7 +904,7 @@
         return;
       }
 
-      if (!formReady || !method.value || !selectedBankId) {
+      if (!isAudNpp && (!formReady || !method.value || !selectedBankId)) {
         configWarning.textContent = selectedBankId ? NO_FORM_MESSAGE : NO_METHODS_MESSAGE;
         configWarning.style.display = "block";
         setEnabled(nextBtn, false);
@@ -791,22 +914,24 @@
       const verr = validateDepositInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
-      payer.holderName = String(payer.holderName || "").trim();
-      const hasKycName = Boolean(
-        (_claims && _claims.kycFullName) ||
-        (_claims && _claims.kycFirstName) ||
-        (_claims && _claims.kycLastName)
-      );
-      if (hasKycName) {
-        const nameMatch = evaluateNameMatch(
-          payer.holderName,
-          (_claims && _claims.kycFirstName) || null,
-          (_claims && _claims.kycLastName) || null,
-          (_claims && _claims.kycFullName) || null,
+      if (!isAudNpp) {
+        payer.holderName = String(payer.holderName || "").trim();
+        const hasKycName = Boolean(
+          (_claims && _claims.kycFullName) ||
+          (_claims && _claims.kycFirstName) ||
+          (_claims && _claims.kycLastName)
         );
-        if (!nameMatch.allow) {
-          status.textContent = "Account holder name must match the verified KYC name.";
-          return;
+        if (hasKycName) {
+          const nameMatch = evaluateNameMatch(
+            payer.holderName,
+            (_claims && _claims.kycFirstName) || null,
+            (_claims && _claims.kycLastName) || null,
+            (_claims && _claims.kycFullName) || null,
+          );
+          if (!nameMatch.allow) {
+            status.textContent = "Account holder name must match the verified KYC name.";
+            return;
+          }
         }
       }
 
@@ -817,27 +942,51 @@
         await ensureKyc(token);
 
         status.textContent = "Creating intent…";
-        const body = { amountCents, method: method.value, payer, extraFields: extras, bankAccountId: selectedBankId };
 
-        const requestIntent = () => call("/public/deposit/intent", token, {
-          method: "POST",
-          headers: { "content-type":"application/json" },
-          body: JSON.stringify(body),
-        });
+        if (isAudNpp) {
+          const body = { amountCents, rail: extras.rail };
+          const requestIntent = () => call("/public/aud-npp/deposit/intent", token, {
+            method: "POST",
+            headers: { "content-type":"application/json" },
+            body: JSON.stringify(body),
+          });
 
-        const resp = await (async () => {
-          try {
-            return await requestIntent();
-          } catch (err) {
-            if (err?.error !== "KYC_REQUIRED" || !err?.kyc?.url) throw err;
-            status.textContent = "Verification required. Complete KYC to continue…";
-            await runKycPopup(token, err.kyc);
-            status.textContent = "Creating intent…";
-            return await requestIntent();
-          }
-        })();
+          const resp = await (async () => {
+            try {
+              return await requestIntent();
+            } catch (err) {
+              if (err?.error !== "KYC_REQUIRED" || !err?.kyc?.url) throw err;
+              status.textContent = "Verification required. Complete KYC to continue…";
+              await runKycPopup(token, err.kyc);
+              status.textContent = "Creating intent…";
+              return await requestIntent();
+            }
+          })();
 
-        renderDepositInstructions({ box, header, token, claims, intent: resp, close });
+          renderAudNppDepositInstructions({ box, header, token, claims, intent: resp, close });
+        } else {
+          const body = { amountCents, method: method.value, payer, extraFields: extras, bankAccountId: selectedBankId };
+
+          const requestIntent = () => call("/public/deposit/intent", token, {
+            method: "POST",
+            headers: { "content-type":"application/json" },
+            body: JSON.stringify(body),
+          });
+
+          const resp = await (async () => {
+            try {
+              return await requestIntent();
+            } catch (err) {
+              if (err?.error !== "KYC_REQUIRED" || !err?.kyc?.url) throw err;
+              status.textContent = "Verification required. Complete KYC to continue…";
+              await runKycPopup(token, err.kyc);
+              status.textContent = "Creating intent…";
+              return await requestIntent();
+            }
+          })();
+
+          renderDepositInstructions({ box, header, token, claims, intent: resp, close });
+        }
         clearDraft("deposit", claims);
       } catch (e) {
         const message = (e && (e.message || e.error)) ? String(e.message || e.error) : "Error";
@@ -876,6 +1025,80 @@
     const bankName = String(intent?.bankDetails?.bankName || "").toUpperCase();
     const anyVA = /VA/.test(method) || /VIRTUAL\s*ACCOUNT/.test(method) || /VA/.test(bankName);
     return cur === "IDR" && (provider.includes("FAZZ") || bankName.includes("FAZZ") || anyVA);
+  }
+
+  function renderAudNppDepositInstructions({ box, header, token, claims, intent, close }) {
+    while (box.childNodes.length > 1) box.removeChild(box.lastChild);
+    header.firstChild.textContent = "Transfer details";
+
+    const amountCents = Number(intent?.amountCents || 0);
+    const amountText = `AUD ${(amountCents / 100).toLocaleString("en-AU", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+    const rail = String(intent?.rail || "").toUpperCase();
+    const automatcher = intent?.automatcher || {};
+    const payId = intent?.payId || {};
+
+    const intro = el("div", { style: "margin:4px 0 8px 0; opacity:.85" },
+      "Use the details below to make your transfer. Always include the reference."
+    );
+
+    const steps = el("ol", { style: "margin:8px 0 12px 18px; opacity:.9" }, [
+      el("li", {}, "Open your banking app."),
+      el("li", {}, `Transfer ${amountText} to the ${rail === "PAYID" ? "PayID" : "Bank Account"} below.`),
+      el("li", {}, "Use immediate transfer if available."),
+    ]);
+
+    const grid = el("div");
+    const row = (label, value) => {
+      grid.appendChild(el("div", { style: "display:flex; justify-content:space-between; gap:8px; margin:6px 0" }, [
+        el("div", { style: "opacity:.7" }, label),
+        el("div", { class: "mono" }, value || "-"),
+      ]));
+    };
+
+    if (rail === "PAYID") {
+      row("Account name", String(payId?.name || "-"));
+      row("PayID (email)", String(payId?.value || "-"));
+    } else {
+      row("Account Name", String(automatcher?.bankAccountName || "-"));
+      row("Account No", String(automatcher?.bankAccountNumber || "-"));
+      row("BSB", String(automatcher?.bsb || "-"));
+    }
+    row("Amount", amountText);
+    row("Reference", "Fund Transfer");
+
+    const confirm = el("button", { style: "margin-top:12px; height:36px; padding:0 14px; cursor:pointer" }, "I've transferred");
+    const status = el("div", { style: "margin-top:8px; font-size:12px; opacity:.8" });
+
+    confirm.addEventListener("click", async () => {
+      try {
+        confirm.disabled = true;
+        status.textContent = "Submitting…";
+        const resp = await call("/public/aud-npp/deposit/confirm", token, {
+          method: "POST",
+          headers: { "content-type":"application/json" },
+          body: JSON.stringify({ intentToken: intent.intentToken }),
+        });
+        status.innerHTML = `Request submitted. Reference: <b>${resp.uniqueReference || resp.referenceCode}</b>`;
+        safeCallback("onDepositSubmitted", {
+          id: resp.id,
+          referenceCode: resp.referenceCode,
+          uniqueReference: resp.uniqueReference,
+          amountCents,
+          currency: "AUD",
+        });
+        clearDraft("deposit", claims);
+      } catch (err) {
+        const message = (err && (err.message || err.error)) ? String(err.message || err.error) : "Error";
+        status.textContent = message;
+        confirm.disabled = false;
+      }
+    });
+
+    box.appendChild(intro);
+    box.appendChild(steps);
+    box.appendChild(grid);
+    box.appendChild(confirm);
+    box.appendChild(status);
   }
 
   function renderDepositInstructions({ box, header, token, claims, intent, close }) {
@@ -1086,7 +1309,8 @@
       const amountCents = normalizeAmountInput(amount.value);
       let err = validateWithdrawalInputs(amountCents);
       err = err || dyn.validate();
-      const ready = formReady && Boolean(String(method.value || "")) && Boolean(selectedBankId);
+      const needsBank = !isAudNppMethod(method.value);
+      const ready = formReady && Boolean(String(method.value || "")) && (!needsBank || Boolean(selectedBankId));
       setEnabled(submit, ready && !err);
       status.textContent = err || "";
     }
@@ -1110,6 +1334,18 @@
           ? NO_FORM_MESSAGE
           : NO_METHODS_MESSAGE;
         configWarning.style.display = "block";
+        updateValidity();
+        return;
+      }
+
+      if (isAudNppMethod(methodVal)) {
+        selectedBankId = null;
+        dyn = buildAudNppWithdrawalFields(prev);
+        dynMount.innerHTML = "";
+        dynMount.appendChild(dyn.wrap);
+        configWarning.textContent = "";
+        configWarning.style.display = "none";
+        formReady = true;
         updateValidity();
         return;
       }
@@ -1154,7 +1390,17 @@
     submit.addEventListener("click", async () => {
       const amountCents = normalizeAmountInput(amount.value);
       const extras = dyn.getValues();
-      const destination = inferPayerFromExtras(method.value, extras);
+      const isAudNpp = isAudNppMethod(method.value);
+      const destination = isAudNpp
+        ? {
+            rail: extras.rail,
+            accountName: extras.accountName,
+            bsb: extras.bsb,
+            accountNumber: extras.accountNumber,
+            payIdType: extras.payIdType,
+            payIdValue: extras.payIdValue,
+          }
+        : inferPayerFromExtras(method.value, extras);
 
       if (amountCents === null) {
         const { min: _m1, max: _m2 } = getLimitNumbers();
@@ -1162,7 +1408,7 @@
         return;
       }
 
-      if (!formReady || !method.value || !selectedBankId) {
+      if (!formReady || !method.value || (!isAudNpp && !selectedBankId)) {
         configWarning.textContent = NO_FORM_MESSAGE;
         configWarning.style.display = "block";
         setEnabled(submit, false);
@@ -1172,22 +1418,24 @@
       const verr = validateWithdrawalInputs(amountCents) || dyn.validate();
       if (verr) { status.textContent = verr; return; }
 
-      destination.holderName = String(destination.holderName || "").trim();
-      const hasKycName = Boolean(
-        (_claims && _claims.kycFullName) ||
-        (_claims && _claims.kycFirstName) ||
-        (_claims && _claims.kycLastName)
-      );
-      if (hasKycName) {
-        const nameMatch = evaluateNameMatch(
-          destination.holderName,
-          (_claims && _claims.kycFirstName) || null,
-          (_claims && _claims.kycLastName) || null,
-          (_claims && _claims.kycFullName) || null,
+      if (!isAudNpp) {
+        destination.holderName = String(destination.holderName || "").trim();
+        const hasKycName = Boolean(
+          (_claims && _claims.kycFullName) ||
+          (_claims && _claims.kycFirstName) ||
+          (_claims && _claims.kycLastName)
         );
-        if (!nameMatch.allow) {
-          status.textContent = "Account holder name must match the verified KYC name.";
-          return;
+        if (hasKycName) {
+          const nameMatch = evaluateNameMatch(
+            destination.holderName,
+            (_claims && _claims.kycFirstName) || null,
+            (_claims && _claims.kycLastName) || null,
+            (_claims && _claims.kycFullName) || null,
+          );
+          if (!nameMatch.allow) {
+            status.textContent = "Account holder name must match the verified KYC name.";
+            return;
+          }
         }
       }
 

@@ -1,0 +1,64 @@
+<% layout('superadmin/layout') -%>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap">
+    <div>
+      <h2>AUD · Webhooks</h2>
+      <p class="muted">View stored Monoova webhook payloads and export to XLSX.</p>
+    </div>
+    <div class="row" style="gap:8px">
+      <a class="btn small" href="/superadmin/aud/webhooks.xlsx?<%= new URLSearchParams(query).toString() %>">Export XLSX</a>
+    </div>
+  </div>
+</div>
+
+<form class="card" method="GET" action="/superadmin/aud/webhooks" style="margin-top:16px">
+  <div class="filters-grid grid-4">
+    <div class="f-item">
+      <label>Type</label>
+      <input type="text" name="type" value="<%= query.type || '' %>" placeholder="Webhook type" />
+    </div>
+    <div class="f-item">
+      <label>From</label>
+      <input type="date" name="from" value="<%= query.from || '' %>" />
+    </div>
+    <div class="f-item">
+      <label>To</label>
+      <input type="date" name="to" value="<%= query.to || '' %>" />
+    </div>
+    <div class="f-item" style="align-self:end">
+      <button class="btn primary" type="submit">Apply</button>
+    </div>
+  </div>
+</form>
+
+<div class="card" style="margin-top:16px">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Received</th>
+        <th>Type</th>
+        <th>Client</th>
+        <th>Linked Payment</th>
+        <th>Payload</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (Array.isArray(rows) && rows.length) { %>
+        <% rows.forEach((row) => { %>
+          <tr>
+            <td><%= row.receivedAt ? formatDateTime(row.receivedAt, res.locals.getTimezone()) : '-' %></td>
+            <td><%= row.type %></td>
+            <td class="mono"><%= row.linkedUserId || '-' %></td>
+            <td class="mono"><%= row.linkedRequestId || '-' %></td>
+            <td>
+              <pre style="max-width:420px; white-space:pre-wrap"><%= JSON.stringify(row.bodyJson || {}, null, 2) %></pre>
+            </td>
+          </tr>
+        <% }) %>
+      <% } else { %>
+        <tr><td colspan="5" class="muted">No webhooks received.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>

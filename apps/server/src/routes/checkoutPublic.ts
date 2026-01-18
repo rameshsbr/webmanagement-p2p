@@ -21,9 +21,17 @@ import {
 import { applyMerchantLimits } from "../middleware/merchantLimits.js";
 import { tgNotify } from "../services/telegram.js";
 import { evaluateNameMatch } from "../services/paymentStatus.js";
-import { ensureMerchantMethod, isIdrV4Method, listMerchantMethods } from "../services/methods.js";
+import { ensureMerchantMethod, isAudNppMethod, isIdrV4Method, listMerchantMethods } from "../services/methods.js";
 import { requireKycOrStartFlow } from "../services/kycGate.js";
 import { adapters } from "../services/providers/index.js";
+import {
+  buildNppBankPayload,
+  buildNppPayIdPayload,
+  ensureAutomatcher,
+  ensurePayId,
+  executeNppDisbursement,
+  validateNppDisbursement,
+} from "../services/monoova/audNpp.js";
 
 // ───────────────────────────────────────────────
 // Minimal API-key verification (copied pattern)
@@ -126,6 +134,29 @@ const payerPayId = z
         path: ["payIdValue"],
         message: "Invalid AU mobile (use 04xxxxxxxx or +61xxxxxxxxx)",
       });
+    }
+  });
+
+const audNppRail = z.enum(["BANK_ACCOUNT", "PAYID"]);
+const audNppBankDestination = z.object({
+  rail: z.literal("BANK_ACCOUNT"),
+  accountName: z.string().min(2),
+  bsb: z.string().regex(/^[0-9-]{6,7}$/),
+  accountNumber: z.string().min(5),
+});
+const audNppPayIdDestination = z
+  .object({
+    rail: z.literal("PAYID"),
+    accountName: z.string().min(2),
+    payIdType: z.enum(["Email", "Phone Number"]),
+    payIdValue: z.string().min(3),
+  })
+  .superRefine((val, ctx) => {
+    if (val.payIdType === "Email" && !emailRe.test(val.payIdValue)) {
+      ctx.addIssue({ code: "custom", path: ["payIdValue"], message: "Invalid email" });
+    }
+    if (val.payIdType === "Phone Number" && !/^\+?\d{8,15}$/.test(val.payIdValue)) {
+      ctx.addIssue({ code: "custom", path: ["payIdValue"], message: "Invalid phone number" });
     }
   });
 
@@ -569,7 +600,12 @@ checkoutPublicRouter.get("/public/deposit/banks", checkoutAuth, applyMerchantLim
     };
   });
 
-  res.json({ ok: true, banks });
+  const methods = Array.from(allowedMethodMap.values()).map((m: any) => ({
+    code: String(m.code || "").trim().toUpperCase(),
+    name: String(m.name || m.code || "").trim(),
+  }));
+
+  res.json({ ok: true, banks, methods });
 });
 
 // ───────────────────────────────────────────────
@@ -871,6 +907,221 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
 });
 
 // ───────────────────────────────────────────────
+// 2c) Public: AUD NPP deposit intent (Monoova)
+// ───────────────────────────────────────────────
+checkoutPublicRouter.post("/public/aud-npp/deposit/intent", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
+  const { merchantId, diditSubject, currency } = req.checkout;
+  const { map: allowedMethodMap, codes: allowedMethodCodes } = await getAllowedMethodsForMerchant(merchantId);
+
+  const parsed = z
+    .object({
+      amountCents: z.number().int().positive(),
+      rail: audNppRail,
+    })
+    .safeParse(req.body || {});
+  if (!parsed.success) {
+    return res.status(400).json({ ok: false, error: "VALIDATION_FAILED", details: parsed.error.flatten() });
+  }
+  const base = parsed.data;
+
+  if (!allowedMethodCodes.has("AUD_NPP")) {
+    return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
+  }
+  const selectedMethod = allowedMethodMap.get("AUD_NPP") as any;
+
+  const minCents = Number.isFinite(selectedMethod?.minDepositCents) ? Number(selectedMethod.minDepositCents) :
+                   Number.isFinite(selectedMethod?.minCents) ? Number(selectedMethod.minCents) : FALLBACK_MIN_CENTS;
+  const maxCents = Number.isFinite(selectedMethod?.maxDepositCents) ? Number(selectedMethod.maxDepositCents) :
+                   Number.isFinite(selectedMethod?.maxCents) ? Number(selectedMethod.maxCents) : FALLBACK_MAX_CENTS;
+
+  if (base.amountCents < minCents || base.amountCents > maxCents) {
+    return res.status(400).json({ ok: false, error: "Amount out of range", limits: { minCents, maxCents } });
+  }
+
+  if (String(currency || "").toUpperCase() !== "AUD") {
+    return res.status(400).json({ ok: false, error: "CURRENCY_MISMATCH" });
+  }
+
+  const user = await prisma.user.upsert({
+    where: { diditSubject },
+    create: { publicId: generateUserId(), diditSubject, verifiedAt: null },
+    update: {},
+  });
+
+  const mapping = await upsertMerchantClientMapping({
+    merchantId,
+    externalId: req.checkout.externalId,
+    userId: user.id,
+    email: req.checkout.email,
+  });
+  const clientStatus = normalizeClientStatus(mapping?.status);
+  if (clientStatus !== "ACTIVE") {
+    return rejectInactiveClient(res, clientStatus, "deposit");
+  }
+
+  let kycGate;
+  try {
+    kycGate = await requireKycOrStartFlow({
+      merchantId,
+      userId: user.id,
+      diditSubject,
+      externalId: req.checkout.externalId,
+      email: req.checkout.email,
+      verifiedAt: user.verifiedAt,
+    });
+  } catch (err) {
+    console.error("[aud-npp-intent] KYC start failed", err);
+    return res.status(500).json({ ok: false, error: "KYC_START_FAILED" });
+  }
+
+  if (!kycGate.allow) {
+    return res.json({
+      ok: false,
+      error: "KYC_REQUIRED",
+      kyc: { url: kycGate.url, sessionId: kycGate.sessionId },
+      message: "Verification required before proceeding.",
+    });
+  }
+
+  const email = String(req.checkout.email || user.email || "").trim();
+  if (!email) {
+    return res.status(400).json({ ok: false, error: "PAYID_EMAIL_REQUIRED" });
+  }
+
+  const automatcher = await ensureAutomatcher(user);
+  const payIdProfile = await ensurePayId({ id: user.id, email, fullName: user.fullName });
+
+  const referenceCode = generateTransactionId();
+  const uniqueReference = generateUniqueReference();
+  const intentPayload = {
+    merchantId,
+    userId: user.id,
+    currency,
+    amountCents: base.amountCents,
+    method: "AUD_NPP",
+    methodId: selectedMethod?.id || null,
+    rail: base.rail,
+    referenceCode,
+    uniqueReference,
+    createdAt: nowIso(),
+  } as const;
+
+  let intentToken: string;
+  try {
+    intentToken = seal(JSON.stringify(intentPayload));
+  } catch (err) {
+    console.error("[aud-npp-intent] failed to seal payload", err);
+    return res.status(500).json({ ok: false, error: "INTENT_ENCRYPTION_FAILED" });
+  }
+
+  res.json({
+    ok: true,
+    intentToken,
+    amountCents: base.amountCents,
+    currency,
+    method: "AUD_NPP",
+    rail: base.rail,
+    reference: "Fund Transfer",
+    clientUniqueId: automatcher.clientUniqueId,
+    automatcher: {
+      bsb: automatcher.bsb,
+      bankAccountNumber: automatcher.bankAccountNumber,
+      bankAccountName: automatcher.bankAccountName,
+      status: automatcher.status,
+    },
+    payId: {
+      type: payIdProfile.payIdType || "Email",
+      value: payIdProfile.payIdValue || email,
+      name: payIdProfile.payIdName || user.fullName || email,
+      status: payIdProfile.payIdStatus,
+    },
+  });
+});
+
+// ───────────────────────────────────────────────
+// 3) Public: deposit submission (create payment + attach receipt)
+checkoutPublicRouter.post("/public/aud-npp/deposit/confirm", checkoutAuth, applyMerchantLimits, async (req: any, res) => {
+  const { merchantId, diditSubject } = req.checkout;
+  const tokenRaw = String(req.body?.intentToken || "").trim();
+  if (!tokenRaw) return res.status(400).json({ ok: false, error: "Missing intent" });
+
+  let payload: any;
+  try {
+    payload = JSON.parse(sbOpen(tokenRaw));
+  } catch (err) {
+    console.warn("[aud-npp-confirm] invalid token", err);
+    return res.status(400).json({ ok: false, error: "Invalid intent" });
+  }
+
+  if (!payload || payload.merchantId !== merchantId) {
+    return res.status(400).json({ ok: false, error: "Intent mismatch" });
+  }
+
+  const user = await prisma.user.findUnique({ where: { id: payload.userId } });
+  if (!user || user.diditSubject !== diditSubject) {
+    return res.status(403).json({ ok: false, error: "USER_MISMATCH" });
+  }
+  if (!user.verifiedAt) {
+    return res.status(403).json({ ok: false, error: "KYC_REQUIRED" });
+  }
+
+  const clientStatus = await getMerchantClientStatus(merchantId, user.id);
+  if (clientStatus !== "ACTIVE") {
+    return rejectInactiveClient(res, clientStatus, "deposit");
+  }
+
+  const allowedMethod = await ensureMerchantMethod(merchantId, payload.method);
+  if (!allowedMethod || (payload.methodId && allowedMethod.id !== payload.methodId)) {
+    return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
+  }
+
+  const profile = await prisma.monoovaProfile.findUnique({ where: { userId: user.id } });
+  if (!profile) {
+    return res.status(400).json({ ok: false, error: "AUTOMATCHER_MISSING" });
+  }
+
+  try {
+    const payment = await prisma.paymentRequest.create({
+      data: {
+        type: "DEPOSIT",
+        status: "PENDING",
+        amountCents: payload.amountCents,
+        currency: payload.currency,
+        referenceCode: payload.referenceCode,
+        uniqueReference: payload.uniqueReference,
+        merchantId,
+        userId: payload.userId,
+        methodId: payload.methodId || null,
+        detailsJson: {
+          method: payload.method,
+          rail: payload.rail,
+          clientUniqueId: profile.clientUniqueId,
+        },
+      },
+    });
+
+    await tgNotify(
+      `🟢 AUD NPP deposit pending\nRef: <b>${payload.referenceCode}</b>\nAmount: ${payload.amountCents} ${payload.currency}\nRail: ${payload.rail}`
+    ).catch(() => {});
+
+    return res.json({
+      ok: true,
+      id: payment.id,
+      referenceCode: payload.referenceCode,
+      uniqueReference: payload.uniqueReference,
+      currency: payload.currency,
+      amountCents: payload.amountCents,
+    });
+  } catch (err: any) {
+    if (err?.code === "P2002") {
+      return res.status(409).json({ ok: false, error: "Already submitted" });
+    }
+    console.error("[aud-npp-confirm] failed", err);
+    return res.status(500).json({ ok: false, error: "SUBMIT_FAILED" });
+  }
+});
+
+// ───────────────────────────────────────────────
 // 3) Public: deposit submission (create payment + attach receipt)
 checkoutPublicRouter.post("/public/deposit/submit", checkoutAuth, applyMerchantLimits, upload.single("receipt"), async (req: any, res) => {
   if (!req.file) return res.status(400).json({ ok: false, error: "Missing file" });
@@ -1000,8 +1251,8 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   const withdrawalSchema = z.object({
     amountCents: z.number().int().positive(),
     method: METHOD,
-    destination: z.union([payerOsko, payerPayId, destinationIdr]),
-    bankAccountId: z.string().cuid(),
+    destination: z.union([payerOsko, payerPayId, destinationIdr, audNppBankDestination, audNppPayIdDestination]),
+    bankAccountId: z.string().cuid().optional(),
     extraFields: z.record(z.any()).optional(),
   });
   const parsedWithdrawal = withdrawalSchema.safeParse(req.body || {});
@@ -1018,6 +1269,7 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     return res.status(400).json({ ok: false, error: "METHOD_NOT_ALLOWED" });
   }
   const selectedMethod = allowedMethodMap.get(body.method) as any;
+  const isAudNppWithdrawal = isAudNppMethod(body.method);
 
   // Per-method limits if present (fallback to global constants)
   const minCents = Number.isFinite(selectedMethod?.minWithdrawalCents) ? Number(selectedMethod.minWithdrawalCents) :
@@ -1032,23 +1284,30 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
     return res.status(400).json({ ok: false, error: "INSUFFICIENT_BALANCE" });
   }
 
-  const bank = await loadMerchantBank(merchantId, body.bankAccountId);
-  if (!bank) return res.status(400).json({ ok: false, error: "INVALID_BANK_SELECTION" });
-  if (String(bank.method || "").toUpperCase() !== body.method) {
-    return res.status(400).json({ ok: false, error: "METHOD_BANK_MISMATCH" });
-  }
-  if (!bankSupportsCurrency(bank.currency, currency)) {
-    return res.status(400).json({ ok: false, error: "BANK_CURRENCY_UNAVAILABLE" });
-  }
+  let bank = null;
+  let sanitizedExtras: Record<string, any> = {};
+  if (!isAudNppWithdrawal) {
+    if (!body.bankAccountId) {
+      return res.status(400).json({ ok: false, error: "INVALID_BANK_SELECTION" });
+    }
+    bank = await loadMerchantBank(merchantId, body.bankAccountId);
+    if (!bank) return res.status(400).json({ ok: false, error: "INVALID_BANK_SELECTION" });
+    if (String(bank.method || "").toUpperCase() !== body.method) {
+      return res.status(400).json({ ok: false, error: "METHOD_BANK_MISMATCH" });
+    }
+    if (!bankSupportsCurrency(bank.currency, currency)) {
+      return res.status(400).json({ ok: false, error: "BANK_CURRENCY_UNAVAILABLE" });
+    }
 
-  // Validate per-bank extra fields for withdrawals
-  const forms = await getFormConfig(merchantId, bank.id);
-  const v = validateExtras(forms.withdrawal, body.extraFields || {});
-  if (!v.ok)
-    return res
-      .status(400)
-      .json({ ok: false, error: v.error, field: v.field || undefined });
-  const sanitizedExtras = v.values || {};
+    // Validate per-bank extra fields for withdrawals
+    const forms = await getFormConfig(merchantId, bank.id);
+    const v = validateExtras(forms.withdrawal, body.extraFields || {});
+    if (!v.ok)
+      return res
+        .status(400)
+        .json({ ok: false, error: v.error, field: v.field || undefined });
+    sanitizedExtras = v.values || {};
+  }
 
   const user = await prisma.user.findUnique({ where: { diditSubject } });
   if (!user || !user.verifiedAt) return res.status(403).json({ ok: false, error: "User not verified" });
@@ -1068,6 +1327,134 @@ checkoutPublicRouter.post("/public/withdrawals", checkoutAuth, applyMerchantLimi
   });
   if (!hasDeposit) {
     return res.status(403).json({ ok: false, error: "WITHDRAWAL_BLOCKED_NO_PRIOR_DEPOSIT" });
+  }
+
+  if (isAudNppWithdrawal) {
+    if (String(currency || "").toUpperCase() !== "AUD") {
+      return res.status(400).json({ ok: false, error: "CURRENCY_MISMATCH" });
+    }
+
+    const referenceCode = generateTransactionId();
+    const uniqueReference = generateUniqueReference();
+    const merchant = await prisma.merchant.findUnique({
+      where: { id: merchantId },
+      select: { name: true },
+    });
+    const remitterName = merchant?.name || "Platform";
+    const endToEndId = referenceCode;
+    const lodgementReference = referenceCode;
+
+    const destination = body.destination as z.infer<typeof audNppBankDestination> | z.infer<typeof audNppPayIdDestination>;
+    let validatePayload: any;
+    let providerBankCode = "NPP";
+    let providerAccountNo = "";
+
+    if (destination.rail === "BANK_ACCOUNT") {
+      validatePayload = buildNppBankPayload({
+        amountCents: body.amountCents,
+        accountName: destination.accountName,
+        bsb: destination.bsb,
+        accountNumber: destination.accountNumber,
+        remitterName,
+        endToEndId,
+        lodgementReference,
+      });
+      providerBankCode = "NPP_BANK";
+      providerAccountNo = destination.accountNumber;
+    } else {
+      validatePayload = buildNppPayIdPayload({
+        amountCents: body.amountCents,
+        accountName: destination.accountName,
+        payIdType: destination.payIdType,
+        payId: destination.payIdValue,
+        remitterName,
+        endToEndId,
+        lodgementReference,
+      });
+      providerBankCode = `PAYID_${destination.payIdType.replace(/\s+/g, "_").toUpperCase()}`;
+      providerAccountNo = destination.payIdValue;
+    }
+
+    let validateResp: any;
+    try {
+      validateResp = await validateNppDisbursement(validatePayload);
+    } catch (err: any) {
+      const message = err?.message || "Validation failed";
+      return res.status(400).json({ ok: false, error: "VALIDATION_FAILED", message });
+    }
+
+    let executeResp: any;
+    try {
+      executeResp = await executeNppDisbursement({ ...validatePayload, uniqueReference: `mon-${uniqueReference}` });
+    } catch (err: any) {
+      const message = err?.message || "Execution failed";
+      return res.status(502).json({ ok: false, error: "EXECUTION_FAILED", message });
+    }
+
+    const destRecord = await prisma.withdrawalDestination.create({
+      data: {
+        userId: user.id,
+        currency,
+        bankName: destination.rail === "BANK_ACCOUNT" ? "AUD_NPP_BANK" : "AUD_NPP_PAYID",
+        holderName: destination.accountName,
+        accountNo: providerAccountNo,
+        iban: null,
+      },
+    });
+
+    const providerRef = String(
+      executeResp?.transactionId ||
+      executeResp?.reference ||
+      executeResp?.uniqueReference ||
+      uniqueReference
+    );
+
+    const pr = await prisma.$transaction(async (tx) => {
+      const created = await tx.paymentRequest.create({
+        data: {
+          type: "WITHDRAWAL",
+          status: "SUBMITTED",
+          amountCents: body.amountCents,
+          currency,
+          referenceCode,
+          uniqueReference,
+          merchantId,
+          userId: user.id,
+          methodId: selectedMethod?.id || null,
+          detailsJson: {
+            method: body.method,
+            destination,
+            destinationId: destRecord.id,
+            rail: destination.rail,
+            validation: validateResp,
+            execution: executeResp,
+          },
+        },
+      });
+
+      await tx.providerDisbursement.create({
+        data: {
+          paymentRequestId: created.id,
+          provider: "MONOOVA",
+          providerPayoutId: providerRef,
+          bankCode: providerBankCode,
+          accountNumber: providerAccountNo,
+          accountHolder: destination.accountName,
+          status: String(executeResp?.status || "submitted"),
+          normalizedStatus: null,
+          validationStatus: String(validateResp?.status || ""),
+          amountCents: body.amountCents,
+          currency,
+          rawCreateJson: executeResp,
+          rawLatestJson: executeResp,
+        },
+      });
+
+      return created;
+    });
+
+    await tgNotify(`🟡 AUD NPP withdrawal submitted\nRef: <b>${referenceCode}</b>\nAmount: ${body.amountCents} ${currency}`).catch(() => {});
+    return res.json({ ok: true, id: pr.id, referenceCode, uniqueReference, providerReference: providerRef });
   }
 
   const isIdrV4Withdrawal = isIdrV4Method(body.method) || body.method === "FAZZ_SEND";

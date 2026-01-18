@@ -57,6 +57,8 @@ import {
 import { isIdrV4Method, mapFazzDisplayStatus } from "../services/providers/fazz/idr-v4-status.js";
 import { displayAmount, parseAmountInput } from "../utils/money.js";
 import { getDashboardMetrics } from "../services/metrics/dashboard-metrics.js";
+import { monoovaRequest } from "../services/monoova/client.js";
+import { refreshAutomatcherProfile, registerPayId, updatePayIdName, updatePayIdStatus } from "../services/monoova/audNpp.js";
 
 export const superAdminRouter = Router();
 
@@ -4458,4 +4460,212 @@ superAdminRouter.post("/forms/:merchantId/copy-from", async (req: any, res: any)
     from: fromLabel
   }).toString();
   res.redirect(`/superadmin/forms?${q}`);
+});
+
+// ───────────────────────────────────────────────
+// AUD · Monoova pages (Subscriptions, Webhooks, Automatcher)
+// ───────────────────────────────────────────────
+superAdminRouter.get("/aud/subscriptions", async (_req, res) => {
+  let subscriptions: any[] = [];
+  let error: string | null = null;
+  try {
+    const resp = await monoovaRequest<any>("/subscriptions/v1/list", { method: "POST", body: {} });
+    const list = resp?.subscriptions || resp?.data || resp?.items || resp?.results || [];
+    subscriptions = Array.isArray(list) ? list : [];
+  } catch (err: any) {
+    error = err?.message || "Unable to load subscriptions";
+  }
+
+  res.render("superadmin/aud-subscriptions", {
+    title: "AUD Subscriptions",
+    section: "aud-subscriptions",
+    subscriptions,
+    error,
+  });
+});
+
+superAdminRouter.post("/aud/subscriptions/create", async (req, res) => {
+  const payloadRaw = String(req.body?.payload || "").trim();
+  let payload: any = {};
+  if (payloadRaw) {
+    try {
+      payload = JSON.parse(payloadRaw);
+    } catch {
+      return res.status(400).send("Invalid JSON payload");
+    }
+  }
+  await monoovaRequest("/subscriptions/v1/create", { method: "POST", body: payload });
+  res.redirect("/superadmin/aud/subscriptions");
+});
+
+superAdminRouter.post("/aud/subscriptions/update", async (req, res) => {
+  const payloadRaw = String(req.body?.payload || "").trim();
+  let payload: any = {};
+  if (payloadRaw) {
+    try {
+      payload = JSON.parse(payloadRaw);
+    } catch {
+      return res.status(400).send("Invalid JSON payload");
+    }
+  }
+  await monoovaRequest("/subscriptions/v1/update", { method: "PUT", body: payload });
+  res.redirect("/superadmin/aud/subscriptions");
+});
+
+superAdminRouter.post("/aud/subscriptions/delete", async (req, res) => {
+  const id = String(req.body?.subscriptionId || "").trim();
+  if (!id) return res.status(400).send("Missing subscriptionId");
+  await monoovaRequest(`/subscriptions/v1/delete/${encodeURIComponent(id)}`, { method: "DELETE" });
+  res.redirect("/superadmin/aud/subscriptions");
+});
+
+superAdminRouter.post("/aud/subscriptions/resend", async (req, res) => {
+  const id = String(req.body?.subscriptionId || "").trim();
+  if (!id) return res.status(400).send("Missing subscriptionId");
+  await monoovaRequest(`/subscriptions/v2/resend/${encodeURIComponent(id)}`, { method: "POST", body: {} });
+  res.redirect("/superadmin/aud/subscriptions");
+});
+
+superAdminRouter.post("/aud/subscriptions/report", async (req, res) => {
+  const payloadRaw = String(req.body?.payload || "").trim();
+  let payload: any = {};
+  if (payloadRaw) {
+    try {
+      payload = JSON.parse(payloadRaw);
+    } catch {
+      return res.status(400).send("Invalid JSON payload");
+    }
+  }
+  await monoovaRequest("/subscriptions/v1/report", { method: "POST", body: payload });
+  res.redirect("/superadmin/aud/subscriptions");
+});
+
+superAdminRouter.get("/aud/webhooks", async (req, res) => {
+  const type = String(req.query.type || "").trim();
+  const from = req.query.from ? new Date(String(req.query.from)) : null;
+  const to = req.query.to ? new Date(String(req.query.to)) : null;
+
+  const where: Prisma.MonoovaWebhookInboxWhereInput = {};
+  if (type) where.type = type;
+  if (from || to) {
+    where.receivedAt = {};
+    if (from && !Number.isNaN(from.getTime())) where.receivedAt.gte = from;
+    if (to && !Number.isNaN(to.getTime())) where.receivedAt.lte = to;
+  }
+
+  const rows = await prisma.monoovaWebhookInbox.findMany({
+    where,
+    orderBy: { receivedAt: "desc" },
+    take: 200,
+  });
+
+  res.render("superadmin/aud-webhooks", {
+    title: "AUD Webhooks",
+    section: "aud-webhooks",
+    rows,
+    query: { type, from: req.query.from || "", to: req.query.to || "" },
+  });
+});
+
+superAdminRouter.get("/aud/webhooks.xlsx", async (req, res) => {
+  const type = String(req.query.type || "").trim();
+  const from = req.query.from ? new Date(String(req.query.from)) : null;
+  const to = req.query.to ? new Date(String(req.query.to)) : null;
+
+  const where: Prisma.MonoovaWebhookInboxWhereInput = {};
+  if (type) where.type = type;
+  if (from || to) {
+    where.receivedAt = {};
+    if (from && !Number.isNaN(from.getTime())) where.receivedAt.gte = from;
+    if (to && !Number.isNaN(to.getTime())) where.receivedAt.lte = to;
+  }
+
+  const rows = await prisma.monoovaWebhookInbox.findMany({
+    where,
+    orderBy: { receivedAt: "desc" },
+  });
+
+  const sheet = XLSX.utils.json_to_sheet(
+    rows.map((row) => ({
+      id: row.id,
+      type: row.type,
+      receivedAt: row.receivedAt?.toISOString(),
+      linkedUserId: row.linkedUserId || "",
+      linkedRequestId: row.linkedRequestId || "",
+      body: JSON.stringify(row.bodyJson || {}),
+      headers: JSON.stringify(row.headersJson || {}),
+    }))
+  );
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, sheet, "Webhooks");
+  const buf = XLSX.write(wb, { bookType: "xlsx", type: "buffer" });
+  res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+  res.setHeader("Content-Disposition", 'attachment; filename="monoova_webhooks.xlsx"');
+  res.send(buf);
+});
+
+superAdminRouter.get("/aud/automatcher", async (req, res) => {
+  const q = String(req.query.q || "").trim();
+  const where: Prisma.MonoovaProfileWhereInput = q
+    ? {
+        OR: [
+          { clientUniqueId: { contains: q, mode: "insensitive" } },
+          { user: { email: { contains: q, mode: "insensitive" } } },
+          { user: { fullName: { contains: q, mode: "insensitive" } } },
+          { user: { publicId: { contains: q, mode: "insensitive" } } },
+        ],
+      }
+    : {};
+
+  const rows = await prisma.monoovaProfile.findMany({
+    where,
+    include: { user: true },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  res.render("superadmin/aud-automatcher", {
+    title: "AUD Automatcher",
+    section: "aud-automatcher",
+    rows,
+    query: { q },
+  });
+});
+
+superAdminRouter.post("/aud/automatcher/:id/refresh", async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const profile = await prisma.monoovaProfile.findUnique({ where: { id }, include: { user: true } });
+  if (!profile || !profile.user) return res.status(404).send("Not found");
+  await refreshAutomatcherProfile(profile.user);
+  res.redirect("/superadmin/aud/automatcher");
+});
+
+superAdminRouter.post("/aud/automatcher/:id/payid/create", async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const profile = await prisma.monoovaProfile.findUnique({ where: { id }, include: { user: true } });
+  if (!profile || !profile.user) return res.status(404).send("Not found");
+  const email = String(req.body?.email || profile.user.email || "").trim();
+  const name = String(req.body?.name || profile.user.fullName || "").trim();
+  if (!email || !name) return res.status(400).send("Missing PayID name/email");
+  await registerPayId(profile, { email, name });
+  res.redirect("/superadmin/aud/automatcher");
+});
+
+superAdminRouter.post("/aud/automatcher/:id/payid/status", async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const status = String(req.body?.status || "").trim();
+  const profile = await prisma.monoovaProfile.findUnique({ where: { id } });
+  if (!profile) return res.status(404).send("Not found");
+  await updatePayIdStatus(profile.clientUniqueId, status);
+  await prisma.monoovaProfile.update({ where: { id }, data: { payIdStatus: status } });
+  res.redirect("/superadmin/aud/automatcher");
+});
+
+superAdminRouter.post("/aud/automatcher/:id/payid/name", async (req, res) => {
+  const id = String(req.params.id || "").trim();
+  const name = String(req.body?.name || "").trim();
+  const profile = await prisma.monoovaProfile.findUnique({ where: { id } });
+  if (!profile) return res.status(404).send("Not found");
+  await updatePayIdName(profile.clientUniqueId, name);
+  await prisma.monoovaProfile.update({ where: { id }, data: { payIdName: name } });
+  res.redirect("/superadmin/aud/automatcher");
 });

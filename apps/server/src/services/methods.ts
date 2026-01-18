@@ -8,10 +8,15 @@ export const IDR_V4_METHOD_CODES = [
   "FAZZ_SEND",
 ] as const;
 const IDR_V4_METHOD_SET = new Set<string>(IDR_V4_METHOD_CODES);
+export const AUD_NPP_METHOD_CODE = "AUD_NPP";
 
 export function isIdrV4Method(code: string) {
   const upper = (code || "").trim().toUpperCase();
   return upper.startsWith(IDR_V4_METHOD_PREFIX) || IDR_V4_METHOD_SET.has(upper);
+}
+
+export function isAudNppMethod(code: string) {
+  return (code || "").trim().toUpperCase() === AUD_NPP_METHOD_CODE;
 }
 
 /** List all methods (admin views etc.) */
@@ -26,6 +31,7 @@ export async function listP2PMethods() {
       AND: [
         { NOT: { code: { startsWith: IDR_V4_METHOD_PREFIX } } },
         { NOT: { code: { in: IDR_V4_METHOD_CODES as unknown as string[] } } },
+        { NOT: { code: AUD_NPP_METHOD_CODE } },
       ],
     },
     orderBy: { name: "asc" },
@@ -62,6 +68,14 @@ export async function listMerchantMethods(merchantId: string) {
       id: "dev-payid",
       code: "PAYID",
       name: "PayID",
+      enabled: true,
+      minDepositCents: 50 * 100,
+      maxDepositCents: 5000 * 100,
+    },
+    {
+      id: "dev-aud-npp",
+      code: AUD_NPP_METHOD_CODE,
+      name: "AUD · NPP",
       enabled: true,
       minDepositCents: 50 * 100,
       maxDepositCents: 5000 * 100,

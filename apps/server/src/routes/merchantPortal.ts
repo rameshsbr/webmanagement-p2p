@@ -1207,6 +1207,33 @@ router.get("/users", async (req: any, res) => {
   res.render("merchant/users", { title: "Clients", table, query });
 });
 
+router.get("/clients/automatcher", async (req: any, res) => {
+  if (!usersFeatureEnabled(res)) {
+    return res.status(403).render("merchant/users-disabled", { title: "Automatcher" });
+  }
+  const merchantId = req.merchant?.sub as string;
+  const q = String(req.query.q || "").trim();
+  const where = q
+    ? {
+        OR: [
+          { clientUniqueId: { contains: q, mode: "insensitive" } },
+          { user: { email: { contains: q, mode: "insensitive" } } },
+          { user: { fullName: { contains: q, mode: "insensitive" } } },
+          { user: { publicId: { contains: q, mode: "insensitive" } } },
+        ],
+        user: { merchantClients: { some: { merchantId } } },
+      }
+    : { user: { merchantClients: { some: { merchantId } } } };
+
+  const rows = await prisma.monoovaProfile.findMany({
+    where,
+    include: { user: true },
+    orderBy: { updatedAt: "desc" },
+  });
+
+  res.render("merchant/automatcher", { title: "Automatcher", rows, query: { q } });
+});
+
 // Ledger
 router.get("/ledger", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;

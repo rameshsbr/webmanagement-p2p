@@ -9,6 +9,7 @@ const IDR_V4_CODES = [
   "VIRTUAL_BANK_ACCOUNT_STATIC",
   "FAZZ_SEND",
 ];
+const AUD_NPP_CODE = "AUD_NPP";
 
 function buildMethodFilter(codes: string[]): Prisma.PaymentRequestWhereInput {
   const normalized = codes.map((c) => c.trim().toUpperCase());
@@ -96,13 +97,17 @@ function resolveMethodCode(row: any) {
     .toUpperCase();
 }
 
-function methodMatches(methodCode: string, filters: string[]) {
+function methodMatches(row: any, methodCode: string, filters: string[]) {
   if (!filters.length) return true;
+  const rail = String(row?.detailsJson?.rail || "").trim().toUpperCase();
   for (const f of filters) {
-    if (f === "P2P" && methodCode && !isIdrV4Method(methodCode)) return true;
+    if (f === "P2P" && methodCode && !isIdrV4Method(methodCode) && methodCode !== AUD_NPP_CODE) return true;
     if (f === "IDR_VA_DYNAMIC" && methodCode === "VIRTUAL_BANK_ACCOUNT_DYNAMIC") return true;
     if (f === "IDR_VA_STATIC" && methodCode === "VIRTUAL_BANK_ACCOUNT_STATIC") return true;
     if (f === "IDR_SEND" && methodCode === "FAZZ_SEND") return true;
+    if (f === "AUD_NPP" && methodCode === AUD_NPP_CODE) return true;
+    if (f === "AUD_NPP_BANK" && methodCode === AUD_NPP_CODE && rail === "BANK_ACCOUNT") return true;
+    if (f === "AUD_NPP_PAYID" && methodCode === AUD_NPP_CODE && rail === "PAYID") return true;
   }
   return false;
 }
@@ -157,12 +162,25 @@ export async function getMetricsOverview(filters: MetricsFilters) {
     if (methodFilters.includes("IDR_VA_DYNAMIC")) codes.push("VIRTUAL_BANK_ACCOUNT_DYNAMIC");
     if (methodFilters.includes("IDR_VA_STATIC")) codes.push("VIRTUAL_BANK_ACCOUNT_STATIC");
     if (methodFilters.includes("IDR_SEND")) codes.push("FAZZ_SEND");
+    if (methodFilters.includes("AUD_NPP")) codes.push(AUD_NPP_CODE);
     const or: Prisma.PaymentRequestWhereInput[] = [];
     if (codes.length) {
       or.push(buildMethodFilter(codes));
     }
+    if (methodFilters.includes("AUD_NPP_BANK")) {
+      or.push({
+        detailsJson: { path: ["method"], equals: AUD_NPP_CODE },
+        AND: [{ detailsJson: { path: ["rail"], equals: "BANK_ACCOUNT" } }],
+      });
+    }
+    if (methodFilters.includes("AUD_NPP_PAYID")) {
+      or.push({
+        detailsJson: { path: ["method"], equals: AUD_NPP_CODE },
+        AND: [{ detailsJson: { path: ["rail"], equals: "PAYID" } }],
+      });
+    }
     if (methodFilters.includes("P2P")) {
-      or.push({ NOT: buildMethodFilter(IDR_V4_CODES) });
+      or.push({ NOT: buildMethodFilter([...IDR_V4_CODES, AUD_NPP_CODE]) });
     }
     if (or.length) {
       paymentWhere.OR = or;
@@ -185,7 +203,7 @@ export async function getMetricsOverview(filters: MetricsFilters) {
   });
 
   const filteredPayments = methodFilters.length
-    ? payments.filter((row) => methodMatches(resolveMethodCode(row), methodFilters))
+    ? payments.filter((row) => methodMatches(row, resolveMethodCode(row), methodFilters))
     : payments;
 
   const depositRows = filteredPayments.filter((p) => p.type === "DEPOSIT");
@@ -317,6 +335,10 @@ export async function getMetricsOverview(filters: MetricsFilters) {
     if (methodCode === "VIRTUAL_BANK_ACCOUNT_DYNAMIC") bucket = "IDR_VA_DYNAMIC";
     if (methodCode === "VIRTUAL_BANK_ACCOUNT_STATIC") bucket = "IDR_VA_STATIC";
     if (methodCode === "FAZZ_SEND") bucket = "IDR_SEND";
+    if (methodCode === AUD_NPP_CODE) {
+      const rail = String(row?.detailsJson?.rail || "").trim().toUpperCase();
+      bucket = rail === "PAYID" ? "AUD_NPP_PAYID" : "AUD_NPP_BANK";
+    }
     const current = methodBreakdownMap.get(bucket) || { method: bucket, approvedSumCents: 0, approvedCount: 0 };
     current.approvedSumCents += row.amountCents || 0;
     current.approvedCount += 1;

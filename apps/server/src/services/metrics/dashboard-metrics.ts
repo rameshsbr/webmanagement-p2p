@@ -1,14 +1,8 @@
 import { prisma } from "../../lib/prisma.js";
+import { getTxDelegate } from "./tx-delegate.js"; // same folder
 
 // No external tz lib; compute Jakarta start-of-day without dependencies.
 const JKT_TZ = "Asia/Jakarta";
-
-/** Best-effort to find the Transaction model delegate despite Prisma name clashes/renames. */
-function getTxDelegate() {
-  const p: any = prisma as any;
-  // Try common variants if the model was renamed/pluralized/mapped
-  return p.transaction ?? p.transactions ?? p.Transaction ?? p.Transactions ?? null;
-}
 
 /**
  * Returns a Date representing midnight today in Asia/Jakarta, expressed as an exact UTC instant.
@@ -59,7 +53,7 @@ export async function getDashboardMetrics(opts: { merchantId?: string } = {}) {
       where: { ...baseWhere, type: "WITHDRAWAL", status: "PENDING" },
     }),
     tx.aggregate({
-      _sum: { amountCents: true },
+      _sum: { amountCents: true }, // shim returns _sum.amountCents
       where: {
         ...baseWhere,
         type: "DEPOSIT",
@@ -68,7 +62,7 @@ export async function getDashboardMetrics(opts: { merchantId?: string } = {}) {
       },
     }),
     tx.aggregate({
-      _sum: { amountCents: true },
+      _sum: { amountCents: true }, // shim returns _sum.amountCents
       where: {
         ...baseWhere,
         type: "WITHDRAWAL",
@@ -83,7 +77,7 @@ export async function getDashboardMetrics(opts: { merchantId?: string } = {}) {
   return {
     pendingDeposits,
     pendingWithdrawals,
-    todayDeposits: toIdr(todayDepSum._sum.amountCents),
-    todayWithdrawals: toIdr(todayWdrSum._sum.amountCents),
+    todayDeposits: toIdr((todayDepSum as any)._sum?.amountCents ?? null),
+    todayWithdrawals: toIdr((todayWdrSum as any)._sum?.amountCents ?? null),
   };
 }

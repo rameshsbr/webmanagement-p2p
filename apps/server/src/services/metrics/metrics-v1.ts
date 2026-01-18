@@ -22,15 +22,54 @@ function buildMethodFilter(codes: string[]): Prisma.PaymentRequestWhereInput {
   };
 }
 
+/**
+ * Parse a date string coming from the UI.
+ * Supports:
+ *  - YYYY-MM-DD
+ *  - DD/MM/YYYY, DD-MM-YYYY  (preferred default for ambiguity)
+ *  - MM/DD/YYYY              (used only when clearly MM/DD, e.g., 12/31/2026)
+ * Returns a Date in UTC corresponding to the start/end of day in the given tz.
+ */
 function parseDateInput(value: string | undefined, tz: string, endOfDay: boolean) {
   if (!value) return null;
-  const trimmed = value.trim();
-  if (!trimmed) return null;
-  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+  const raw = value.trim();
+  if (!raw) return null;
+
+  // 1) ISO-like YYYY-MM-DD
+  const iso = /^(\d{4})-(\d{2})-(\d{2})$/;
+  let m = raw.match(iso);
+  if (m) {
+    const [, y, mm, dd] = m;
     const time = endOfDay ? "T23:59:59.999" : "T00:00:00.000";
-    return fromZonedTime(`${trimmed}${time}`, tz);
+    return fromZonedTime(`${y}-${mm}-${dd}${time}`, tz);
   }
-  const parsed = new Date(trimmed);
+
+  // 2) DD/MM/YYYY or DD-MM-YYYY
+  const dmy = /^(\d{2})[\/-](\d{2})[\/-](\d{4})$/;
+  m = raw.match(dmy);
+  if (m) {
+    let [, dd, mm, y] = m;
+    // Heuristic: treat as D/M/Y unless clearly M/D/Y (e.g., 12/31/2026)
+    if (Number(dd) <= 12 && Number(mm) > 12) {
+      [dd, mm] = [mm, dd];
+    }
+    const time = endOfDay ? "T23:59:59.999" : "T00:00:00.000";
+    return fromZonedTime(`${y}-${mm}-${dd}${time}`, tz);
+  }
+
+  // 3) MM/DD/YYYY (clearly), e.g., 12/31/2026
+  const mdy = /^(\d{1,2})\/(\d{1,2})\/(\d{4})$/;
+  m = raw.match(mdy);
+  if (m) {
+    const [, mm, dd, y] = m;
+    const time = endOfDay ? "T23:59:59.999" : "T00:00:00.000";
+    const mmP = String(mm).padStart(2, "0");
+    const ddP = String(dd).padStart(2, "0");
+    return fromZonedTime(`${y}-${mmP}-${ddP}${time}`, tz);
+  }
+
+  // 4) Fallback: let JS try; if invalid, return null
+  const parsed = new Date(raw);
   return Number.isNaN(parsed.getTime()) ? null : parsed;
 }
 

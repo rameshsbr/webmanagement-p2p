@@ -67,7 +67,11 @@ app.use(
 app.use(express.json({ limit: "2mb", verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, verify: captureRawBody }));
 
-// mount merchant API early so /api/merchant/* is available to your curl tests
+// ✅ MUST come before any router that relies on cookies (metrics uses JWT cookies)
+app.use(cookieParser());
+app.use(responseHelpers);
+
+// Mount early routers that do not require CSP/morgan to run first.
 app.use("/api/merchant", merchantApiRouter);
 app.use("/metrics", metricsRouter);
 
@@ -89,9 +93,6 @@ app.use(
 );
 app.use(morgan("dev"));
 
-app.use(cookieParser());
-app.use(responseHelpers);
-
 // Views & static
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 app.engine("ejs", ejsMate);
@@ -103,7 +104,6 @@ app.locals.buildId = process.env.BUILD_ID || Date.now().toString();
 
 // NEW: serve /public static assets (checkout-widget.js, merchant.js, etc.)
 app.use("/public", express.static(path.join(__dirname, "public")));
-
 app.use("/static", express.static(path.join(__dirname, "public")));
 app.use("/uploads", express.static(path.join(process.cwd(), "uploads")));
 

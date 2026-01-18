@@ -1,5 +1,19 @@
 <% layout('merchant/layout') -%>
 
+<style>
+  /* scoped only to this page */
+  .metrics-toolbar details.metrics-dropdown { display:inline-block; position:relative; }
+  .metrics-toolbar details.metrics-dropdown > summary { cursor:pointer; user-select:none; }
+  .metrics-toolbar details.metrics-dropdown[open] .dropdown-panel {
+    position:absolute; z-index:10; background:#fff; border:1px solid #e5e7eb; border-radius:8px;
+    padding:10px; min-width:220px; box-shadow:0 8px 24px rgba(0,0,0,.08);
+  }
+  .metrics-toolbar .dropdown-panel label { display:flex; gap:8px; align-items:center; padding:4px 2px; }
+  .metrics-toolbar .metrics-methods { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+  .metrics-toolbar .btn { padding:6px 10px; border:1px solid #d1d5db; border-radius:8px; background:#fff; }
+  .metrics-toolbar .btn:hover { background:#f9fafb; }
+</style>
+
 <div class="metrics-toolbar" data-metrics-scope="merchant" data-merchant-id="<%= merchantId %>">
   <form class="metrics-filters" data-metrics-form>
     <label>
@@ -14,15 +28,23 @@
       <span>Timezone</span>
       <input type="text" name="tz" placeholder="Asia/Jakarta"/>
     </label>
+
     <div class="metrics-methods">
       <span>Methods</span>
-      <label><input type="checkbox" name="method" value="IDR_VA_DYNAMIC"/>IDR v4 Dynamic</label>
-      <label><input type="checkbox" name="method" value="IDR_VA_STATIC"/>IDR v4 Static</label>
-      <label><input type="checkbox" name="method" value="IDR_SEND"/>IDR Send</label>
-      <label><input type="checkbox" name="method" value="P2P"/>P2P</label>
-    </div>
-    <div class="metrics-actions">
-      <button type="submit" class="btn">Apply</button>
+      <!-- compact dropdown that keeps your original checkbox inputs -->
+      <details class="metrics-dropdown">
+        <summary class="btn">Choose</summary>
+        <div class="dropdown-panel">
+          <label><input type="checkbox" name="method" value="IDR_VA_DYNAMIC"/> <span>IDR v4 Dynamic</span></label>
+          <label><input type="checkbox" name="method" value="IDR_VA_STATIC"/> <span>IDR v4 Static</span></label>
+          <label><input type="checkbox" name="method" value="IDR_SEND"/> <span>IDR Send</span></label>
+          <label><input type="checkbox" name="method" value="P2P"/> <span>P2P</span></label>
+        </div>
+      </details>
+
+      <div class="metrics-actions">
+        <button type="submit" class="btn">Apply</button>
+      </div>
     </div>
   </form>
 </div>

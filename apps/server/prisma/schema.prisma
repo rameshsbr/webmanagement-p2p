@@ -111,6 +111,10 @@ model User {
 
   // NEW (fix): back-relation for KycReverifyRequest
   kycReverifyRequests KycReverifyRequest[]
+
+  // NEW: Monoova profile linkage (AUD NPP)
+  monoovaProfile MonoovaProfile?
+  monoovaWebhooks MonoovaWebhookInbox[]
 }
 
 model KycVerification {
@@ -323,8 +327,46 @@ model PaymentRequest {
   updatedAt            DateTime               @updatedAt
   ProviderPayment      ProviderPayment?
   ProviderDisbursement ProviderDisbursement[]
+  monoovaWebhooks      MonoovaWebhookInbox[]
 
   @@index([processedByAdminId])
+}
+
+model MonoovaProfile {
+  id                String   @id @default(cuid())
+  userId            String   @unique
+  user              User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  clientUniqueId    String   @unique @db.VarChar(35)
+  mProfileId        String?
+  bsb               String?
+  bankAccountNumber String?
+  bankAccountName   String?
+  status            String?
+  payIdType         String?
+  payIdValue        String?
+  payIdName         String?
+  payIdStatus       String?
+  lastResponse      Json?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  @@index([clientUniqueId])
+}
+
+model MonoovaWebhookInbox {
+  id               String         @id @default(cuid())
+  type             String
+  bodyJson         Json
+  headersJson      Json?
+  receivedAt       DateTime       @default(now())
+  linkedUserId     String?
+  linkedUser       User?          @relation(fields: [linkedUserId], references: [id], onDelete: SetNull)
+  linkedRequestId  String?
+  linkedRequest    PaymentRequest? @relation(fields: [linkedRequestId], references: [id], onDelete: SetNull)
+
+  @@index([type, receivedAt])
+  @@index([linkedUserId])
+  @@index([linkedRequestId])
 }
 
 model WithdrawalDestination {

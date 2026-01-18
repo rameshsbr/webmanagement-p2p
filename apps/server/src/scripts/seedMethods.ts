@@ -15,6 +15,12 @@ async function main() {
     create: { code: 'PAYID', name: 'PayID', enabled: true },
   });
 
+  await prisma.method.upsert({
+    where: { code: 'AUD_NPP' },
+    update: { name: 'AUD · NPP', enabled: true },
+    create: { code: 'AUD_NPP', name: 'AUD · NPP', enabled: true },
+  });
+
   // NEW: IDR v4 methods
   await prisma.method.upsert({
     where: { code: 'VIRTUAL_BANK_ACCOUNT_STATIC' },
@@ -57,7 +63,7 @@ async function main() {
   // Link to the first merchant (idempotent)
   const demoMerchant = await prisma.merchant.findFirst({ orderBy: { createdAt: 'asc' } });
   if (demoMerchant) {
-    const codes = ['OSKO','PAYID','VIRTUAL_BANK_ACCOUNT_STATIC','VIRTUAL_BANK_ACCOUNT_DYNAMIC','FAZZ_SEND'];
+    const codes = ['OSKO','PAYID','AUD_NPP','VIRTUAL_BANK_ACCOUNT_STATIC','VIRTUAL_BANK_ACCOUNT_DYNAMIC','FAZZ_SEND'];
     const methods = await prisma.method.findMany({ where: { code: { in: codes } } });
     for (const method of methods) {
       await prisma.merchantMethod.upsert({
@@ -78,7 +84,7 @@ async function main() {
     console.log(`Assigned default methods to merchant ${demoMerchant.name}`);
   }
 
-  console.log('Seeded methods: OSKO, PAYID, IDR v4 (VA Static/Dynamic, BI FAST)');
+  console.log('Seeded methods: OSKO, PAYID, AUD · NPP, IDR v4 (VA Static/Dynamic, BI FAST)');
 }
 
 main()

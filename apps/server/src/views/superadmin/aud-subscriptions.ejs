@@ -1,0 +1,80 @@
+<% layout('superadmin/layout') -%>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap">
+    <div>
+      <h2>AUD · Monoova Subscriptions</h2>
+      <p class="muted">Create, update, resend, and report Monoova subscriptions.</p>
+      <% if (error) { %>
+        <div class="badge warn"><%= error %></div>
+      <% } %>
+    </div>
+    <div class="row" style="gap:8px">
+      <form method="POST" action="/superadmin/aud/subscriptions/report">
+        <input type="hidden" name="payload" value="{}" />
+        <button class="btn small" type="submit">Report</button>
+      </form>
+      <a class="btn small" href="/superadmin/aud/subscriptions">Refresh</a>
+    </div>
+  </div>
+</div>
+
+<div class="grid" style="grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:16px; margin-top:16px">
+  <form class="card" method="POST" action="/superadmin/aud/subscriptions/create">
+    <h3>Create subscription</h3>
+    <textarea name="payload" rows="6" placeholder='{"url":"https://...","type":"ReceivablesReceivePaymentWebhook"}'></textarea>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn primary" type="submit">Create</button>
+    </div>
+  </form>
+  <form class="card" method="POST" action="/superadmin/aud/subscriptions/update">
+    <h3>Update subscription</h3>
+    <textarea name="payload" rows="6" placeholder='{"subscriptionId":"...","url":"https://..."}'></textarea>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn primary" type="submit">Update</button>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <h3>Subscriptions</h3>
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ID</th>
+        <th>Type</th>
+        <th>URL</th>
+        <th>Status</th>
+        <th>Created</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (Array.isArray(subscriptions) && subscriptions.length) { %>
+        <% subscriptions.forEach((sub) => { %>
+          <tr>
+            <td class="mono"><%= sub.subscriptionId || sub.id || '-' %></td>
+            <td><%= sub.type || sub.subscriptionType || '-' %></td>
+            <td class="mono"><%= sub.url || sub.endpoint || '-' %></td>
+            <td><%= sub.status || '-' %></td>
+            <td><%= sub.createdAt ? formatDateTime(new Date(sub.createdAt), res.locals.getTimezone()) : '-' %></td>
+            <td>
+              <div class="row" style="gap:6px; flex-wrap:wrap">
+                <form method="POST" action="/superadmin/aud/subscriptions/resend">
+                  <input type="hidden" name="subscriptionId" value="<%= sub.subscriptionId || sub.id || '' %>" />
+                  <button class="btn tiny" type="submit">Resend</button>
+                </form>
+                <form method="POST" action="/superadmin/aud/subscriptions/delete" onsubmit="return confirm('Delete this subscription?')">
+                  <input type="hidden" name="subscriptionId" value="<%= sub.subscriptionId || sub.id || '' %>" />
+                  <button class="btn tiny danger" type="submit">Delete</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        <% }) %>
+      <% } else { %>
+        <tr><td colspan="6" class="muted">No subscriptions found.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>

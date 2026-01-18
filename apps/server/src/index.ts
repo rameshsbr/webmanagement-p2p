@@ -13,6 +13,7 @@ import jwt from "jsonwebtoken";
 import cors from "cors";
 import { checkoutPublicRouter } from "./routes/checkoutPublic.js";
 import { diditWebhookRouter } from "./routes/webhooks.js";
+import { monoovaWebhookRouter } from "./routes/webhooks-monoova.js";
 
 import { prisma } from "./lib/prisma.js";
 import { errorHandler } from "./middleware/errorHandler.js";
@@ -63,6 +64,8 @@ app.use(
   },
   fazzWebhookRouter
 );
+
+app.use("/webhooks/monoova", monoovaWebhookRouter);
 
 app.use(express.json({ limit: "2mb", verify: captureRawBody }));
 app.use(express.urlencoded({ extended: true, verify: captureRawBody }));

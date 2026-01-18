@@ -1,0 +1,81 @@
+<% layout('superadmin/layout') -%>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between; align-items:flex-end; gap:16px; flex-wrap:wrap">
+    <div>
+      <h2>AUD · Automatcher</h2>
+      <p class="muted">Manage Monoova Automatcher + PayID profiles.</p>
+    </div>
+    <form method="GET" action="/superadmin/aud/automatcher" class="row" style="gap:8px">
+      <input class="input" type="text" name="q" value="<%= query.q || '' %>" placeholder="Search client/user" />
+      <button class="btn small" type="submit">Search</button>
+    </form>
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>ClientUniqueId</th>
+        <th>User</th>
+        <th>Automatcher Status</th>
+        <th>BSB</th>
+        <th>Account No</th>
+        <th>Account Name</th>
+        <th>PayID Type</th>
+        <th>PayID</th>
+        <th>PayID Name</th>
+        <th>PayID Status</th>
+        <th>Created</th>
+        <th>Updated</th>
+        <th>Actions</th>
+      </tr>
+    </thead>
+    <tbody>
+      <% if (Array.isArray(rows) && rows.length) { %>
+        <% rows.forEach((row) => { %>
+          <tr>
+            <td class="mono"><%= row.clientUniqueId %></td>
+            <td>
+              <div><%= row.user?.fullName || row.user?.email || row.user?.publicId || '-' %></div>
+              <div class="muted"><%= row.user?.email || '' %></div>
+            </td>
+            <td><%= row.status || '-' %></td>
+            <td class="mono"><%= row.bsb || '-' %></td>
+            <td class="mono"><%= row.bankAccountNumber || '-' %></td>
+            <td><%= row.bankAccountName || '-' %></td>
+            <td><%= row.payIdType || '-' %></td>
+            <td class="mono"><%= row.payIdValue || '-' %></td>
+            <td><%= row.payIdName || '-' %></td>
+            <td><%= row.payIdStatus || '-' %></td>
+            <td><%= formatDateTime(row.createdAt, res.locals.getTimezone()) %></td>
+            <td><%= formatDateTime(row.updatedAt, res.locals.getTimezone()) %></td>
+            <td>
+              <div class="stack" style="gap:6px">
+                <form method="POST" action="/superadmin/aud/automatcher/<%= row.id %>/refresh">
+                  <button class="btn tiny" type="submit">Refresh</button>
+                </form>
+                <form method="POST" action="/superadmin/aud/automatcher/<%= row.id %>/payid/create">
+                  <input type="email" name="email" placeholder="PayID email" value="<%= row.user?.email || '' %>" />
+                  <input type="text" name="name" placeholder="PayID name" value="<%= row.payIdName || row.user?.fullName || '' %>" />
+                  <button class="btn tiny" type="submit">Create PayID</button>
+                </form>
+                <form method="POST" action="/superadmin/aud/automatcher/<%= row.id %>/payid/name">
+                  <input type="text" name="name" placeholder="Update name" value="<%= row.payIdName || '' %>" />
+                  <button class="btn tiny" type="submit">Update Name</button>
+                </form>
+                <form method="POST" action="/superadmin/aud/automatcher/<%= row.id %>/payid/status">
+                  <input type="text" name="status" placeholder="Update status" value="<%= row.payIdStatus || '' %>" />
+                  <button class="btn tiny" type="submit">Update Status</button>
+                </form>
+              </div>
+            </td>
+          </tr>
+        <% }) %>
+      <% } else { %>
+        <tr><td colspan="13" class="muted">No Automatcher profiles found.</td></tr>
+      <% } %>
+    </tbody>
+  </table>
+</div>

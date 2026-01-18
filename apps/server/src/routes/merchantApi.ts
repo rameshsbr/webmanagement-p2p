@@ -21,6 +21,11 @@ import { API_KEY_SCOPES, normalizeApiKeyScopes, type ApiKeyScope } from '../serv
 import { getVerificationStatus } from '../services/didit.js';
 import { requireKycOrStartFlow } from '../services/kycGate.js';
 import { evaluateNameMatch } from '../services/paymentStatus.js';
+import {
+  normalizeFazzPaymentStatus,
+  normalizeFazzPayoutStatus,
+  updatePaymentRequestFromProvider,
+} from '../services/providers/fazz/idr-v4-sync.js';
 
 const uploadDir = path.join(process.cwd(), 'uploads');
 fs.mkdirSync(uploadDir, { recursive: true });
@@ -153,25 +158,75 @@ function getMethodFromDetails(details: unknown): string {
   return "";
 }
 
-/** ---- NEW: provider status normalization + local mapping ---- */
-type ProviderNorm = 'processing' | 'completed' | 'failed';
-type LocalStatus = 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED';
-
-function normalizeProviderStatus(s: unknown): ProviderNorm {
-  const t = String(s || '').toLowerCase();
-  if (['completed', 'success', 'succeeded'].includes(t)) return 'completed';
-  if (['failed', 'rejected', 'cancelled', 'canceled', 'error'].includes(t)) return 'failed';
-  return 'processing';
-}
-
-function mapProviderToLocal(p: ProviderNorm): LocalStatus {
-  if (p === 'completed') return 'APPROVED';
-  if (p === 'failed') return 'REJECTED';
-  return 'PENDING';
-}
-
 function idrV4BankName(code: string | null | undefined): string {
   return idrV4BankLabel(code || '');
+}
+
+function buildIdrV4MethodFilter(methodCode: string) {
+  const code = methodCode.trim().toUpperCase();
+  return {
+    OR: [
+      { method: { code } },
+      { bankAccount: { method: code } },
+      { detailsJson: { path: ['method'], equals: code } },
+    ],
+  };
+}
+
+async function reusePendingIdrV4Deposit(input: {
+  merchantId: string;
+  userId: string;
+  amountCents: number;
+  currency: string;
+  methodCode: string;
+}) {
+  const now = new Date();
+  const existing = await prisma.providerPayment.findFirst({
+    where: {
+      provider: 'FAZZ',
+      expiresAt: { gt: now },
+      paymentRequest: {
+        merchantId: input.merchantId,
+        userId: input.userId,
+        type: 'DEPOSIT',
+        status: 'PENDING',
+        amountCents: input.amountCents,
+        currency: input.currency,
+        ...buildIdrV4MethodFilter(input.methodCode),
+      },
+    },
+    select: {
+      paymentRequestId: true,
+      bankCode: true,
+      accountNumber: true,
+      accountName: true,
+      expiresAt: true,
+      instructionsJson: true,
+      paymentRequest: { select: { referenceCode: true, amountCents: true, detailsJson: true } },
+    },
+  });
+  if (!existing) return null;
+
+  const instructions = (existing.instructionsJson as any) || {};
+  const meta = instructions?.meta || (existing.paymentRequest?.detailsJson as any)?.meta;
+
+  return {
+    id: existing.paymentRequestId,
+    referenceCode: existing.paymentRequest?.referenceCode,
+    amountCents: existing.paymentRequest?.amountCents ?? input.amountCents,
+    expiresAt: existing.expiresAt?.toISOString() || null,
+    va: {
+      bankCode: existing.bankCode || null,
+      bankName: existing.bankCode ? idrV4BankName(existing.bankCode) : null,
+      accountNo: existing.accountNumber || null,
+      accountName: existing.accountName || null,
+      meta: meta || undefined,
+    },
+    instructions: {
+      steps: Array.isArray(instructions?.steps) ? instructions.steps : [],
+      meta: instructions?.meta || undefined,
+    },
+  };
 }
 
 function normalizeIdrV4Deposit(result: any, amountCents: number) {
@@ -338,16 +393,40 @@ merchantApiRouter.post(
             user.firstName ||
             'ACCOUNT HOLDER';
 
-          const deposit = await adapter.createDepositIntent({
-            tid: referenceCode,
-            uid: user.publicId,
-            merchantId,
-            methodCode: desiredCode,
-            amountCents: body.amountCents,
-            currency: body.currency,
-            bankCode: body.bankCode || 'BCA',
-            kyc: { fullName: String(fallbackName), diditSubject: user.diditSubject || '' },
-          });
+          if (isIdrV4Va) {
+            const reused = await reusePendingIdrV4Deposit({
+              merchantId,
+              userId: user.id,
+              amountCents: body.amountCents,
+              currency: body.currency,
+              methodCode: desiredCode,
+            });
+            if (reused) {
+              return reused;
+            }
+          }
+
+          let deposit;
+          try {
+            deposit = await adapter.createDepositIntent({
+              tid: referenceCode,
+              uid: user.publicId,
+              merchantId,
+              methodCode: desiredCode,
+              amountCents: body.amountCents,
+              currency: body.currency,
+              bankCode: body.bankCode || 'BCA',
+              kyc: { fullName: String(fallbackName), diditSubject: user.diditSubject || '' },
+            });
+          } catch (err: any) {
+            if (err?.code === 'PROVIDER_UNAVAILABLE') {
+              console.warn('[deposit-intent:fazz] provider unavailable', err?.context || '');
+              const outage = new Error('PROVIDER_UNAVAILABLE');
+              (outage as any).code = 'PROVIDER_UNAVAILABLE';
+              throw outage;
+            }
+            throw err;
+          }
 
           if (!deposit || !deposit.providerPaymentId || !deposit.va?.accountNo || !deposit.va?.bankCode) {
             const dbg = isDebug ? { depositSnapshot: toJsonSafe(deposit) } : undefined;
@@ -361,6 +440,9 @@ merchantApiRouter.post(
           const instructionsJson = toJsonSafe(deposit.instructions);
           const rawCreateJson = toJsonSafe(deposit.raw ?? deposit);
           const providerStatus = String(deposit.status || 'pending');
+          const normalizedStatus = adapters.fazz.normalizePaymentStatus
+            ? adapters.fazz.normalizePaymentStatus(providerStatus)
+            : providerStatus;
           const platformStatus = mapFazzPaymentStatusToPlatform(providerStatus);
           const meta = deposit.va?.meta || deposit.instructions?.meta || undefined;
 
@@ -395,6 +477,7 @@ merchantApiRouter.post(
                   accountName: deposit.va.accountName ?? null,
                   expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
                   status: providerStatus,
+                  normalizedStatus: normalizedStatus as any,
                   instructionsJson,
                   rawCreateJson,
                 },
@@ -408,6 +491,7 @@ merchantApiRouter.post(
                   accountName: deposit.va.accountName ?? null,
                   expiresAt: deposit.expiresAt ? new Date(deposit.expiresAt) : null,
                   status: providerStatus,
+                  normalizedStatus: normalizedStatus as any,
                   instructionsJson,
                   rawCreateJson,
                 },
@@ -501,6 +585,13 @@ merchantApiRouter.post(
       if (message === 'METHOD_NOT_ALLOWED') return res.status(400).json({ ok: false, error: 'METHOD_NOT_ALLOWED' });
       if (message === 'CLIENT_INACTIVE') return res.forbidden('Client is blocked or deactivated');
       if (message === 'User is blocked') return res.forbidden('User is blocked');
+      if (message === 'PROVIDER_UNAVAILABLE' || err?.code === 'PROVIDER_UNAVAILABLE') {
+        return res.status(503).json({
+          ok: false,
+          error: 'PROVIDER_UNAVAILABLE',
+          message: 'Temporarily unavailable. Please try again shortly.',
+        });
+      }
       if (message === 'KYC_REQUIRED' || err?.code === 'KYC_REQUIRED') {
         return res.status(403).json({
           ok: false,
@@ -590,31 +681,32 @@ merchantApiRouter.post(
 
     const { status: providerStatus, raw } = await adapter.getDepositStatus(pp.providerPaymentId);
 
-    let newStatus: 'PENDING' | 'SUBMITTED' | 'APPROVED' | 'REJECTED' | null = null;
-    const normalized = String(providerStatus || '').toLowerCase();
-    if (['paid','completed','success','succeeded'].includes(normalized)) {
-      newStatus = 'APPROVED';
-    } else if (['failed','cancelled','canceled','rejected','expired'].includes(normalized)) {
-      newStatus = 'REJECTED';
-    } else {
-      newStatus = null;
-    }
+    const normalizedStatus = adapter.normalizePaymentStatus
+      ? adapter.normalizePaymentStatus(providerStatus)
+      : normalizeFazzPaymentStatus(providerStatus);
 
     await prisma.providerPayment.update({
       where: { paymentRequestId: pr.id },
-      data: { status: providerStatus, rawLatestJson: toJsonSafe(raw ?? {}) },
+      data: {
+        status: providerStatus,
+        normalizedStatus: normalizedStatus as any,
+        rawLatestJson: toJsonSafe(raw ?? {}),
+      },
     });
 
-    if (newStatus && newStatus !== pr.status) {
-      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: newStatus } });
-    }
+    const sync = await updatePaymentRequestFromProvider({
+      paymentRequestId: pr.id,
+      kind: 'accept',
+      normalized: normalizedStatus as any,
+      rawStatus: providerStatus,
+    });
 
     return res.json({
       ok: true,
       id: pr.id,
       referenceCode: pr.referenceCode,
-      status: newStatus || pr.status,
-      provider: { status: providerStatus, ...(isDebug ? { raw: toJsonSafe(raw ?? {}) } : {}) },
+      status: sync?.status || pr.status,
+      provider: { status: providerStatus, normalizedStatus, ...(isDebug ? { raw: toJsonSafe(raw ?? {}) } : {}) },
     });
   }
 );
@@ -1005,12 +1097,25 @@ merchantApiRouter.post(
         providerStatus = String(out.status || "processing");
         rawCreate = toJsonSafe(out.raw ?? out);
       } catch (e: any) {
+        if (e?.code === "PROVIDER_UNAVAILABLE") {
+          return {
+            __providerUnavailable: true,
+            response: {
+              ok: false,
+              error: "PROVIDER_UNAVAILABLE",
+              message: "Temporarily unavailable. Please try again shortly.",
+            },
+          };
+        }
         console.error("[WITHDRAW_CREATE_FAIL]", e?.message || e);
         const msg = String(e?.message || 'Create disbursement failed');
         res.status(400).json({ ok: false, error: msg });
         return null;
       }
 
+      const normalizedStatus = adapters.fazz.normalizePayoutStatus
+        ? adapters.fazz.normalizePayoutStatus(providerStatus)
+        : providerStatus;
       const platformStatus = mapFazzDisbursementStatusToPlatform(providerStatus);
 
       // Persist ProviderDisbursement row + PaymentRequest atomically
@@ -1048,6 +1153,7 @@ merchantApiRouter.post(
               accountNumber: body.destination.accountNo,
               accountHolder: body.destination.holderName,
               status: providerStatus,
+              normalizedStatus: normalizedStatus as any,
               amountCents: body.amountCents,
               currency: body.currency,
               rawCreateJson: rawCreate,
@@ -1060,6 +1166,7 @@ merchantApiRouter.post(
               accountNumber: body.destination.accountNo,
               accountHolder: body.destination.holderName,
               status: providerStatus,
+              normalizedStatus: normalizedStatus as any,
               amountCents: body.amountCents,
               currency: body.currency,
               rawCreateJson: rawCreate,
@@ -1084,6 +1191,9 @@ merchantApiRouter.post(
     if (!result || (result as any).ok === false) return; // early Response from inside callback
     if ((result as any).__nameMismatch || (result as any).__validatorMismatch) {
       return res.json((result as any).response);
+    }
+    if ((result as any).__providerUnavailable) {
+      return res.status(503).json((result as any).response);
     }
     return res.ok(result);
   }
@@ -1112,40 +1222,23 @@ merchantApiRouter.post(
     const pd = await prisma.providerDisbursement.findFirst({ where: { paymentRequestId: pr.id } });
     if (!pd) return res.json({ ok: true, id: pr.id, referenceCode: pr.referenceCode, status: pr.status });
 
-    // flags
     const skipPoll =
       String(req.query?.skipPoll || '') === '1' ||
       process.env.WITHDRAW_CONFIRM_SKIP_POLL === '1';
-    const forceSync =
-      String(req.query?.forceSync || '') === '1' ||
-      process.env.SYNC_PAYOUT_TO_PROVIDER === '1';
-    const allowDowngrade = process.env.ALLOW_PAYOUT_DOWNGRADE === '1';
-
-    // Helper to apply a candidate status with downgrade rules
-    const maybeApply = async (candidate: LocalStatus | null) => {
-      if (!candidate || candidate === pr.status) return;
-      if (forceSync) {
-        await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: candidate } });
-        return;
-      }
-      // No force: avoid downgrades unless explicitly allowed
-      const isDowngrade =
-        (pr.status === 'APPROVED' && candidate !== 'APPROVED') ||
-        (pr.status === 'REJECTED' && candidate !== 'REJECTED');
-      if (isDowngrade && !allowDowngrade) return;
-      await prisma.paymentRequest.update({ where: { id: pr.id }, data: { status: candidate } });
-    };
 
     if (skipPoll) {
-      // Use last known providerDisbursement.status (normalized) and sync locally if configured
-      const providerNorm = normalizeProviderStatus(pd.status);
-      const candidate = mapProviderToLocal(providerNorm);
-      await maybeApply(candidate);
+      const providerNorm = normalizeFazzPayoutStatus(pd.status);
+      const sync = await updatePaymentRequestFromProvider({
+        paymentRequestId: pr.id,
+        kind: 'send',
+        normalized: providerNorm,
+        rawStatus: pd.status,
+      });
       return res.json({
         ok: true,
         id: pr.id,
         referenceCode: pr.referenceCode,
-        status: (candidate ?? pr.status) || pr.status,
+        status: sync?.status || pr.status,
         provider: { status: providerNorm },
       });
     }
@@ -1154,27 +1247,32 @@ merchantApiRouter.post(
     const adapter = adapters.fazz; // only Fazz for now
     const { status, raw } = await adapter.getDisbursementStatus(pd.providerPayoutId);
 
-    const providerNorm = normalizeProviderStatus(status);
+    const providerNorm = adapter.normalizePayoutStatus
+      ? adapter.normalizePayoutStatus(status)
+      : normalizeFazzPayoutStatus(status);
     const providerStatusRaw = String(status || "");
     // Store raw provider status for IDR v4
     await prisma.providerDisbursement.update({
       where: { id: pd.id },
-      data: { status: providerStatusRaw, rawLatestJson: toJsonSafe(raw ?? {}) },
+      data: {
+        status: providerStatusRaw,
+        normalizedStatus: providerNorm as any,
+        rawLatestJson: toJsonSafe(raw ?? {}),
+      },
     });
 
-    // Decide local candidate; with forceSync we also allow PENDING from "processing"
-    const candidate: LocalStatus | null =
-      providerNorm === 'completed' ? 'APPROVED'
-      : providerNorm === 'failed' ? 'REJECTED'
-      : (forceSync ? 'PENDING' : null);
-
-    await maybeApply(candidate);
+    const sync = await updatePaymentRequestFromProvider({
+      paymentRequestId: pr.id,
+      kind: 'send',
+      normalized: providerNorm as any,
+      rawStatus: providerStatusRaw,
+    });
 
     return res.json({
       ok: true,
       id: pr.id,
       referenceCode: pr.referenceCode,
-      status: candidate || pr.status,
+      status: sync?.status || pr.status,
       provider: { status: providerNorm, raw: toJsonSafe(raw ?? {}) },
     });
   }
@@ -1216,7 +1314,7 @@ merchantApiRouter.get(
     if (!pd) return res.json({ ok: true, status: pr.status, provider: null });
 
     const { status, raw } = await adapters.fazz.getDisbursementStatus(pd.providerPayoutId);
-    const providerNorm = normalizeProviderStatus(status);
+    const providerNorm = normalizeFazzPayoutStatus(status);
     return res.json({ ok: true, status: pr.status, provider: { status: providerNorm, raw: toJsonSafe(raw) } });
   }
 );

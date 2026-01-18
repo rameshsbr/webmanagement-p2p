@@ -2,6 +2,11 @@
 import { Router } from "express";
 import crypto from "node:crypto";
 import { prisma } from "../lib/prisma.js";
+import {
+  normalizeFazzPaymentStatus,
+  normalizeFazzPayoutStatus,
+  updatePaymentRequestFromProvider,
+} from "../services/providers/fazz/idr-v4-sync.js";
 
 export const fazzWebhookRouter = Router();
 
@@ -78,6 +83,17 @@ function extractPaymentLikeIdentifiers(payload: any) {
   return { id, status, referenceId, topic, typeLower };
 }
 
+function extractMerchantId(payload: any) {
+  return (
+    pick<string>(payload, [
+      "data.attributes.metadata.merchantId",
+      "data.attributes.metadata.merchant_id",
+      "metadata.merchantId",
+      "metadata.merchant_id",
+    ]) || undefined
+  );
+}
+
 /** Choose webhook secret (now with aliases):
  *  - If event/topic/type looks like disbursement/payout → SEND secret(s)
  *  - Else → ACCEPT secret(s)
@@ -151,26 +167,31 @@ function toJsonSafe<T = any>(value: T): any {
   }
 }
 
-/** Provider → local mapping (deposits / payments) */
-function mapDepositStatus(provider: string): "APPROVED" | "REJECTED" | null {
-  const s = String(provider || "").toLowerCase();
-  if (["completed", "settled"].includes(s)) return "APPROVED";
-  if (["failed", "cancelled", "canceled", "expired", "rejected"].includes(s)) return "REJECTED";
-  return null;
+function getRequestIp(req: any) {
+  const header = String(req.headers["x-forwarded-for"] || "");
+  if (header) return header.split(",")[0].trim();
+  return req.ip || req.connection?.remoteAddress || "";
 }
 
-/** Normalize disbursement status for provider storage; map → local separately */
-function normalizePayoutProviderStatus(s: string | undefined) {
-  const v = String(s || "").toLowerCase();
-  if (["completed", "success", "succeeded"].includes(v)) return "completed";
-  if (["failed", "rejected", "cancelled", "canceled"].includes(v)) return "failed";
-  return "processing";
+function isIpAllowlisted(req: any) {
+  const raw = String(process.env.FAZZ_WEBHOOK_IP_ALLOWLIST || "");
+  const allowlist = raw.split(",").map((v) => v.trim()).filter(Boolean);
+  if (!allowlist.length) return false;
+  const ip = getRequestIp(req);
+  return allowlist.includes(ip);
 }
-function mapWithdrawLocalStatus(providerNorm: string): "APPROVED" | "REJECTED" | null {
-  const v = String(providerNorm || "").toLowerCase();
-  if (v === "completed") return "APPROVED";
-  if (v === "failed") return "REJECTED";
-  return null;
+
+function extractEventId(payload: any) {
+  return (
+    pick<string>(payload, ["event_id", "eventId", "event.id", "data.eventId"]) || undefined
+  );
+}
+
+function buildDedupeKey(provider: string, topic: string, payload: any, raw: Buffer) {
+  const eventId = extractEventId(payload);
+  if (eventId) return `${provider}|${topic}|${eventId}`;
+  const hash = crypto.createHash("sha256").update(raw).digest("hex");
+  return `${provider}|${topic}|${hash}`;
 }
 
 /**
@@ -208,17 +229,21 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
 
   const secret = pickSecret(req.headers || {}, peek);
   const computed = secret ? computeMac(raw, secret) : "";
-  const okSig = !!secret && !!presented && safeEqualHex(computed, presented);
+  const hasSignature = Boolean(presented);
+  const okSig = hasSignature && !!secret && safeEqualHex(computed, presented);
+  const okIp = !hasSignature && isIpAllowlisted(req);
+  const authorized = okSig || okIp;
 
   // 3) parse full payload
   let payload: any;
   const payloadText = raw.toString("utf8");
   try { payload = JSON.parse(payloadText); } catch { payload = { _raw: payloadText }; }
 
-  // 4) log webhook before state changes
+  // 4) log + dedupe
   let logId: string | undefined;
+  const topic = String(pick<string>(payload, ["event", "type"]) || "unknown");
+  const dedupeKey = buildDedupeKey("FAZZ", topic, payload, raw);
   try {
-    const topic = String(pick<string>(payload, ["event", "type"]) || "unknown");
     const log = await prisma.providerWebhookLog.create({
       data: {
         provider: "FAZZ",
@@ -226,36 +251,40 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
         signature: headerSig || null,
         headersJson: req.headers as any,
         payloadJson: payload,
-        processed: okSig,
-        processedAt: okSig ? new Date() : null,
-        error: okSig ? null : "signature_verification_failed",
+        dedupeKey,
+        processed: false,
+        processedAt: null,
+        error: authorized ? null : (hasSignature ? "signature_verification_failed" : "ip_not_allowlisted"),
       },
       select: { id: true },
     });
     logId = log.id;
-  } catch {
-    // swallow log errors
+  } catch (err: any) {
+    if (err?.code === "P2002") {
+      return res.json({ ok: true, duplicate: true });
+    }
   }
 
-  if (!okSig) {
+  if (!authorized) {
     if (debug) {
       return res.status(400).json({
         ok: false,
-        error: "bad_signature",
+        error: hasSignature ? "bad_signature" : "ip_not_allowlisted",
         diag: {
           contentType: req.get("content-type") || null,
           rawLen: raw.length,
           secretPresent: Boolean(secret),
           presented,
           computed,
+          ip: getRequestIp(req),
         },
       });
     }
-    return res.status(400).json({ ok: false, error: "bad_signature" });
+    return res.status(400).json({ ok: false, error: "unauthorized" });
   }
 
   // 5) classify (payment vs disbursement)
-  const { id, status, referenceId, topic, typeLower } = extractPaymentLikeIdentifiers(payload);
+  const { id, status, referenceId, typeLower } = extractPaymentLikeIdentifiers(payload);
   const looksSend =
     topic.includes("disbursement") ||
     topic.includes("payout") ||
@@ -269,12 +298,12 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       // ───────────────────────────────────────────────────────────────
       const providerPayoutId = id;
       const providerStatusRaw = String(status || "");
-      const providerStatusNorm = normalizePayoutProviderStatus(providerStatusRaw);
+      const providerStatusNorm = normalizeFazzPayoutStatus(providerStatusRaw);
 
       let pd = providerPayoutId
         ? await prisma.providerDisbursement.findFirst({
             where: { provider: "FAZZ", providerPayoutId },
-            select: { id: true, paymentRequestId: true, status: true },
+            select: { id: true, paymentRequestId: true },
           })
         : null;
 
@@ -287,7 +316,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
         if (pr) {
           pd = await prisma.providerDisbursement.findFirst({
             where: { paymentRequestId: pr.id },
-            select: { id: true, paymentRequestId: true, status: true },
+            select: { id: true, paymentRequestId: true },
           });
         }
       }
@@ -298,18 +327,41 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
         return res.json({ ok: true, matched: false });
       }
 
-      await prisma.providerDisbursement.update({
-        where: { id: pd.id },
-        data: { status: providerStatusRaw, rawLatestJson: toJsonSafe(payload) },
-      });
-
-      const local = mapWithdrawLocalStatus(providerStatusNorm);
-      if (local && pd.paymentRequestId) {
-        await prisma.paymentRequest.update({
+      const payloadMerchantId = extractMerchantId(payload);
+      let merchantId: string | null = null;
+      if (pd.paymentRequestId) {
+        const pr = await prisma.paymentRequest.findUnique({
           where: { id: pd.paymentRequestId },
-          data: { status: local },
+          select: { merchantId: true },
         });
+        merchantId = pr?.merchantId || null;
+        if (payloadMerchantId && merchantId && payloadMerchantId !== merchantId) {
+          await markLogProcessed(logId, "merchant_mismatch");
+          return res.json({ ok: true, matched: false });
+        }
       }
+
+      await prisma.$transaction(async (tx) => {
+        await tx.providerDisbursement.update({
+          where: { id: pd.id },
+          data: {
+            status: providerStatusRaw,
+            normalizedStatus: providerStatusNorm,
+            rawLatestJson: toJsonSafe(payload),
+          },
+        });
+        if (pd.paymentRequestId) {
+          await updatePaymentRequestFromProvider(
+            {
+              paymentRequestId: pd.paymentRequestId,
+              kind: "send",
+              normalized: providerStatusNorm,
+              rawStatus: providerStatusRaw,
+            },
+            tx,
+          );
+        }
+      });
 
       // forward merchant webhook if available
       try {
@@ -328,7 +380,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
                 providerPayoutId: providerPayoutId || null,
                 status: providerStatusRaw,
                 referenceCode: pr.referenceCode,
-                mappedStatus: local,
+                mappedStatus: providerStatusNorm,
               },
             }).catch(() => {});
           }
@@ -336,7 +388,15 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       } catch {}
 
       await markLogProcessed(logId, null);
-      return res.json({ ok: true, id: providerPayoutId || null, providerStatus: providerStatusRaw, applied: Boolean(local) });
+      console.log("[FAZZ_WEBHOOK]", JSON.stringify({
+        provider: "FAZZ",
+        topic,
+        providerId: providerPayoutId || null,
+        merchantId,
+        normalized: providerStatusNorm,
+        prId: pd.paymentRequestId || null,
+      }));
+      return res.json({ ok: true, id: providerPayoutId || null, providerStatus: providerStatusRaw, applied: true });
     }
 
     // ─────────────────────────────────────────────────────────────────
@@ -348,7 +408,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
     let pp = providerPaymentId
       ? await prisma.providerPayment.findFirst({
           where: { provider: "FAZZ", providerPaymentId },
-          select: { paymentRequestId: true },
+          select: { id: true, paymentRequestId: true },
         })
       : null;
 
@@ -361,34 +421,77 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
       if (pr) {
         pp = await prisma.providerPayment.findFirst({
           where: { paymentRequestId: pr.id },
-          select: { paymentRequestId: true },
+          select: { id: true, paymentRequestId: true },
         });
       }
     }
 
-    if (!pp?.paymentRequestId) {
+    let paymentRequestId = pp?.paymentRequestId || null;
+    if (!paymentRequestId && referenceId) {
+      const pr = await prisma.paymentRequest.findFirst({
+        where: { referenceCode: referenceId, type: "DEPOSIT" },
+        select: { id: true },
+      });
+      paymentRequestId = pr?.id || null;
+    }
+
+    if (!paymentRequestId) {
       await markLogProcessed(logId, null);
       return res.json({ ok: true, matched: false });
     }
 
     const providerStatusStr = String(providerStatus || "unknown");
-    await prisma.providerPayment.update({
-      where: { paymentRequestId: pp.paymentRequestId },
-      data: { status: providerStatusStr, rawLatestJson: toJsonSafe(payload) },
+    const providerStatusNorm = normalizeFazzPaymentStatus(providerStatusStr);
+    const payloadMerchantId = extractMerchantId(payload);
+    let merchantId: string | null = null;
+    const prMeta = await prisma.paymentRequest.findUnique({
+      where: { id: paymentRequestId },
+      select: { merchantId: true },
     });
-
-    const mapped = mapDepositStatus(providerStatusStr);
-    if (mapped) {
-      await prisma.paymentRequest.update({
-        where: { id: pp.paymentRequestId },
-        data: { status: mapped },
-      });
+    merchantId = prMeta?.merchantId || null;
+    if (payloadMerchantId && merchantId && payloadMerchantId !== merchantId) {
+      await markLogProcessed(logId, "merchant_mismatch");
+      return res.json({ ok: true, matched: false });
     }
+
+    await prisma.$transaction(async (tx) => {
+      if (pp?.id) {
+        await tx.providerPayment.update({
+          where: { id: pp.id },
+          data: {
+            status: providerStatusStr,
+            normalizedStatus: providerStatusNorm,
+            rawLatestJson: toJsonSafe(payload),
+          },
+        });
+      } else if (providerPaymentId) {
+        await tx.providerPayment.create({
+          data: {
+            paymentRequestId,
+            provider: "FAZZ",
+            providerPaymentId: String(providerPaymentId),
+            methodType: "virtual_bank_account",
+            status: providerStatusStr,
+            normalizedStatus: providerStatusNorm,
+            rawLatestJson: toJsonSafe(payload),
+          },
+        });
+      }
+      await updatePaymentRequestFromProvider(
+        {
+          paymentRequestId,
+          kind: "accept",
+          normalized: providerStatusNorm,
+          rawStatus: providerStatusStr,
+        },
+        tx,
+      );
+    });
 
     // forward merchant webhook if available
     try {
       const pr = await prisma.paymentRequest.findUnique({
-        where: { id: pp.paymentRequestId },
+        where: { id: paymentRequestId },
         select: { merchantId: true, referenceCode: true },
       });
       const mod = await import("../services/webhooks.js");
@@ -401,14 +504,22 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
             providerPaymentId: providerPaymentId || null,
             status: providerStatusStr,
             referenceCode: pr.referenceCode,
-            mappedStatus: mapped,
+            mappedStatus: providerStatusNorm,
           },
         }).catch(() => {});
       }
     } catch {}
 
     await markLogProcessed(logId, null);
-    return res.json({ ok: true, id: providerPaymentId || null, providerStatus: providerStatusStr, applied: Boolean(mapped) });
+      console.log("[FAZZ_WEBHOOK]", JSON.stringify({
+        provider: "FAZZ",
+        topic,
+        providerId: providerPaymentId || null,
+        merchantId,
+        normalized: providerStatusNorm,
+        prId: paymentRequestId,
+      }));
+    return res.json({ ok: true, id: providerPaymentId || null, providerStatus: providerStatusStr, applied: true });
   } catch (e: any) {
     // mark log with error but still 200 to avoid retries storm
     await markLogProcessed(logId, String(e?.message || e));

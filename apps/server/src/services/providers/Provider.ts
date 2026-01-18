@@ -30,6 +30,8 @@ export interface ProviderAdapter {
   createDepositIntent(input: DepositIntentInput): Promise<DepositIntentResult>;
   getDepositStatus(providerPaymentId: string): Promise<{ status: string; raw: any }>;
   cancelDeposit?(providerPaymentId: string): Promise<void>;
+  normalizePaymentStatus?(raw: string): string;
+  fetchPayment?(providerPaymentId: string): Promise<{ status: string; raw: any }>;
 
   /** Send/disbursements */
   validateBankAccount(input: {
@@ -50,4 +52,6 @@ export interface ProviderAdapter {
   }): Promise<{ providerPayoutId: string; raw: any; status?: string }>;
 
   getDisbursementStatus(providerPayoutId: string): Promise<{ status: string; raw: any }>;
+  normalizePayoutStatus?(raw: string): string;
+  fetchPayout?(providerPayoutId: string): Promise<{ status: string; raw: any }>;
 }

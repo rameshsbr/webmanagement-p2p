@@ -1237,6 +1237,14 @@ router.get("/accounts/settlements", async (req: any, res) => {
   });
 });
 
+router.get("/accounts/metrics", async (req: any, res) => {
+  const merchantId = req.merchant?.sub as string;
+  res.render("merchant/metrics", {
+    title: "Accounts · Metrics",
+    merchantId,
+  });
+});
+
 router.get("/accounts/topups", async (req: any, res) => {
   const merchantId = req.merchant?.sub as string;
   const [entries, merchant] = await Promise.all([

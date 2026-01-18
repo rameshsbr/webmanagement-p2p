@@ -7,6 +7,14 @@ import type {
 import crypto from "node:crypto";
 import { prisma } from "../../lib/prisma.js";
 import { normalizeIdrV4BankCode } from "./fazz/idr-v4-banks.js";
+import {
+  mapAcceptNormalizedToPaymentStatus,
+  mapSendNormalizedToPaymentStatus,
+  normalizeFazzPaymentStatus,
+  normalizeFazzPayoutStatus,
+  type FazzAcceptNormalized,
+  type FazzSendNormalized,
+} from "./fazz/idr-v4-sync.js";
 import { scheduleDisbursementPoll, schedulePaymentPoll } from "./fazz-poller.js";
 
 /**
@@ -38,6 +46,7 @@ const DEBUG = (process.env.FAZZ_DEBUG || "").toLowerCase() === "1";
 // retry/backoff knobs
 const RETRIES = Number(process.env.FAZZ_RETRIES ?? 1);
 const RETRY_DELAY_MS = Number(process.env.FAZZ_RETRY_DELAY_MS ?? 300);
+const REQUEST_TIMEOUT_MS = Number(process.env.FAZZ_TIMEOUT_MS ?? 8000);
 
 /* ---------------- shared helpers ---------------- */
 
@@ -149,22 +158,22 @@ function extractProviderSteps(json: any): string[] | undefined {
 
 /* ─── Platform status mapping (ADDED) ───────────────────────────────────────── */
 
-export type PlatformPaymentStatus = "PENDING" | "APPROVED" | "REJECTED";
+export type PlatformPaymentStatus = "PENDING" | "SUBMITTED" | "APPROVED" | "REJECTED";
 
 export function mapFazzPaymentStatusToPlatform(s: string): PlatformPaymentStatus {
-  const v = String(s || "").toLowerCase();
-  if (v === "completed") return "APPROVED";
-  if (v === "failed" || v === "cancelled") return "REJECTED";
-  // paid, pending, processing, anything else → PENDING
-  return "PENDING";
+  return mapAcceptNormalizedToPaymentStatus(normalizeFazzPaymentStatus(s)) as PlatformPaymentStatus;
 }
 
 export function mapFazzDisbursementStatusToPlatform(s: string): PlatformPaymentStatus {
-  const v = String(s || "").toLowerCase();
-  if (v === "completed") return "APPROVED";
-  if (v === "failed" || v === "cancelled" || v === "rejected") return "REJECTED";
-  // processing, pending, queued, etc. → PENDING
-  return "PENDING";
+  return mapSendNormalizedToPaymentStatus(normalizeFazzPayoutStatus(s)) as PlatformPaymentStatus;
+}
+
+export function normalizePaymentStatus(raw: string): FazzAcceptNormalized {
+  return normalizeFazzPaymentStatus(raw);
+}
+
+export function normalizePayoutStatus(raw: string): FazzSendNormalized {
+  return normalizeFazzPayoutStatus(raw);
 }
 
 /* ---------------- REAL helpers ---------------- */
@@ -407,11 +416,27 @@ function renderProviderError(res: FazzResp, fallback = ""): string {
   return joined || res.json?.message || res.json?.error || res.text || fallback || `HTTP ${res.status}`;
 }
 
-async function fetchWithRetry(exec: () => Promise<Response>) {
+function isProviderUnavailableStatus(status?: number | null) {
+  if (!status) return false;
+  return [429, 500, 502, 503, 504].includes(status);
+}
+
+function wrapProviderUnavailable(err: any, context: string) {
+  const e = new Error("PROVIDER_UNAVAILABLE");
+  (e as any).code = "PROVIDER_UNAVAILABLE";
+  (e as any).context = context;
+  (e as any).cause = err;
+  return e;
+}
+
+async function fetchWithRetry(exec: (signal: AbortSignal) => Promise<Response>) {
   let last: any = null;
   for (let attempt = 0; attempt <= RETRIES; attempt++) {
     try {
-      const res = await exec();
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+      const res = await exec(controller.signal);
+      clearTimeout(timeout);
       if (res.ok || ![429, 500, 502, 503, 504].includes(res.status)) return res;
       last = res;
     } catch (e) {
@@ -428,7 +453,7 @@ async function fetchWithRetry(exec: () => Promise<Response>) {
 
 async function fazzPost(path: string, payload: any, idemKey?: string): Promise<FazzResp> {
   const url = `${API_BASE}${path}`;
-  const res = await fetchWithRetry(() =>
+  const res = await fetchWithRetry((signal) =>
     fetch(url, {
       method: "POST",
       headers: {
@@ -438,6 +463,7 @@ async function fazzPost(path: string, payload: any, idemKey?: string): Promise<F
         ...(idemKey ? { "Idempotency-Key": idemKey } : {}),
       },
       body: JSON.stringify(payload),
+      signal,
     })
   );
   let json: any = null, text = "";
@@ -450,10 +476,11 @@ async function fazzPost(path: string, payload: any, idemKey?: string): Promise<F
 
 async function fazzGet(path: string): Promise<FazzResp> {
   const url = `${API_BASE}${path}`;
-  const res = await fetchWithRetry(() =>
+  const res = await fetchWithRetry((signal) =>
     fetch(url, {
       method: "GET",
       headers: { Authorization: basicAuthHeader(), Accept: "application/vnd.api+json" },
+      signal,
     })
   );
   let json: any = null, text = "";
@@ -572,8 +599,16 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
         },
       },
     };
-    const createRes = await fazzPost(`/payment_methods/virtual_bank_accounts`, createPayload, input.tid);
+    let createRes: FazzResp;
+    try {
+      createRes = await fazzPost(`/payment_methods/virtual_bank_accounts`, createPayload, input.tid);
+    } catch (err) {
+      throw wrapProviderUnavailable(err, "createPaymentMethod");
+    }
     if (!createRes.ok) {
+      if (isProviderUnavailableStatus(createRes.status)) {
+        throw wrapProviderUnavailable(createRes, "createPaymentMethod");
+      }
       const msg = renderProviderError(createRes, `HTTP ${createRes.status}`);
       throw new Error(`Fazz createPaymentMethod failed: ${msg}`);
     }
@@ -636,12 +671,24 @@ async function realCreateDepositIntent(input: DepositIntentInput): Promise<Depos
   const paymentMethodId = staticMethod?.providerPaymentMethodId;
 
   const payload = buildPaymentPayload(paymentMethodId, Boolean(paymentMethodId));
-  let res = await fazzPost(`/payments`, payload, input.tid);
+  let res: FazzResp;
+  try {
+    res = await fazzPost(`/payments`, payload, input.tid);
+  } catch (err) {
+    throw wrapProviderUnavailable(err, "createDepositIntent");
+  }
   if (!res.ok && paymentMethodId && res.status === 400) {
-    const fallbackPayload = buildPaymentPayload(paymentMethodId, false);
-    res = await fazzPost(`/payments`, fallbackPayload, input.tid);
+    try {
+      const fallbackPayload = buildPaymentPayload(paymentMethodId, false);
+      res = await fazzPost(`/payments`, fallbackPayload, input.tid);
+    } catch (err) {
+      throw wrapProviderUnavailable(err, "createDepositIntent");
+    }
   }
   if (!res.ok) {
+    if (isProviderUnavailableStatus(res.status)) {
+      throw wrapProviderUnavailable(res, "createDepositIntent");
+    }
     const msg = renderProviderError(res, `HTTP ${res.status}`);
     const err = new Error(`Fazz createDepositIntent failed: ${msg}`);
     (err as any).providerError = {
@@ -790,15 +837,41 @@ async function realGetDepositStatus(providerPaymentId: string) {
     ]) || "pending";
 
   // Persist for portals (best-effort)
+  const normalizedStatus = normalizeFazzPaymentStatus(status);
   try {
     await prisma.providerPayment.updateMany({
       where: { providerPaymentId },
-      data: { status, rawLatestJson: json, updatedAt: new Date() },
+      data: { status, normalizedStatus, rawLatestJson: json, updatedAt: new Date() },
     });
   } catch {}
-
   // ADDED: platformStatus
-  return { status, platformStatus: mapFazzPaymentStatusToPlatform(status), raw: json };
+  return { status, normalizedStatus, platformStatus: mapFazzPaymentStatusToPlatform(status), raw: json };
+}
+
+async function realFetchPayment(providerPaymentId: string) {
+  ensureRealReady();
+  const res = await fazzGet(`/payments/${encodeURIComponent(providerPaymentId)}`);
+  if (!res.ok) {
+    const msg = renderProviderError(res, `HTTP ${res.status}`);
+    throw new Error(`Fazz fetchPayment failed: ${msg}`);
+  }
+  const json = res.json ?? {};
+  const status =
+    pick<string>(json, [
+      "data.attributes.status",
+      "status",
+      "data.status",
+      "payment.status",
+    ]) || "pending";
+  return { status, raw: json };
+}
+
+async function realCancelDeposit(providerPaymentId: string) {
+  ensureRealReady();
+  const payload = { data: { type: "task", attributes: { action: "cancel" } } };
+  try {
+    await fazzPost(`/payments/${encodeURIComponent(providerPaymentId)}/tasks`, payload, `cancel-${Date.now()}`);
+  } catch {}
 }
 
 async function realValidateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
@@ -881,7 +954,12 @@ async function realCreateDisbursement(input: {
 
   let last: FazzResp | null = null;
   for (const p of order) {
-    const res = await tryCreateSend(p, input);
+    let res: FazzResp;
+    try {
+      res = await tryCreateSend(p, input);
+    } catch (err) {
+      throw wrapProviderUnavailable(err, "createDisbursement");
+    }
     last = res;
     if (res.ok) {
       const json = res.json ?? {};
@@ -908,10 +986,16 @@ async function realCreateDisbursement(input: {
     if (isPathMissingOrForbidden(res)) {
       continue;
     }
+    if (isProviderUnavailableStatus(res.status)) {
+      throw wrapProviderUnavailable(res, "createDisbursement");
+    }
     const msg = renderProviderError(res, `HTTP ${res.status}`);
     throw new Error(`Fazz createDisbursement failed: ${msg}`);
   }
   if (last) {
+    if (isProviderUnavailableStatus(last.status)) {
+      throw wrapProviderUnavailable(last, "createDisbursement");
+    }
     const msg = renderProviderError(last, `HTTP ${last.status}`);
     throw new Error(`Fazz createDisbursement failed: ${msg}`);
   }
@@ -942,15 +1026,86 @@ async function realGetDisbursementStatus(providerPayoutId: string) {
       "payout.status",
     ]) || "processing";
 
+  const normalizedStatus = normalizeFazzPayoutStatus(status);
   try {
     await prisma.providerDisbursement.updateMany({
       where: { providerPayoutId },
-      data: { status, rawLatestJson: json, updatedAt: new Date() },
+      data: { status, normalizedStatus, rawLatestJson: json, updatedAt: new Date() },
     });
   } catch {}
-
   // ADDED: platformStatus
-  return { status, platformStatus: mapFazzDisbursementStatusToPlatform(status), raw: json };
+  return { status, normalizedStatus, platformStatus: mapFazzDisbursementStatusToPlatform(status), raw: json };
+}
+
+async function realFetchPayout(providerPayoutId: string) {
+  ensureRealReady();
+  const first = await fazzGet(`/disbursements/${encodeURIComponent(providerPayoutId)}`);
+  let res = first;
+  if (!first.ok && isPathMissingOrForbidden(first)) {
+    res = await fazzGet(`/payouts/${encodeURIComponent(providerPayoutId)}`);
+  }
+  if (!res.ok) {
+    const msg = renderProviderError(res, `HTTP ${res.status}`);
+    throw new Error(`Fazz fetchPayout failed: ${msg}`);
+  }
+  const json = res.json ?? {};
+  const status =
+    pick<string>(json, [
+      "data.attributes.status",
+      "status",
+      "data.status",
+      "disbursement.status",
+      "payout.status",
+    ]) || "processing";
+  return { status, raw: json };
+}
+
+async function simGetDepositStatus(providerPaymentId: string) {
+  try {
+    const pp = await prisma.providerPayment.findFirst({
+      where: { providerPaymentId },
+      select: { status: true, rawLatestJson: true },
+    });
+    if (pp && pp.status) {
+      return {
+        status: pp.status,
+        platformStatus: mapFazzPaymentStatusToPlatform(pp.status),
+        raw: pp.rawLatestJson ?? { source: "db", providerPaymentId, status: pp.status },
+      };
+    }
+  } catch {}
+  const h = crypto.createHash("sha256").update(providerPaymentId).digest("hex");
+  const bucket = parseInt(h.slice(0, 2), 16) % 3;
+  const status = bucket === 0 ? "pending" : bucket === 1 ? "paid" : "completed";
+  return {
+    status,
+    platformStatus: mapFazzPaymentStatusToPlatform(status),
+    raw: { simulated: true, providerPaymentId, status },
+  };
+}
+
+async function simGetDisbursementStatus(providerPayoutId: string) {
+  try {
+    const pd = await prisma.providerDisbursement.findFirst({
+      where: { providerPayoutId },
+      select: { status: true, rawLatestJson: true },
+    });
+    if (pd && pd.status) {
+      return {
+        status: pd.status,
+        platformStatus: mapFazzDisbursementStatusToPlatform(pd.status),
+        raw: pd.rawLatestJson ?? { source: "db", providerPayoutId, status: pd.status },
+      };
+    }
+  } catch {}
+  const h = crypto.createHash("sha256").update(providerPayoutId).digest("hex");
+  const bucket = parseInt(h.slice(0, 2), 16) % 3;
+  const status = bucket === 0 ? "processing" : bucket === 1 ? "completed" : "failed";
+  return {
+    status,
+    platformStatus: mapFazzDisbursementStatusToPlatform(status),
+    raw: { simulated: true, providerPayoutId, status },
+  };
 }
 
 /* ---------------- Balance (new) ---------------- */
@@ -1022,32 +1177,21 @@ export const fazzAdapter: ProviderAdapter = {
 
   async getDepositStatus(providerPaymentId: string) {
     if (MODE === "REAL") return realGetDepositStatus(providerPaymentId);
-
-    try {
-      const pp = await prisma.providerPayment.findFirst({
-        where: { providerPaymentId },
-        select: { status: true, rawLatestJson: true },
-      });
-      if (pp && pp.status) {
-        return {
-          status: pp.status,
-          platformStatus: mapFazzPaymentStatusToPlatform(pp.status),
-          raw: pp.rawLatestJson ?? { source: "db", providerPaymentId, status: pp.status },
-        };
-      }
-    } catch {}
-    const h = crypto.createHash("sha256").update(providerPaymentId).digest("hex");
-    const bucket = parseInt(h.slice(0, 2), 16) % 3;
-    const status = bucket === 0 ? "pending" : bucket === 1 ? "paid" : "completed";
-    return {
-      status,
-      platformStatus: mapFazzPaymentStatusToPlatform(status),
-      raw: { simulated: true, providerPaymentId, status },
-    };
+    return simGetDepositStatus(providerPaymentId);
   },
 
-  async cancelDeposit(_providerPaymentId?: string) {
-    // optional; no-op
+  async cancelDeposit(providerPaymentId?: string) {
+    if (!providerPaymentId) return;
+    if (MODE === "REAL") return realCancelDeposit(providerPaymentId);
+  },
+
+  normalizePaymentStatus(raw: string) {
+    return normalizeFazzPaymentStatus(raw);
+  },
+
+  async fetchPayment(providerPaymentId: string) {
+    if (MODE === "REAL") return realFetchPayment(providerPaymentId);
+    return simGetDepositStatus(providerPaymentId);
   },
 
   async validateBankAccount(input: { bankCode: string; accountNo: string; name?: string }) {
@@ -1075,27 +1219,15 @@ export const fazzAdapter: ProviderAdapter = {
 
   async getDisbursementStatus(providerPayoutId: string) {
     if (MODE === "REAL") return realGetDisbursementStatus(providerPayoutId);
+    return simGetDisbursementStatus(providerPayoutId);
+  },
 
-    try {
-      const pd = await prisma.providerDisbursement.findFirst({
-        where: { providerPayoutId },
-        select: { status: true, rawLatestJson: true },
-      });
-      if (pd && pd.status) {
-        return {
-          status: pd.status,
-          platformStatus: mapFazzDisbursementStatusToPlatform(pd.status),
-          raw: pd.rawLatestJson ?? { source: "db", providerPayoutId, status: pd.status },
-        };
-      }
-    } catch {}
-    const h = crypto.createHash("sha256").update(providerPayoutId).digest("hex");
-    const bucket = parseInt(h.slice(0, 2), 16) % 3;
-    const status = bucket === 0 ? "processing" : bucket === 1 ? "completed" : "failed";
-    return {
-      status,
-      platformStatus: mapFazzDisbursementStatusToPlatform(status),
-      raw: { simulated: true, providerPayoutId, status },
-    };
+  normalizePayoutStatus(raw: string) {
+    return normalizeFazzPayoutStatus(raw);
+  },
+
+  async fetchPayout(providerPayoutId: string) {
+    if (MODE === "REAL") return realFetchPayout(providerPayoutId);
+    return simGetDisbursementStatus(providerPayoutId);
   },
 };

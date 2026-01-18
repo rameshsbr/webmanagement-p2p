@@ -630,6 +630,7 @@ model ProviderPayment {
   accountName       String?
   expiresAt         DateTime?
   status            String // pending/paid/completed/failed/expired...
+  normalizedStatus  String?
   instructionsJson  Json?
   rawCreateJson     Json?
   rawLatestJson     Json?
@@ -648,6 +649,7 @@ model ProviderDisbursement {
   accountNumber    String
   accountHolder    String
   status           String
+  normalizedStatus String?
   validationStatus String?
   amountCents      Int
   currency         String
@@ -664,6 +666,7 @@ model ProviderWebhookLog {
   signature   String?
   headersJson Json?
   payloadJson Json?
+  dedupeKey   String?  @unique
   processed   Boolean   @default(false)
   error       String?
   createdAt   DateTime  @default(now())

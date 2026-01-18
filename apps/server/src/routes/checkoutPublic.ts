@@ -833,7 +833,15 @@ checkoutPublicRouter.post("/public/deposit/intent", checkoutAuth, applyMerchantL
         expiresAt: out.expiresAt || null,
         limits: { minCents, maxCents },
       });
-    } catch (err) {
+    } catch (err: any) {
+      if (err?.code === "PROVIDER_UNAVAILABLE") {
+        console.warn("[deposit-intent:fazz] provider unavailable");
+        return res.status(503).json({
+          ok: false,
+          error: "PROVIDER_UNAVAILABLE",
+          message: "Temporarily unavailable. Please try again shortly.",
+        });
+      }
       console.error("[deposit-intent:fazz] failed", err);
       return res.status(502).json({ ok: false, error: "PROVIDER_ERROR" });
     }

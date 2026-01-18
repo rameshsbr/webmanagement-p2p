@@ -595,6 +595,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   const methodSel = root.querySelector('[data-test-method]');
   const sectionP2P = root.querySelector('[data-test-section="p2p"]');
   const sectionIDR = root.querySelector('[data-test-section="idr-v4"]');
+  const sectionAudNpp = root.querySelector('[data-test-section="aud-npp"]');
 
   const messageEl = root.querySelector('[data-test-message]');
   const setMessage = (text, variant = 'info') => {
@@ -615,8 +616,11 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   let subject = root.getAttribute('data-default-subject') || '';
   let bootstrapToken = root.getAttribute('data-initial-token') || '';
   let prefetchedToken = '';
+  let audNppApiKey = '';
+  let audNppToken = '';
+  let audNppTokenExpiresAt = 0;
   let locked = false;
-  let currentMode = (methodSel?.value || 'p2p').toLowerCase(); // 'p2p' | 'idr-v4'
+  let currentMode = (methodSel?.value || 'p2p').toLowerCase(); // 'p2p' | 'idr-v4' | 'aud-npp'
 
   const setBusy = (busy) => {
     allActionButtons.forEach((btn) => {
@@ -639,11 +643,18 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     if (mode.startsWith('idr-v4')) {
       sectionP2P && (sectionP2P.style.display = 'none');
       sectionIDR && (sectionIDR.style.display = '');
+      sectionAudNpp && (sectionAudNpp.style.display = 'none');
       setMessage('IDR v4 limits: 10,000.00 – 100,000,000.00 IDR. Enter a valid amount in the popup.');
       hardHideLegacyInlineForms();
+    } else if (mode === 'aud-npp') {
+      sectionP2P && (sectionP2P.style.display = 'none');
+      sectionIDR && (sectionIDR.style.display = 'none');
+      sectionAudNpp && (sectionAudNpp.style.display = '');
+      setMessage('');
     } else {
       sectionP2P && (sectionP2P.style.display = '');
       sectionIDR && (sectionIDR.style.display = 'none');
+      sectionAudNpp && (sectionAudNpp.style.display = 'none');
       setMessage('');
     }
   };
@@ -694,7 +705,7 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
   };
 
   const prefetchSession = async () => {
-    if (currentMode.startsWith('idr-v4')) return;
+    if (currentMode.startsWith('idr-v4') || currentMode === 'aud-npp') return;
     try {
       const session = await fetchSession();
       if (session && session.token) prefetchedToken = session.token;
@@ -812,11 +823,605 @@ document.querySelectorAll('[data-collapsible]').forEach((box) => {
     });
   })();
 
+  const parseAmountToCents = (value) => {
+    const raw = String(value || '').replace(/,/g, '').trim();
+    if (!raw) return null;
+    const num = Number(raw);
+    if (!Number.isFinite(num) || num <= 0) return null;
+    return Math.round(num * 100);
+  };
+
+  const formatAud = (cents) => {
+    const value = Number(cents || 0) / 100;
+    return `AUD ${value.toFixed(2)}`;
+  };
+
+  const buildModal = (title) => {
+    const overlay = document.createElement('div');
+    overlay.style.position = 'fixed';
+    overlay.style.inset = '0';
+    overlay.style.background = 'rgba(0,0,0,0.5)';
+    overlay.style.display = 'flex';
+    overlay.style.alignItems = 'center';
+    overlay.style.justifyContent = 'center';
+    overlay.style.zIndex = '9999';
+
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.width = 'min(560px, 92vw)';
+    card.style.maxHeight = '90vh';
+    card.style.overflow = 'auto';
+    card.style.padding = '16px';
+    card.style.display = 'flex';
+    card.style.flexDirection = 'column';
+    card.style.gap = '12px';
+
+    const header = document.createElement('div');
+    header.style.display = 'flex';
+    header.style.justifyContent = 'space-between';
+    header.style.alignItems = 'center';
+
+    const titleEl = document.createElement('div');
+    titleEl.className = 'title';
+    titleEl.textContent = title;
+
+    const closeBtn = document.createElement('button');
+    closeBtn.type = 'button';
+    closeBtn.className = 'btn small';
+    closeBtn.textContent = 'Close';
+
+    header.appendChild(titleEl);
+    header.appendChild(closeBtn);
+
+    const body = document.createElement('div');
+    body.style.display = 'flex';
+    body.style.flexDirection = 'column';
+    body.style.gap = '10px';
+
+    const close = () => {
+      overlay.remove();
+    };
+
+    closeBtn.addEventListener('click', close);
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) close();
+    });
+
+    card.appendChild(header);
+    card.appendChild(body);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+
+    return { overlay, body, close, setTitle: (next) => { titleEl.textContent = next; } };
+  };
+
+  const createCopyRow = (label, value) => {
+    const row = document.createElement('div');
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = '140px 1fr auto';
+    row.style.gap = '8px';
+    row.style.alignItems = 'center';
+
+    const labelEl = document.createElement('div');
+    labelEl.className = 'muted';
+    labelEl.textContent = label;
+
+    const valueEl = document.createElement('div');
+    valueEl.className = 'mono';
+    valueEl.textContent = value || '-';
+
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'btn small';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+      if (navigator.clipboard) navigator.clipboard.writeText(String(value || ''));
+    });
+
+    row.appendChild(labelEl);
+    row.appendChild(valueEl);
+    row.appendChild(copyBtn);
+    return row;
+  };
+
+  const fetchAudNppSession = async () => {
+    const payload = {
+      subject,
+      method: 'aud-npp',
+      scopes: ['method:AUD_NPP'],
+    };
+    const resp = await fetch(sessionEndpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'same-origin',
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data && data.kycRequired) {
+      const err = new Error(data.message || 'Verification required');
+      err.code = data.error || 'KYC_REQUIRED';
+      err.url = data.kyc?.url || null;
+      err.subject = data.subject || subject;
+      throw err;
+    }
+    if (!resp.ok || !data || !data.ok) {
+      const err = new Error((data && (data.message || data.error)) || 'Unable to prepare API key session');
+      err.code = data && data.error ? data.error : '';
+      err.clientStatus = data && data.clientStatus ? data.clientStatus : '';
+      throw err;
+    }
+    subject = data.subject || subject;
+    if (!data.apiKey) {
+      throw new Error('Missing API key for AUD NPP session');
+    }
+    return data;
+  };
+
+  const ensureAudNppApiKey = async () => {
+    if (audNppApiKey) return audNppApiKey;
+    try {
+      const session = await fetchAudNppSession();
+      audNppApiKey = session.apiKey;
+      return audNppApiKey;
+    } catch (err) {
+      if (err && err.code === 'KYC_REQUIRED' && err.url) {
+        notify('Please complete verification to continue.');
+        const popup = window.open(err.url, '_blank', 'noopener,noreferrer');
+        const started = Date.now();
+        const MAX_MS = 6 * 60 * 1000;
+        const INTERVAL = 2000;
+        return await new Promise((resolve, reject) => {
+          const timer = setInterval(async () => {
+            if ((Date.now() - started) > MAX_MS || (popup && popup.closed)) {
+              clearInterval(timer);
+              try { popup && popup.close(); } catch {}
+              return reject(new Error('Verification not completed'));
+            }
+            try {
+              const session = await fetchAudNppSession();
+              clearInterval(timer);
+              try { popup && popup.close(); } catch {}
+              audNppApiKey = session.apiKey;
+              resolve(audNppApiKey);
+            } catch (nextErr) {
+              if (nextErr?.code && nextErr.code !== 'KYC_REQUIRED') {
+                clearInterval(timer);
+                try { popup && popup.close(); } catch {}
+                reject(nextErr);
+              }
+            }
+          }, INTERVAL);
+        });
+      }
+      throw err;
+    }
+  };
+
+  const ensureAudNppToken = async () => {
+    const now = Date.now();
+    if (audNppToken && audNppTokenExpiresAt && now < (audNppTokenExpiresAt - 30 * 1000)) {
+      return audNppToken;
+    }
+    const apiKey = await ensureAudNppApiKey();
+    const resp = await fetch('/api/merchant/checkout/session', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify({
+        user: { externalId: subject },
+        currency: 'AUD',
+      }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data || !data.ok) {
+      const err = new Error((data && (data.message || data.error)) || 'Unable to prepare AUD NPP session');
+      err.code = data && data.error ? data.error : '';
+      throw err;
+    }
+    audNppToken = data.token || '';
+    audNppTokenExpiresAt = data.expiresAt ? new Date(data.expiresAt).getTime() : 0;
+    if (!audNppToken) throw new Error('Missing AUD NPP checkout token');
+    return audNppToken;
+  };
+
+  const waitForAudNppKycApproval = (token) => new Promise((resolve, reject) => {
+    const started = Date.now();
+    const MAX_MS = 6 * 60 * 1000;
+    const INTERVAL = 3000;
+    const timer = setInterval(async () => {
+      if ((Date.now() - started) > MAX_MS) {
+        clearInterval(timer);
+        return reject(new Error('Verification not completed'));
+      }
+      try {
+        const resp = await fetch('/public/kyc/status', {
+          headers: { 'Authorization': `Bearer ${token}` },
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (data && data.status === 'approved') {
+          clearInterval(timer);
+          resolve();
+        }
+      } catch {}
+    }, INTERVAL);
+  });
+
+  const createAudNppDepositIntent = async (token, amountCents, rail) => {
+    const resp = await fetch('/public/aud-npp/deposit/intent', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ amountCents, rail }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (data && data.error === 'KYC_REQUIRED') {
+      if (data.kyc?.url) {
+        notify('Please complete verification to continue.');
+        window.open(data.kyc.url, '_blank', 'noopener,noreferrer');
+      }
+      await waitForAudNppKycApproval(token);
+      return createAudNppDepositIntent(token, amountCents, rail);
+    }
+    if (!resp.ok || !data || !data.ok) {
+      const err = new Error((data && (data.message || data.error)) || 'Unable to create deposit intent');
+      err.code = data && data.error ? data.error : '';
+      throw err;
+    }
+    return data;
+  };
+
+  const confirmAudNppDeposit = async (token, intentToken) => {
+    const resp = await fetch('/public/aud-npp/deposit/confirm', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${token}`,
+      },
+      body: JSON.stringify({ intentToken }),
+    });
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok || !data || !data.ok) {
+      const err = new Error((data && (data.message || data.error)) || 'Unable to confirm deposit');
+      err.code = data && data.error ? data.error : '';
+      throw err;
+    }
+    return data;
+  };
+
+  const openAudNppDeposit = () => {
+    const modal = buildModal('AUD NPP Deposit');
+    const form = document.createElement('form');
+    form.style.display = 'flex';
+    form.style.flexDirection = 'column';
+    form.style.gap = '10px';
+
+    const amountField = document.createElement('label');
+    amountField.className = 'form-line';
+    amountField.innerHTML = '<span class="muted">Amount (AUD)</span>';
+    const amountInput = document.createElement('input');
+    amountInput.className = 'input';
+    amountInput.name = 'amount';
+    amountInput.inputMode = 'decimal';
+    amountInput.placeholder = '0.00';
+    amountField.appendChild(amountInput);
+
+    const railField = document.createElement('label');
+    railField.className = 'form-line';
+    railField.innerHTML = '<span class="muted">Rail</span>';
+    const railSelect = document.createElement('select');
+    railSelect.name = 'rail';
+    railSelect.innerHTML = '<option value="BANK_ACCOUNT">Bank Account</option><option value="PAYID">PayID</option>';
+    railField.appendChild(railSelect);
+
+    const errorEl = document.createElement('div');
+    errorEl.className = 'form-error';
+    errorEl.style.minHeight = '18px';
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.justifyContent = 'flex-end';
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'btn primary';
+    submitBtn.textContent = 'Continue';
+    actions.appendChild(submitBtn);
+
+    form.appendChild(amountField);
+    form.appendChild(railField);
+    form.appendChild(errorEl);
+    form.appendChild(actions);
+    modal.body.appendChild(form);
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorEl.textContent = '';
+      const amountCents = parseAmountToCents(amountInput.value);
+      const rail = railSelect.value || 'BANK_ACCOUNT';
+      if (!amountCents) {
+        errorEl.textContent = 'Enter a valid amount.';
+        return;
+      }
+      submitBtn.disabled = true;
+      try {
+        const token = await ensureAudNppToken();
+        const intent = await createAudNppDepositIntent(token, amountCents, rail);
+        modal.setTitle('Transfer details');
+        modal.body.innerHTML = '';
+
+        const stepsWrap = document.createElement('div');
+        const stepsTitle = document.createElement('div');
+        stepsTitle.className = 'muted';
+        stepsTitle.textContent = 'Steps';
+        const steps = document.createElement('ol');
+        steps.style.margin = '6px 0 0 16px';
+        steps.style.padding = '0';
+        const formattedAmount = formatAud(amountCents);
+        const baseSteps = [
+          'Open your banking app.',
+          `Transfer ${formattedAmount} to the ${rail === 'PAYID' ? 'PayID' : 'Bank Account'} below.`,
+          'Use immediate transfer if available.',
+        ];
+        baseSteps.forEach((step) => {
+          const li = document.createElement('li');
+          li.textContent = step;
+          steps.appendChild(li);
+        });
+        stepsWrap.appendChild(stepsTitle);
+        stepsWrap.appendChild(steps);
+
+        const details = document.createElement('div');
+        details.style.display = 'flex';
+        details.style.flexDirection = 'column';
+        details.style.gap = '6px';
+        details.appendChild(createCopyRow('Amount', formattedAmount));
+        details.appendChild(createCopyRow('Reference', intent.reference || 'Fund Transfer'));
+
+        if (rail === 'PAYID') {
+          const payId = intent.payId || {};
+          const label = payId.type === 'Email' ? 'PayID (email)' : 'PayID (phone)';
+          details.appendChild(createCopyRow('Account name', payId.name || '-'));
+          details.appendChild(createCopyRow(label, payId.value || '-'));
+        } else {
+          const automatcher = intent.automatcher || {};
+          details.appendChild(createCopyRow('Account Name', automatcher.bankAccountName || '-'));
+          details.appendChild(createCopyRow('Account No', automatcher.bankAccountNumber || '-'));
+          details.appendChild(createCopyRow('BSB', automatcher.bsb || '-'));
+        }
+
+        const confirmActions = document.createElement('div');
+        confirmActions.style.display = 'flex';
+        confirmActions.style.justifyContent = 'flex-end';
+        confirmActions.style.gap = '8px';
+        const confirmBtn = document.createElement('button');
+        confirmBtn.type = 'button';
+        confirmBtn.className = 'btn primary';
+        confirmBtn.textContent = 'Confirm';
+        confirmActions.appendChild(confirmBtn);
+
+        modal.body.appendChild(stepsWrap);
+        modal.body.appendChild(details);
+        modal.body.appendChild(confirmActions);
+
+        confirmBtn.addEventListener('click', async () => {
+          confirmBtn.disabled = true;
+          try {
+            await confirmAudNppDeposit(token, intent.intentToken);
+            notify('Deposit created, pending confirmation.');
+            modal.close();
+          } catch (err) {
+            notify((err && err.message) || 'Unable to confirm deposit');
+          } finally {
+            confirmBtn.disabled = false;
+          }
+        });
+      } catch (err) {
+        notify((err && err.message) || 'Unable to create deposit');
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  };
+
+  const openAudNppWithdrawal = () => {
+    const modal = buildModal('AUD NPP Withdrawal');
+
+    const form = document.createElement('form');
+    form.style.display = 'flex';
+    form.style.flexDirection = 'column';
+    form.style.gap = '10px';
+
+    const amountField = document.createElement('label');
+    amountField.className = 'form-line';
+    amountField.innerHTML = '<span class="muted">Amount (AUD)</span>';
+    const amountInput = document.createElement('input');
+    amountInput.className = 'input';
+    amountInput.inputMode = 'decimal';
+    amountInput.placeholder = '0.00';
+    amountField.appendChild(amountInput);
+
+    const railField = document.createElement('label');
+    railField.className = 'form-line';
+    railField.innerHTML = '<span class="muted">Payout rail</span>';
+    const railSelect = document.createElement('select');
+    railSelect.innerHTML = '<option value="BANK_ACCOUNT">Bank Account</option><option value="PAYID">PayID</option>';
+    railField.appendChild(railSelect);
+
+    const holderField = document.createElement('label');
+    holderField.className = 'form-line';
+    holderField.innerHTML = '<span class="muted">Account holder name</span>';
+    const holderInput = document.createElement('input');
+    holderInput.className = 'input';
+    holderField.appendChild(holderInput);
+
+    const bankWrap = document.createElement('div');
+    bankWrap.style.display = 'flex';
+    bankWrap.style.flexDirection = 'column';
+    bankWrap.style.gap = '10px';
+
+    const bsbField = document.createElement('label');
+    bsbField.className = 'form-line';
+    bsbField.innerHTML = '<span class="muted">BSB</span>';
+    const bsbInput = document.createElement('input');
+    bsbInput.className = 'input';
+    bsbInput.placeholder = '012-345';
+    bsbField.appendChild(bsbInput);
+
+    const accountField = document.createElement('label');
+    accountField.className = 'form-line';
+    accountField.innerHTML = '<span class="muted">Account number</span>';
+    const accountInput = document.createElement('input');
+    accountInput.className = 'input';
+    accountField.appendChild(accountInput);
+
+    bankWrap.appendChild(accountField);
+    bankWrap.appendChild(bsbField);
+
+    const payIdWrap = document.createElement('div');
+    payIdWrap.style.display = 'none';
+    payIdWrap.style.flexDirection = 'column';
+    payIdWrap.style.gap = '10px';
+
+    const payIdTypeField = document.createElement('label');
+    payIdTypeField.className = 'form-line';
+    payIdTypeField.innerHTML = '<span class="muted">PayID type</span>';
+    const payIdTypeSelect = document.createElement('select');
+    payIdTypeSelect.innerHTML = '<option value="Email">Email</option><option value="Phone Number">Phone Number</option>';
+    payIdTypeField.appendChild(payIdTypeSelect);
+
+    const payIdValueField = document.createElement('label');
+    payIdValueField.className = 'form-line';
+    payIdValueField.innerHTML = '<span class="muted">PayID</span>';
+    const payIdValueInput = document.createElement('input');
+    payIdValueInput.className = 'input';
+    payIdValueField.appendChild(payIdValueInput);
+
+    payIdWrap.appendChild(payIdTypeField);
+    payIdWrap.appendChild(payIdValueField);
+
+    const errorEl = document.createElement('div');
+    errorEl.className = 'form-error';
+    errorEl.style.minHeight = '18px';
+
+    const actions = document.createElement('div');
+    actions.style.display = 'flex';
+    actions.style.justifyContent = 'flex-end';
+    const submitBtn = document.createElement('button');
+    submitBtn.type = 'submit';
+    submitBtn.className = 'btn primary';
+    submitBtn.textContent = 'Submit';
+    actions.appendChild(submitBtn);
+
+    const toggleRail = () => {
+      const rail = railSelect.value || 'BANK_ACCOUNT';
+      if (rail === 'PAYID') {
+        bankWrap.style.display = 'none';
+        payIdWrap.style.display = 'flex';
+      } else {
+        bankWrap.style.display = 'flex';
+        payIdWrap.style.display = 'none';
+      }
+    };
+    railSelect.addEventListener('change', toggleRail);
+    toggleRail();
+
+    form.appendChild(amountField);
+    form.appendChild(railField);
+    form.appendChild(holderField);
+    form.appendChild(bankWrap);
+    form.appendChild(payIdWrap);
+    form.appendChild(errorEl);
+    form.appendChild(actions);
+    modal.body.appendChild(form);
+
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      errorEl.textContent = '';
+      const amountCents = parseAmountToCents(amountInput.value);
+      const holderName = holderInput.value.trim();
+      const rail = railSelect.value || 'BANK_ACCOUNT';
+      if (!amountCents) {
+        errorEl.textContent = 'Enter a valid amount.';
+        return;
+      }
+      if (!holderName) {
+        errorEl.textContent = 'Enter the account holder name.';
+        return;
+      }
+      let destination = null;
+      if (rail === 'PAYID') {
+        const payIdValue = payIdValueInput.value.trim();
+        const payIdType = payIdTypeSelect.value || 'Email';
+        if (!payIdValue) {
+          errorEl.textContent = 'Enter the PayID value.';
+          return;
+        }
+        destination = {
+          rail: 'PAYID',
+          accountName: holderName,
+          payIdType,
+          payIdValue,
+        };
+      } else {
+        const accountNumber = accountInput.value.trim();
+        const bsb = bsbInput.value.trim();
+        if (!accountNumber || !bsb) {
+          errorEl.textContent = 'Enter the account number and BSB.';
+          return;
+        }
+        destination = {
+          rail: 'BANK_ACCOUNT',
+          accountName: holderName,
+          accountNumber,
+          bsb,
+        };
+      }
+
+      submitBtn.disabled = true;
+      try {
+        const token = await ensureAudNppToken();
+        const resp = await fetch('/public/withdrawals', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            amountCents,
+            method: 'AUD_NPP',
+            destination,
+          }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (!resp.ok || !data || !data.ok) {
+          const msg = (data && (data.message || data.error)) || 'Validation failed. Check the details and try again.';
+          errorEl.textContent = msg;
+          return;
+        }
+        notify('Withdrawal submitted.');
+        modal.close();
+      } catch (err) {
+        errorEl.textContent = (err && err.message) || 'Validation failed. Check the details and try again.';
+      } finally {
+        submitBtn.disabled = false;
+      }
+    });
+  };
+
   allActionButtons.forEach((btn) => {
     btn.addEventListener('click', (e) => {
       e.preventDefault();
       const kind = (btn.getAttribute('data-test-action') || '').toLowerCase();
-      if (kind === 'deposit' || kind === 'withdrawal') open(kind);
+      if (kind !== 'deposit' && kind !== 'withdrawal') return;
+      if (currentMode === 'aud-npp') {
+        if (kind === 'deposit') openAudNppDeposit();
+        else openAudNppWithdrawal();
+        return;
+      }
+      open(kind);
     });
   });
 })();

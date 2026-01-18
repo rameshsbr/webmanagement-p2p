@@ -358,7 +358,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
               normalized: providerStatusNorm,
               rawStatus: providerStatusRaw,
             },
-            tx,
+            tx as any, // <-- Type-only fix: TransactionClient passed to a function expecting PrismaClient
           );
         }
       });
@@ -484,7 +484,7 @@ fazzWebhookRouter.post("/", async (req: any, res) => {
           normalized: providerStatusNorm,
           rawStatus: providerStatusStr,
         },
-        tx,
+        tx as any, // <-- Type-only fix here as well
       );
     });
 

@@ -73,7 +73,18 @@ function formatDateBucket(date: Date, tz: string) {
 }
 
 function initSeries(from: Date, to: Date, tz: string) {
-  const series: Record<string, { date: string; [k: string]: number }> = {};
+  // Explicit counters to avoid index-signature conflicts with `date`
+  type Counters = {
+    starts?: number;
+    completes?: number;
+    pending?: number;
+    approved?: number;
+    rejected?: number;
+    submitted?: number;
+  };
+  type SeriesDatum = { date: string } & Partial<Counters>;
+
+  const series: Record<string, SeriesDatum> = {};
   let cursor = new Date(from.getTime());
   while (cursor <= to) {
     const label = formatDateBucket(cursor, tz);
@@ -222,11 +233,11 @@ export async function getMetricsOverview(filters: MetricsFilters) {
   for (const row of kycRows) {
     const bucket = formatDateBucket(row.createdAt, tz);
     seriesKyc[bucket] = seriesKyc[bucket] || { date: bucket };
-    seriesKyc[bucket].starts = (seriesKyc[bucket].starts || 0) + 1;
+    seriesKyc[bucket].starts = (seriesKyc[bucket].starts ?? 0) + 1;
     if (row.status === "approved") {
       const approvedBucket = formatDateBucket(row.updatedAt, tz);
       seriesKyc[approvedBucket] = seriesKyc[approvedBucket] || { date: approvedBucket };
-      seriesKyc[approvedBucket].completes = (seriesKyc[approvedBucket].completes || 0) + 1;
+      seriesKyc[approvedBucket].completes = (seriesKyc[approvedBucket].completes ?? 0) + 1;
     }
   }
 
@@ -234,11 +245,11 @@ export async function getMetricsOverview(filters: MetricsFilters) {
     const bucket = formatDateBucket(row.createdAt, tz);
     seriesDeposits[bucket] = seriesDeposits[bucket] || { date: bucket };
     if (row.status === "PENDING") {
-      seriesDeposits[bucket].pending = (seriesDeposits[bucket].pending || 0) + 1;
+      seriesDeposits[bucket].pending = (seriesDeposits[bucket].pending ?? 0) + 1;
     } else if (row.status === "APPROVED") {
-      seriesDeposits[bucket].approved = (seriesDeposits[bucket].approved || 0) + 1;
+      seriesDeposits[bucket].approved = (seriesDeposits[bucket].approved ?? 0) + 1;
     } else if (row.status === "REJECTED") {
-      seriesDeposits[bucket].rejected = (seriesDeposits[bucket].rejected || 0) + 1;
+      seriesDeposits[bucket].rejected = (seriesDeposits[bucket].rejected ?? 0) + 1;
     }
   }
 
@@ -246,11 +257,11 @@ export async function getMetricsOverview(filters: MetricsFilters) {
     const bucket = formatDateBucket(row.createdAt, tz);
     seriesWithdrawals[bucket] = seriesWithdrawals[bucket] || { date: bucket };
     if (row.status === "SUBMITTED") {
-      seriesWithdrawals[bucket].submitted = (seriesWithdrawals[bucket].submitted || 0) + 1;
+      seriesWithdrawals[bucket].submitted = (seriesWithdrawals[bucket].submitted ?? 0) + 1;
     } else if (row.status === "APPROVED") {
-      seriesWithdrawals[bucket].approved = (seriesWithdrawals[bucket].approved || 0) + 1;
+      seriesWithdrawals[bucket].approved = (seriesWithdrawals[bucket].approved ?? 0) + 1;
     } else if (row.status === "REJECTED") {
-      seriesWithdrawals[bucket].rejected = (seriesWithdrawals[bucket].rejected || 0) + 1;
+      seriesWithdrawals[bucket].rejected = (seriesWithdrawals[bucket].rejected ?? 0) + 1;
     }
   }
 

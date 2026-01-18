@@ -16,6 +16,7 @@
         <option value="p2p" selected>P2P</option>
         <option value="idr-v4-dynamic">IDR v4 (Dynamic)</option>
         <option value="idr-v4-static">IDR v4 (Static)</option>
+        <option value="aud-npp">AUD NPP</option>
       </select>
     </label>
     <div data-test-message style="margin-top:2px; text-align:center; font-size:14px; opacity:.85; display:none;"></div>
@@ -31,6 +32,14 @@
 
   <!-- IDR v4: buttons only. We render a custom overlay on click. -->
   <div data-test-section="idr-v4" style="display:none;">
+    <div class="row" style="justify-content:center; gap:16px; margin-top:2px;">
+      <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
+      <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>
+    </div>
+  </div>
+
+  <!-- AUD NPP -->
+  <div data-test-section="aud-npp" style="display:none;">
     <div class="row" style="justify-content:center; gap:16px; margin-top:2px;">
       <button type="button" class="btn primary" data-test-action="deposit">Deposit</button>
       <button type="button" class="btn" data-test-action="withdrawal">Withdrawal</button>

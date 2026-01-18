@@ -8,18 +8,19 @@ export const API_KEY_SCOPES = {
 
 export type ApiKeyScope = typeof API_KEY_SCOPES[keyof typeof API_KEY_SCOPES];
 
+// Use the actual scope values as keys (bracket notation for keys with ':' )
 export const API_KEY_SCOPE_LABELS: Record<ApiKeyScope, string> = {
-  P2P: "P2P",
-  IDRV4_ACCEPT: "IDR v4 Accept (VA Dynamic/Static)",
-  IDRV4_DISBURSE: "IDR v4 Disburse (Send)",
-  METHOD_AUD_NPP: "AUD NPP",
+  [API_KEY_SCOPES.P2P]: "P2P",
+  [API_KEY_SCOPES.IDRV4_ACCEPT]: "IDR v4 Accept (VA Dynamic/Static)",
+  [API_KEY_SCOPES.IDRV4_DISBURSE]: "IDR v4 Disburse (Send)",
+  [API_KEY_SCOPES.METHOD_AUD_NPP]: "AUD NPP",
 };
 
 export const API_KEY_SCOPE_OPTIONS = [
-  { value: API_KEY_SCOPES.P2P, label: API_KEY_SCOPE_LABELS.P2P },
-  { value: API_KEY_SCOPES.IDRV4_ACCEPT, label: API_KEY_SCOPE_LABELS.IDRV4_ACCEPT },
-  { value: API_KEY_SCOPES.IDRV4_DISBURSE, label: API_KEY_SCOPE_LABELS.IDRV4_DISBURSE },
-  { value: API_KEY_SCOPES.METHOD_AUD_NPP, label: API_KEY_SCOPE_LABELS.METHOD_AUD_NPP },
+  { value: API_KEY_SCOPES.P2P, label: API_KEY_SCOPE_LABELS[API_KEY_SCOPES.P2P] },
+  { value: API_KEY_SCOPES.IDRV4_ACCEPT, label: API_KEY_SCOPE_LABELS[API_KEY_SCOPES.IDRV4_ACCEPT] },
+  { value: API_KEY_SCOPES.IDRV4_DISBURSE, label: API_KEY_SCOPE_LABELS[API_KEY_SCOPES.IDRV4_DISBURSE] },
+  { value: API_KEY_SCOPES.METHOD_AUD_NPP, label: API_KEY_SCOPE_LABELS[API_KEY_SCOPES.METHOD_AUD_NPP] },
 ];
 
 const CANONICAL_SCOPE_MAP = new Map<string, ApiKeyScope>(
